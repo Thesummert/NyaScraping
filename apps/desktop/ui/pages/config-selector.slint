@@ -1,0 +1,68 @@
+import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export struct TargetRow { name: string, label: string, detail: string }
+
+export component ConfigSelector inherits VerticalLayout {
+    in property <bool> busy;
+    in property <bool> available: true;
+    in property <bool> can-browse: false;
+    in property <string> title;
+    in property <string> placeholder;
+    in property <string> search-placeholder;
+    in property <string> empty-message;
+    in property <string> message;
+    in-out property <string> value;
+    in-out property <string> query;
+    in property <[TargetRow]> entries;
+    private property <bool> expanded: false;
+    callback refresh();
+    callback search(string);
+    callback browse();
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: root.title; color: Theme.muted; width: 60px; vertical-alignment: center; }
+        LineEdit { text <=> root.value; placeholder-text: root.placeholder; enabled: !root.busy; horizontal-stretch: 1; }
+        Button { text: root.expanded ? "收起" : "选择…"; enabled: !root.busy && root.available; clicked => { root.expanded = !root.expanded; } }
+        Button { text: "刷新"; enabled: !root.busy && root.available; clicked => { root.refresh(); } }
+        if root.can-browse: Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
+    }
+    if root.message != "": Text { text: root.message; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+    if root.expanded: VerticalLayout {
+        spacing: 6px;
+        LineEdit {
+            text <=> root.query;
+            placeholder-text: root.search-placeholder;
+            enabled: !root.busy;
+            edited => { root.search(self.text); }
+        }
+        Rectangle {
+            height: 180px;
+            background: Theme.background;
+            border-color: Theme.border;
+            border-width: 1px;
+            ListView {
+                for row in root.entries: Rectangle {
+                    height: 44px;
+                    background: root.value == row.name ? Theme.selection : (area.has-hover ? Theme.panel : transparent);
+                    VerticalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Text { text: row.label; color: Theme.text; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                        Text { text: row.detail; color: Theme.muted; font-size: 10px; overflow: elide; vertical-alignment: center; }
+                    }
+                    area := TouchArea { enabled: !root.busy; clicked => { root.value = row.name; root.expanded = false; } }
+                }
+            }
+            if root.entries.length == 0: Text {
+                text: root.empty-message;
+                color: Theme.muted;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

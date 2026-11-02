@@ -1,11 +1,11 @@
 use crate::{
     firmware_browser::FirmwareBrowser, watch_list::WatchList, AppWindow, BreakpointRow,
-    FirmwareTreeRow, FrameRow, ToolRow, WatchRow,
+    FirmwareTreeRow, FrameRow, PackRow, TargetRow, ToolRow, WatchRow,
 };
 use nya_application::Event;
 use nya_domain::{
-    firmware::FirmwareImage, DebugSnapshot, Document, EvaluatedWatch, SessionState, ToolKind,
-    ToolState, WatchRequest,
+    firmware::FirmwareImage, DebugSnapshot, DebugTarget, Document, EvaluatedWatch, SessionState,
+    TargetCatalog, ToolKind, ToolState, WatchRequest,
 };
 use slint::{Model, ModelRc, VecModel};
 use std::{collections::HashMap, rc::Rc};
@@ -17,11 +17,14 @@ pub struct Presenter {
     watch_revision: u64,
     sample_count: u64,
     values: HashMap<String, EvaluatedWatch>,
+    targets: Vec<DebugTarget>,
+    probes: Vec<DebugTarget>,
 }
 
 /// Plain Rust data prepared on the worker, before entering the Slint event loop.
 pub enum PreparedEvent {
     Tools(ToolState, String),
+    Targets(TargetCatalog),
     Debug(DebugSnapshot, bool),
     Source(Document),
     Firmware(Box<FirmwareView>),
@@ -41,6 +44,7 @@ impl From<Event> for PreparedEvent {
     fn from(event: Event) -> Self {
         match event {
             Event::ToolsUpdated { state, message } => Self::Tools(state, message),
+            Event::TargetsUpdated(catalog) => Self::Targets(catalog),
             Event::DebugUpdated { snapshot, completes_command } => Self::Debug(snapshot, completes_command),
             Event::SourceOpened(document) => Self::Source(document),
             Event::Failed(error) => Self::Failed(error),
@@ -75,6 +79,19 @@ impl Presenter {
         }
         match event {
             PreparedEvent::Tools(state, message) => {
+                let kind = match state.backend {
+                    Some(ToolKind::OpenOcd) => 0,
+                    Some(ToolKind::PyOcd) => 1,
+                    Some(ToolKind::ProbeRs) => 2,
+                    None => -1,
+                };
+                if ui.get_backend_kind() != kind {
+                    ui.set_debug_target("".into());
+                    ui.set_debug_interface("".into());
+                    ui.set_target_search("".into());
+                    ui.set_probe_search("".into());
+                }
+                ui.set_backend_kind(kind);
                 let active = state.installations.iter().find(|installation| {
                     Some(installation.tool) == state.backend && installation.selected
                 });
@@ -111,6 +128,11 @@ impl Presenter {
                 ui.set_backend_summary(summary.into());
                 ui.set_tool_message(message.as_str().into());
                 ui.set_status(message.into());
+                self.apply_targets(ui, state.targets);
+            }
+            PreparedEvent::Targets(catalog) => {
+                ui.set_status(catalog.message.as_str().into());
+                self.apply_targets(ui, catalog);
             }
             PreparedEvent::Debug(snapshot, _) => {
                 let keep_sample = ui.get_live_enabled()
@@ -272,6 +294,69 @@ impl Presenter {
                 ui.set_status(message.into());
             }
         }
+    }
+
+    fn apply_targets(&mut self, ui: &AppWindow, catalog: TargetCatalog) {
+        self.targets = catalog.targets;
+        self.probes = catalog.probes;
+        ui.set_probe_message(catalog.probe_message.into());
+        ui.set_target_message(catalog.message.into());
+        let packs: Vec<_> = catalog
+            .packs
+            .into_iter()
+            .map(|path| PackRow {
+                name: path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_ref()
+                    .into(),
+                path: path.to_string_lossy().as_ref().into(),
+            })
+            .collect();
+        ui.set_packs(ModelRc::from(Rc::new(VecModel::from(packs))));
+        self.search_targets(ui, &ui.get_target_search());
+        self.search_probes(ui, &ui.get_probe_search());
+    }
+
+    pub fn search_targets(&self, ui: &AppWindow, query: &str) {
+        ui.set_targets(Self::config_rows(&self.targets, query));
+    }
+
+    pub fn search_probes(&self, ui: &AppWindow, query: &str) {
+        ui.set_probes(Self::config_rows(&self.probes, query));
+    }
+
+    fn config_rows(configs: &[DebugTarget], query: &str) -> ModelRc<TargetRow> {
+        let query = query.trim().to_lowercase();
+        let rows: Vec<_> = configs
+            .iter()
+            .filter(|target| {
+                [&target.name, &target.vendor, &target.source]
+                    .iter()
+                    .any(|text| text.to_lowercase().contains(&query))
+            })
+            .map(|target| TargetRow {
+                name: target.name.as_str().into(),
+                label: if target.vendor == "OpenOCD" {
+                    target.source.as_str()
+                } else {
+                    target.name.as_str()
+                }
+                .into(),
+                detail: format!(
+                    "{} · {}",
+                    target.vendor,
+                    if target.vendor == "OpenOCD" {
+                        &target.name
+                    } else {
+                        &target.source
+                    }
+                )
+                .into(),
+            })
+            .collect();
+        ModelRc::from(Rc::new(VecModel::from(rows)))
     }
 
     pub fn select_firmware(&mut self, ui: &AppWindow, index: i32) {

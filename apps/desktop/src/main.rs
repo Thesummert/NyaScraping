@@ -1,3 +1,4 @@
+mod file_picker;
 mod firmware_browser;
 mod presenter;
 mod watch_list;
@@ -17,11 +18,15 @@ use std::sync::{
 slint::include_modules!();
 
 fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
-    if ui.get_busy() {
+    if ui.get_busy() || ui.get_file_dialog_open() {
         return;
     }
     let message = match &command {
         Command::RefreshTools => Some("正在扫描调试后端…".to_owned()),
+        Command::RefreshTargets => Some("正在加载可选目标…".into()),
+        Command::AddPack(_) => Some("正在检查并添加芯片包…".into()),
+        Command::RemovePack(_) => Some("正在移除芯片包引用…".into()),
+        Command::InstallPack(_) => Some("正在在线安装芯片包，请稍候…".into()),
         Command::InstallTool { tool, version } => Some(format!(
             "正在安装 {} · {}…",
             tool.name(),
@@ -76,7 +81,7 @@ fn target_profile(ui: &AppWindow) -> Result<TargetProfile, String> {
         name: "桌面调试目标".into(),
         tool: ToolKind::OpenOcd,
         target: ui.get_debug_target().trim().into(),
-        interface: if interface.is_empty() {
+        interface: if interface.is_empty() || ui.get_backend_kind() != 0 {
             None
         } else {
             Some(interface)
@@ -324,6 +329,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &debug_sender,
                 Command::Debug(DebugAction::SelectFrame(level)),
             );
+        }
+    });
+
+    let weak = ui.as_weak();
+    let browse_sender = sender.clone();
+    ui.on_browse_source(move || {
+        if let Some(ui) = weak.upgrade() {
+            file_picker::browse(&ui, browse_sender.clone(), file_picker::FileKind::Source);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let target_sender = sender.clone();
+    ui.on_refresh_targets(move || {
+        if let Some(ui) = weak.upgrade() {
+            if !ui.get_debug_connected() && !ui.get_external_server() {
+                submit(&ui, &target_sender, Command::RefreshTargets);
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let target_presenter = presenter.clone();
+    ui.on_search_targets(move |query| {
+        if let Some(ui) = weak.upgrade() {
+            target_presenter
+                .lock()
+                .expect("presenter lock")
+                .search_targets(&ui, &query);
+        }
+    });
+    let weak = ui.as_weak();
+    let probe_presenter = presenter.clone();
+    ui.on_search_probes(move |query| {
+        if let Some(ui) = weak.upgrade() {
+            probe_presenter
+                .lock()
+                .expect("presenter lock")
+                .search_probes(&ui, &query);
+        }
+    });
+    let weak = ui.as_weak();
+    let probe_sender = sender.clone();
+    ui.on_browse_probe(move || {
+        if let Some(ui) = weak.upgrade() {
+            file_picker::browse(
+                &ui,
+                probe_sender.clone(),
+                file_picker::FileKind::ProbeConfig,
+            );
+        }
+    });
+    let weak = ui.as_weak();
+    let pack_sender = sender.clone();
+    ui.on_add_pack(move || {
+        if let Some(ui) = weak.upgrade() {
+            file_picker::browse(&ui, pack_sender.clone(), file_picker::FileKind::Pack);
+        }
+    });
+    let weak = ui.as_weak();
+    let pack_sender = sender.clone();
+    ui.on_remove_pack(move |path| {
+        if let Some(ui) = weak.upgrade() {
+            if !ui.get_debug_connected() && !ui.get_external_server() && ui.get_backend_kind() == 1
+            {
+                submit(&ui, &pack_sender, Command::RemovePack(path.as_str().into()));
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let pack_sender = sender.clone();
+    ui.on_install_pack(move |part| {
+        if let Some(ui) = weak.upgrade() {
+            if !ui.get_debug_connected() && !ui.get_external_server() && ui.get_backend_kind() == 1
+            {
+                submit(&ui, &pack_sender, Command::InstallPack(part.to_string()));
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    let browse_sender = sender.clone();
+    ui.on_browse_firmware(move || {
+        if let Some(ui) = weak.upgrade() {
+            file_picker::browse(&ui, browse_sender.clone(), file_picker::FileKind::Firmware);
         }
     });
 

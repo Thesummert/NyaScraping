@@ -1,5 +1,8 @@
 import { Button, CheckBox, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { TargetSelector, TargetRow, PackRow } from "target-selector.slint";
+import { ConfigSelector } from "config-selector.slint";
+export { TargetRow, PackRow }
 
 export struct FrameRow { level: int, label: string, selected: bool }
 export struct BreakpointRow { id: string, label: string }
@@ -11,7 +14,15 @@ export component DebugPage inherits ScrollView {
     in property <string> backend;
     in-out property <string> gdb-path;
     in-out property <string> target;
+    in property <int> backend-kind: -1;
+    in property <[TargetRow]> targets;
+    in property <[PackRow]> packs;
+    in property <string> target-message;
+    in-out property <string> target-search;
     in-out property <string> interface;
+    in property <[TargetRow]> probes;
+    in property <string> probe-message;
+    in-out property <string> probe-search;
     in-out property <string> port;
     in-out property <string> firmware;
     in-out property <bool> external-server;
@@ -19,6 +30,14 @@ export component DebugPage inherits ScrollView {
     in property <[BreakpointRow]> breakpoints;
     in property <string> log;
     callback action(int);
+    callback browse-firmware();
+    callback refresh-targets();
+    callback search-targets(string);
+    callback search-probes(string);
+    callback browse-probe();
+    callback add-pack();
+    callback remove-pack(string);
+    callback install-pack(string);
     callback add-breakpoint(string);
     callback remove-breakpoint(string);
     callback select-frame(int);
@@ -39,16 +58,36 @@ export component DebugPage inherits ScrollView {
             spacing: 8px;
             Text { text: "调试文件"; color: Theme.muted; width: 60px; vertical-alignment: center; }
             LineEdit { text <=> root.firmware; placeholder-text: "ELF / AXF 路径（含符号）"; enabled: !root.busy && !root.connected; horizontal-stretch: 1; }
+            Button { text: "浏览…"; enabled: !root.busy && !root.connected; clicked => { root.browse-firmware(); } }
         }
-        HorizontalLayout {
-            spacing: 8px;
-            Text { text: "目标"; color: Theme.muted; width: 60px; vertical-alignment: center; }
-            LineEdit { text <=> root.target; placeholder-text: "OpenOCD target/*.cfg 或芯片名称"; enabled: !root.busy && !root.connected && !root.external-server; horizontal-stretch: 1; }
+        TargetSelector {
+            busy: root.busy || root.connected || root.external-server;
+            backend-kind: root.backend-kind;
+            target <=> root.target;
+            targets: root.targets;
+            packs: root.packs;
+            message: root.target-message;
+            query <=> root.target-search;
+            refresh => { root.refresh-targets(); }
+            search(query) => { root.search-targets(query); }
+            add-pack => { root.add-pack(); }
+            remove-pack(path) => { root.remove-pack(path); }
+            install-pack(part) => { root.install-pack(part); }
         }
-        HorizontalLayout {
-            spacing: 8px;
-            Text { text: "接口"; color: Theme.muted; width: 60px; vertical-alignment: center; }
-            LineEdit { text <=> root.interface; placeholder-text: "OpenOCD interface/*.cfg（其他后端留空）"; enabled: !root.busy && !root.connected && !root.external-server; horizontal-stretch: 1; }
+        if root.backend-kind == 0: ConfigSelector {
+            busy: root.busy || root.connected || root.external-server;
+            can-browse: true;
+            title: "Probe";
+            placeholder: "OpenOCD interface/*.cfg";
+            search-placeholder: "搜索 Probe，如 stlink / cmsis-dap / jlink…";
+            empty-message: "暂无匹配 Probe，可刷新或浏览自定义 .cfg";
+            message: root.probe-message;
+            value <=> root.interface;
+            query <=> root.probe-search;
+            entries: root.probes;
+            refresh => { root.refresh-targets(); }
+            search(query) => { root.search-probes(query); }
+            browse => { root.browse-probe(); }
         }
         HorizontalLayout {
             spacing: 8px;

@@ -1,5 +1,6 @@
 mod mi;
 mod session;
+mod targets;
 // All NyaScrapingCore-specific types stay inside this adapter.
 use nya_domain::{
     DebugBackend, Error, Result, TargetProfile, ToolInstallation, ToolKind, ToolRegistry,
@@ -56,6 +57,7 @@ impl DebugAdapter {
         let executable = self.manager.resolve(tool).map_err(error)?;
         let mut command =
             operation_command(tool, &executable, &options(profile), &operation).map_err(error)?;
+        self.configure_packs(profile.tool, &mut command)?;
         let status = command.status().map_err(error)?;
         if status.success() {
             Ok(())
@@ -146,6 +148,22 @@ impl ToolRegistry for DebugAdapter {
             .uninstall(core_tool(tool), version)
             .map_err(error)
     }
+
+    fn target_catalog(&self) -> Result<nya_domain::TargetCatalog> {
+        self.load_targets()
+    }
+
+    fn add_pack(&mut self, path: &std::path::Path) -> Result<()> {
+        self.add_local_pack(path)
+    }
+
+    fn remove_pack(&mut self, path: &std::path::Path) -> Result<()> {
+        self.remove_local_pack(path)
+    }
+
+    fn install_pack(&mut self, part: &str) -> Result<()> {
+        self.install_target_pack(part)
+    }
 }
 
 impl DebugBackend for DebugAdapter {
@@ -157,7 +175,12 @@ impl DebugBackend for DebugAdapter {
         }
         let server = GdbServer::resolve(&self.manager, core_tool(profile.tool), options(profile))
             .map_err(error)?;
-        self.server = Some(server.start(Duration::from_secs(10)).map_err(error)?);
+        let mut command = server.command().map_err(error)?;
+        self.configure_packs(profile.tool, &mut command)?;
+        self.server = Some(
+            RunningGdbServer::start(command, profile.gdb_port, Duration::from_secs(10))
+                .map_err(error)?,
+        );
         Ok(())
     }
 

@@ -60,6 +60,24 @@ pub struct ToolState {
     pub installations: Vec<ToolInstallation>,
     /// Persisted backend family; its selected version is recorded on the installation.
     pub backend: Option<ToolKind>,
+    pub targets: TargetCatalog,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DebugTarget {
+    pub name: String,
+    pub vendor: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TargetCatalog {
+    pub targets: Vec<DebugTarget>,
+    /// OpenOCD interface configuration files for debug probes.
+    pub probes: Vec<DebugTarget>,
+    pub probe_message: String,
+    pub packs: Vec<PathBuf>,
+    pub message: String,
 }
 
 pub trait ToolRegistry: Send {
@@ -70,6 +88,18 @@ pub trait ToolRegistry: Send {
     /// Select a version and persist this tool as the active desktop backend.
     fn select(&mut self, tool: ToolKind, version: &str) -> Result<()>;
     fn uninstall(&mut self, tool: ToolKind, version: &str) -> Result<()>;
+    fn target_catalog(&self) -> Result<TargetCatalog> {
+        Ok(TargetCatalog::default())
+    }
+    fn add_pack(&mut self, _path: &std::path::Path) -> Result<()> {
+        Err(Error("当前后端不支持添加芯片包".into()))
+    }
+    fn remove_pack(&mut self, _path: &std::path::Path) -> Result<()> {
+        Err(Error("当前后端不支持移除芯片包".into()))
+    }
+    fn install_pack(&mut self, _part: &str) -> Result<()> {
+        Err(Error("当前后端不支持在线安装芯片包".into()))
+    }
 }
 
 /// Server readiness is distinct from an attached and halted GDB session.

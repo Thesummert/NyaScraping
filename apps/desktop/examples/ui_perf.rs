@@ -247,6 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             state: ToolState {
                 installations,
                 backend: Some(ToolKind::PyOcd),
+                targets: Default::default(),
             },
             message: "后端选择已保存".into(),
         }
@@ -259,6 +260,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!ui.get_tools().row_data(2).unwrap().managed);
     assert!(!ui.get_tools().row_data(3).unwrap().selectable);
     assert_eq!(ui.get_backend_summary(), "pyOCD · 1.0");
+    ui.set_debug_target("stm32h743zitx".into());
+    ui.set_busy(true);
+    presenter.apply(
+        &ui,
+        nya_application::Event::TargetsUpdated(nya_domain::TargetCatalog {
+            targets: vec![
+                nya_domain::DebugTarget {
+                    name: "stm32h743zitx".into(),
+                    vendor: "STMicroelectronics".into(),
+                    source: "pack".into(),
+                },
+                nya_domain::DebugTarget {
+                    name: "cortex_m".into(),
+                    vendor: "Arm".into(),
+                    source: "builtin".into(),
+                },
+            ],
+            packs: vec!["/tmp/芯片包 with spaces.pack".into()],
+            message: "2 个可选目标".into(),
+            ..Default::default()
+        })
+        .into(),
+    );
+    assert!(!ui.get_busy());
+    assert_eq!(ui.get_targets().row_count(), 2);
+    assert_eq!(
+        ui.get_packs().row_data(0).unwrap().name,
+        "芯片包 with spaces.pack"
+    );
+    presenter.search_targets(&ui, " STM32 ");
+    assert_eq!(ui.get_targets().row_count(), 1);
+    assert_eq!(ui.get_targets().row_data(0).unwrap().name, "stm32h743zitx");
+    presenter.search_targets(&ui, "ARM");
+    assert_eq!(ui.get_targets().row_count(), 1);
+    presenter.search_targets(&ui, "unknown-device");
+    assert_eq!(ui.get_targets().row_count(), 0);
+    presenter.search_targets(&ui, "");
+    assert_eq!(ui.get_targets().row_count(), 2);
+    assert_eq!(ui.get_debug_target(), "stm32h743zitx");
+    ui.set_current_tab(4);
+    redraw(&window, &mut pixels, 2960);
     ui.set_current_tab(3);
     redraw(&window, &mut pixels, 2960);
     presenter.apply(
@@ -267,6 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             state: ToolState {
                 installations: vec![],
                 backend: Some(ToolKind::PyOcd),
+                targets: Default::default(),
             },
             message: "已卸载 pyOCD · 1.0".into(),
         }
@@ -279,6 +322,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "Backend selection, PATH priority, missing-version and tools-page rendering checks passed"
     );
+    ui.set_debug_interface("interface/old.cfg".into());
+    presenter.apply(
+        &ui,
+        nya_application::Event::ToolsUpdated {
+            state: ToolState {
+                backend: Some(ToolKind::OpenOcd),
+                ..Default::default()
+            },
+            message: "切换到 OpenOCD".into(),
+        }
+        .into(),
+    );
+    assert!(ui.get_debug_target().is_empty());
+    assert!(ui.get_debug_interface().is_empty());
+    assert_eq!(ui.get_targets().row_count(), 0);
+    assert_eq!(ui.get_packs().row_count(), 0);
+    println!("Target search, pack display and backend-switch isolation checks passed");
+    presenter.apply(
+        &ui,
+        nya_application::Event::TargetsUpdated(nya_domain::TargetCatalog {
+            targets: vec![nya_domain::DebugTarget {
+                name: "/opt/openocd/target/stm32h7x.cfg".into(),
+                vendor: "OpenOCD".into(),
+                source: "target/stm32h7x.cfg".into(),
+            }],
+            probes: vec![
+                nya_domain::DebugTarget {
+                    name: "/opt/openocd/interface/stlink.cfg".into(),
+                    vendor: "OpenOCD".into(),
+                    source: "interface/stlink.cfg".into(),
+                },
+                nya_domain::DebugTarget {
+                    name: "/opt/openocd/interface/ftdi/probe with spaces.cfg".into(),
+                    vendor: "OpenOCD".into(),
+                    source: "interface/ftdi/probe with spaces.cfg".into(),
+                },
+            ],
+            probe_message: "2 个可选 Probe 配置".into(),
+            message: "1 个可选目标".into(),
+            ..Default::default()
+        })
+        .into(),
+    );
+    assert_eq!(ui.get_probes().row_count(), 2);
+    presenter.search_probes(&ui, " STLINK ");
+    assert_eq!(ui.get_probes().row_count(), 1);
+    assert_eq!(
+        ui.get_probes().row_data(0).unwrap().label,
+        "interface/stlink.cfg"
+    );
+    presenter.search_probes(&ui, "ftdi");
+    assert_eq!(ui.get_probes().row_count(), 1);
+    assert!(ui
+        .get_probes()
+        .row_data(0)
+        .unwrap()
+        .name
+        .ends_with("probe with spaces.cfg"));
+    presenter.search_probes(&ui, "unknown-probe");
+    assert_eq!(ui.get_probes().row_count(), 0);
+    assert_eq!(ui.get_targets().row_count(), 1);
+    presenter.search_probes(&ui, "");
+    ui.set_debug_interface("/opt/openocd/interface/stlink.cfg".into());
+    ui.set_probe_search("stlink".into());
+    ui.set_current_tab(4);
+    redraw(&window, &mut pixels, 2960);
+    presenter.apply(
+        &ui,
+        nya_application::Event::ToolsUpdated {
+            state: ToolState {
+                backend: Some(ToolKind::PyOcd),
+                ..Default::default()
+            },
+            message: "切换到 pyOCD".into(),
+        }
+        .into(),
+    );
+    assert!(ui.get_debug_interface().is_empty());
+    assert!(ui.get_probe_search().is_empty());
+    assert_eq!(ui.get_probes().row_count(), 0);
+    redraw(&window, &mut pixels, 2960);
+    println!("OpenOCD probe search, nested interface paths and backend-switch cleanup passed");
     use nya_domain::{
         Breakpoint, DebugSnapshot, EvaluatedWatch, SessionState, StackFrame, WatchValue,
     };

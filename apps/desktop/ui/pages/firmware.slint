@@ -20,11 +20,13 @@ export component FirmwarePage inherits VerticalLayout {
     in-out property <string> search-query;
     callback search(string);
     callback open();
+    callback browse();
     callback select-node(int);
     callback show-functions(bool);
     spacing: 10px;
     HorizontalLayout {
         Text { text: "文件树"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
         Button { text: "解析文件"; enabled: !root.busy; clicked => { root.open(); } }
     }
     LineEdit {

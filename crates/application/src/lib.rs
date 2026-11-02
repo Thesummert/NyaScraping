@@ -1,13 +1,17 @@
 //! Use cases run on a worker; UI callbacks submit commands and consume events.
 use nya_domain::{
     firmware::{FirmwareBackend, FirmwareImage},
-    DebugAction, DebugSession, DebugSnapshot, Document, Result, TextBackend, ToolKind,
-    ToolRegistry, ToolState, WatchRequest,
+    DebugAction, DebugSession, DebugSnapshot, Document, Result, TargetCatalog, TextBackend,
+    ToolKind, ToolRegistry, ToolState, WatchRequest,
 };
 use std::path::PathBuf;
 
 pub enum Command {
     RefreshTools,
+    RefreshTargets,
+    AddPack(PathBuf),
+    RemovePack(PathBuf),
+    InstallPack(String),
     Debug(DebugAction),
     UpdateWatches(Vec<WatchRequest>),
     InstallTool { tool: ToolKind, version: String },
@@ -18,6 +22,7 @@ pub enum Command {
 }
 
 pub enum Event {
+    TargetsUpdated(TargetCatalog),
     ToolsUpdated {
         state: ToolState,
         message: String,
@@ -80,6 +85,21 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
                 })
             }
             Command::RefreshTools => self.tool_event(Ok("工具列表已刷新".into())),
+            Command::RefreshTargets => Ok(self.target_event(Ok("目标列表已刷新".into()))),
+            Command::AddPack(path) => {
+                let result = self.tools.add_pack(&path);
+                Ok(self.target_event(result.map(|()| "芯片包已添加".into())))
+            }
+            Command::RemovePack(path) => {
+                let result = self.tools.remove_pack(&path);
+                Ok(self.target_event(result.map(|()| "已移除芯片包引用".into())))
+            }
+            Command::InstallPack(part) => {
+                let result = self.tools.install_pack(part.trim());
+                Ok(self.target_event(
+                    result.map(|()| "芯片包安装命令已完成，请在目标列表中确认型号".into()),
+                ))
+            }
             Command::InstallTool { tool, version } => {
                 let version = version.trim();
                 let result = if version.is_empty() {
@@ -173,9 +193,26 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
             state: ToolState {
                 installations,
                 backend,
+                targets: self.catalog(),
             },
             message: result.unwrap_or_else(|error| format!("操作失败：{error}")),
         })
+    }
+
+    fn catalog(&self) -> TargetCatalog {
+        self.tools
+            .target_catalog()
+            .unwrap_or_else(|error| TargetCatalog {
+                message: format!("目标加载失败：{error}"),
+                ..Default::default()
+            })
+    }
+
+    fn target_event(&self, result: Result<String>) -> Event {
+        let mut catalog = self.catalog();
+        let message = result.unwrap_or_else(|error| format!("操作失败：{error}"));
+        catalog.message = format!("{message} · {}", catalog.message);
+        Event::TargetsUpdated(catalog)
     }
 }
 

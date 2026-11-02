@@ -1,4 +1,4 @@
-import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct WatchRow {
@@ -16,11 +16,32 @@ export struct WatchRow {
 
 export component VariablesPage inherits VerticalLayout {
     in property <[WatchRow]> watches;
+    in property <bool> can-write;
+    in property <int> revision;
+    in-out property <bool> live-enabled;
+    in-out property <int> live-interval-index: 1;
+    in property <string> sample-status;
+    callback live-refresh();
+    private property <int> edit-revision: -1;
+    private property <int> edit-entry: -1;
+    private property <int> edit-node: -1;
+    private property <string> edit-name;
+    callback write(int, int, string);
     callback add(string);
     callback remove(int);
     callback toggle(int, int);
     spacing: 8px;
     Text { text: "变量监视"; color: Theme.text; font-size: 15px; font-weight: 700; }
+    HorizontalLayout {
+        spacing: 6px;
+        CheckBox { text: "实时刷新"; checked <=> root.live-enabled; toggled => { root.live-refresh(); } }
+        ComboBox {
+            model: ["200 ms", "500 ms", "1 s", "2 s"];
+            current-index <=> root.live-interval-index;
+            selected => { root.live-refresh(); }
+        }
+    }
+    Text { text: root.sample-status; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
     HorizontalLayout {
         spacing: 6px;
         expression := LineEdit {
@@ -37,8 +58,9 @@ export component VariablesPage inherits VerticalLayout {
     HorizontalLayout {
         spacing: 6px;
         Text { text: "名称"; color: Theme.muted; horizontal-stretch: 1; }
-        Text { text: "类型"; color: Theme.muted; width: 100px; }
+        Text { text: "类型"; color: Theme.muted; width: 76px; }
         Text { text: "值"; color: Theme.muted; width: 68px; }
+        Rectangle { width: 24px; background: transparent; }
         Rectangle { width: 28px; background: transparent; }
     }
     Rectangle { height: 1px; background: Theme.border; }
@@ -66,14 +88,27 @@ export component VariablesPage inherits VerticalLayout {
                         horizontal-stretch: 1;
                         vertical-alignment: center;
                     }
-                    Text { text: watch.type-name; color: Theme.accent; font-size: 12px; width: 100px; overflow: elide; vertical-alignment: center; }
+                    Text { text: watch.type-name; color: Theme.accent; font-size: 12px; width: 76px; overflow: elide; vertical-alignment: center; }
                     Text { text: watch.value; color: watch.error != "" ? #f08a80 : Theme.text; width: 68px; overflow: elide; vertical-alignment: center; }
+                    Button {
+                        width: 24px;
+                        text: "✎";
+                        enabled: root.can-write && !watch.branch;
+                        clicked => {
+                            root.edit-revision = root.revision;
+                            root.edit-entry = watch.entry-index;
+                            root.edit-node = watch.node-index;
+                            root.edit-name = watch.expression;
+                            new-value.text = "";
+                            new-value.focus();
+                        }
+                    }
                     Rectangle {
                         width: 28px;
                         Text { text: watch.depth == 0 ? "×" : ""; color: remove-area.has-hover ? Theme.accent : Theme.muted; horizontal-alignment: center; vertical-alignment: center; }
                         remove-area := TouchArea {
                             enabled: watch.depth == 0;
-                            clicked => { root.remove(watch.entry-index); }
+                            clicked => { root.edit-entry = -1; root.remove(watch.entry-index); }
                         }
                     }
                 }
@@ -87,5 +122,25 @@ export component VariablesPage inherits VerticalLayout {
             vertical-alignment: center;
         }
     }
-    Text { text: "暂停后刷新数值；运行中清除旧值"; color: Theme.muted; font-size: 11px; }
+    if (root.edit-entry >= 0 && root.edit-revision == root.revision): Text { text: "修改：" + root.edit-name; color: Theme.accent; overflow: elide; }
+    HorizontalLayout {
+        spacing: 6px;
+        new-value := LineEdit {
+            placeholder-text: "新值，如 1.5 / 0x10";
+            enabled: root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision);
+            horizontal-stretch: 1;
+            accepted => {
+                if root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision) && self.text != "" {
+                    root.write(root.edit-entry, root.edit-node, self.text);
+                    root.edit-entry = -1;
+                }
+            }
+        }
+        Button {
+            text: "写入";
+            enabled: root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision) && new-value.text != "";
+            clicked => { root.write(root.edit-entry, root.edit-node, new-value.text); root.edit-entry = -1; }
+        }
+    }
+    Text { text: "运行时刷新 / 写入会短暂暂停并恢复"; color: Theme.muted; font-size: 11px; }
 }

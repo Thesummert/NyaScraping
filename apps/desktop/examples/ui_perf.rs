@@ -171,6 +171,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_firmware_tree()
         .iter()
         .any(|row| row.label.starts_with("ƒ ")));
+    let original_count = ui.get_firmware_tree().row_count();
+    presenter.search_firmware(&ui, "COMPUTE");
+    assert!(ui
+        .get_firmware_tree()
+        .iter()
+        .any(|row| row.label == "ƒ compute"));
+    assert!(!ui
+        .get_firmware_tree()
+        .iter()
+        .any(|row| row.label == "ƒ main"));
+    presenter.search_firmware(&ui, "missing-file-name");
+    assert_eq!(ui.get_firmware_tree().row_count(), 0);
+    presenter.search_firmware(&ui, "");
+    assert_eq!(ui.get_firmware_tree().row_count(), original_count);
     presenter.show_functions(&ui, true);
     assert!(ui
         .get_firmware_tree()
@@ -186,6 +200,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(ui.get_watches().row_count(), 3);
     assert_eq!(ui.get_watches().row_data(0).unwrap().type_name, "Sensor");
     assert_eq!(ui.get_watches().row_data(1).unwrap().expression, "value");
+    let member = presenter.write_request(0, 1).unwrap();
+    assert!(member.expression.ends_with(".value"));
+    assert!(presenter.write_request(-1, 0).is_none());
+    assert!(presenter.write_request(99, 0).is_none());
     assert_eq!(ui.get_watches().row_data(2).unwrap().expression, "label");
     presenter.select_firmware(&ui, sensor as i32);
     assert_eq!(ui.get_watches().row_count(), 3);
@@ -320,6 +338,86 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
         file.write_all(&bytes)?;
     }
+
+    // Live samples update rows in place and survive asynchronous running/log events.
+    ui.set_live_enabled(true);
+    ui.set_busy(true);
+    let original_watches = ui.get_watches();
+    let live_snapshot = DebugSnapshot {
+        state: SessionState::Running,
+        watch_sample: true,
+        values: vec![EvaluatedWatch {
+            id: request.id.clone(),
+            value: WatchValue {
+                expression: "counter".into(),
+                type_name: "int".into(),
+                display_value: "88".into(),
+                error: None,
+            },
+        }],
+        ..Default::default()
+    };
+    presenter.apply(
+        &ui,
+        nya_application::Event::DebugUpdated {
+            snapshot: live_snapshot.clone(),
+            completes_command: false,
+        }
+        .into(),
+    );
+    assert!(ui.get_busy());
+    assert_eq!(ui.get_watches().row_data(0).unwrap().value, "88");
+    assert!(ui.get_watch_sample_status().contains("已采样"));
+    assert!(std::ptr::eq(
+        original_watches.as_any(),
+        ui.get_watches().as_any()
+    ));
+    presenter.apply(
+        &ui,
+        nya_application::Event::DebugUpdated {
+            snapshot: DebugSnapshot {
+                state: SessionState::Running,
+                ..Default::default()
+            },
+            completes_command: false,
+        }
+        .into(),
+    );
+    assert_eq!(ui.get_watches().row_data(0).unwrap().value, "88");
+    ui.set_live_enabled(false);
+    presenter.live_refresh_changed(&ui);
+    assert_eq!(ui.get_watches().row_data(0).unwrap().value, "—");
+    presenter.apply(
+        &ui,
+        nya_application::Event::DebugUpdated {
+            snapshot: live_snapshot,
+            completes_command: false,
+        }
+        .into(),
+    );
+    assert_eq!(
+        ui.get_watches().row_data(0).unwrap().value,
+        "—",
+        "late samples after disable must be discarded"
+    );
+    ui.set_live_enabled(true);
+    presenter.apply(
+        &ui,
+        nya_application::Event::DebugUpdated {
+            snapshot: DebugSnapshot {
+                state: SessionState::Halted,
+                watch_sample: true,
+                watch_sample_error: Some("断点停止".into()),
+                ..Default::default()
+            },
+            completes_command: false,
+        }
+        .into(),
+    );
+    assert!(!ui.get_live_enabled());
+    assert!(ui.get_watch_sample_status().contains("断点停止"));
+    ui.set_busy(false);
+    println!("Live samples, stable list models, disable and sampling-error UI checks passed");
 
     presenter.remove_watch(&ui, 0);
     presenter.add_expression(&ui, "other_variable");

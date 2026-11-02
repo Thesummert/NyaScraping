@@ -126,8 +126,34 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
         }
     }
 
+    pub fn sample_watches(&mut self) -> Option<Event> {
+        if self.watches.is_empty() {
+            return None;
+        }
+        let mut snapshot = self.tools.sample_watches(&self.watches);
+        if snapshot.watch_sample_error.is_some() {
+            self.load_frame_source(&mut snapshot);
+        }
+        if !matches!(
+            snapshot.state,
+            nya_domain::SessionState::Halted | nya_domain::SessionState::Running
+        ) && snapshot.watch_sample_error.is_none()
+        {
+            return None;
+        }
+        Some(Event::DebugUpdated {
+            snapshot,
+            completes_command: false,
+        })
+    }
+
     fn snapshot(&mut self) -> DebugSnapshot {
         let mut snapshot = self.tools.debug_snapshot(&self.watches);
+        self.load_frame_source(&mut snapshot);
+        snapshot
+    }
+
+    fn load_frame_source(&self, snapshot: &mut DebugSnapshot) {
         if let Some(frame) = snapshot
             .frames
             .iter()
@@ -137,7 +163,6 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
                 snapshot.source = self.text.load(std::path::Path::new(&frame.file)).ok();
             }
         }
-        snapshot
     }
 
     fn tool_event(&self, result: Result<String>) -> Result<Event> {
@@ -235,6 +260,11 @@ mod tests {
         fn poll_debug(&mut self) -> Result<bool> {
             Ok(std::mem::take(&mut self.dirty))
         }
+        fn sample_watches(&mut self, watches: &[WatchRequest]) -> DebugSnapshot {
+            let mut snapshot = self.debug_snapshot(watches);
+            snapshot.watch_sample = true;
+            snapshot
+        }
         fn debug_snapshot(&mut self, watches: &[WatchRequest]) -> DebugSnapshot {
             let mut snapshot = self.debug.clone();
             if snapshot.state == nya_domain::SessionState::Halted {
@@ -273,6 +303,33 @@ mod tests {
             Event::ToolsUpdated { state, message } => (state, message),
             _ => panic!("expected tools snapshot"),
         }
+    }
+
+    #[test]
+    fn periodic_samples_do_not_complete_commands_or_reload_source() {
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        assert!(app.sample_watches().is_none());
+        app.execute(Command::UpdateWatches(vec![WatchRequest {
+            id: "watch-1".into(),
+            expression: "counter".into(),
+            function: None,
+        }]));
+        assert!(app.sample_watches().is_none());
+        app.tools.debug.state = nya_domain::SessionState::Halted;
+        match app.sample_watches().unwrap() {
+            Event::DebugUpdated {
+                snapshot,
+                completes_command,
+            } => {
+                assert!(!completes_command);
+                assert!(snapshot.watch_sample);
+                assert_eq!(snapshot.values[0].id, "watch-1");
+                assert!(snapshot.source.is_none());
+            }
+            _ => panic!("expected live snapshot"),
+        }
+        app.execute(Command::UpdateWatches(vec![]));
+        assert!(app.sample_watches().is_none());
     }
 
     #[test]

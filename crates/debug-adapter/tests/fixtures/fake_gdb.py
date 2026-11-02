@@ -6,6 +6,11 @@ import sys
 state = "stopped"
 frame = 0
 breakpoints = False
+values = {}
+current_expression = ""
+break_on_interrupt = False
+live_counter = 0
+fail_continue = False
 
 def send(text):
     print(text, flush=True)
@@ -19,6 +24,14 @@ for line in sys.stdin:
     if not match:
         continue
     token, command = match.groups()
+    if command == '-test-fail-continue':
+        fail_continue = True
+        send(token + '^done')
+        continue
+    if command == '-test-break-on-interrupt':
+        break_on_interrupt = True
+        send(token + '^done')
+        continue
     if command == '-test-timeout':
         continue
     if command == '-test-exit':
@@ -27,13 +40,20 @@ for line in sys.stdin:
         send(token + '^connected')
         stopped()
     elif command.startswith('-exec-continue'):
+        if fail_continue:
+            send(token + '^error,msg="Continue failed"')
+            continue
+        live_counter += 1
         state = "running"
         send(token + '^running')
         send('*running,thread-id="all"')
     elif command.startswith(('-exec-interrupt', '-exec-step', '-exec-next', '-exec-finish')):
         state = "stopped"
         send(token + '^done')
-        stopped()
+        if command.startswith('-exec-interrupt') and not break_on_interrupt:
+            send('*stopped,reason="signal-received",signal-name="SIGINT",thread-id="1",stopped-threads="all"')
+        else:
+            stopped()
     elif command == '-thread-info':
         send(token + '^done,threads=[{id="1",state="' + state + '"}],current-thread-id="1"')
     elif command.startswith('-stack-list-frames'):
@@ -50,12 +70,26 @@ for line in sys.stdin:
     elif command == '-break-list':
         body = 'bkpt={number="1",enabled="y",original-location="compute"}' if breakpoints else ''
         send(token + '^done,BreakpointTable={body=[' + body + ']}')
+    elif command.startswith('-var-show-attributes'):
+        editable = current_expression not in ('2 + 3', 'readonly')
+        send(token + '^done,attr="' + ('editable' if editable else 'noneditable') + '"')
+    elif command.startswith('-var-assign'):
+        value = command.split(' ', 2)[2].strip('"')
+        if value == 'invalid':
+            send(token + '^error,msg="Invalid value"')
+        else:
+            values[current_expression] = value
+            send(token + '^done,value="' + value + '"')
+    elif command.startswith('-data-evaluate-expression'):
+        expression = command.split(' ', 1)[1].strip('"')
+        send(token + '^done,value="' + values.get(expression, '42') + '"')
     elif command.startswith('-var-create'):
+        current_expression = command.split(' ', 3)[3].strip('"')
         if 'missing' in command:
             send(token + '^error,msg="No symbol missing in current context"')
         else:
             send('98765^done,value="unrelated result"')
-            send(token + '^done,name="var1",numchild="0",type="int",value="' + ('42' if frame == 0 else '7') + '"')
+            send(token + '^done,name="var1",numchild="0",type="int",value="' + values.get(current_expression, str(live_counter) if current_expression == 'live_counter' else ('42' if frame == 0 else '7')) + '"')
     elif command.startswith('-interpreter-exec'):
         state = "stopped"
         send(token + '^done')

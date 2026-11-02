@@ -118,6 +118,10 @@ pub enum DebugAction {
     RemoveBreakpoint(String),
     SelectFrame(u32),
     Refresh,
+    WriteWatch {
+        watch: WatchRequest,
+        value: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +155,8 @@ pub struct Breakpoint {
 
 #[derive(Clone, Debug, Default)]
 pub struct DebugSnapshot {
+    pub watch_sample: bool,
+    pub watch_sample_error: Option<String>,
     pub source: Option<Document>,
     pub state: SessionState,
     pub message: String,
@@ -165,6 +171,8 @@ pub trait DebugSession: Send {
     fn execute_debug(&mut self, action: DebugAction) -> Result<()>;
     fn poll_debug(&mut self) -> Result<bool>;
     fn debug_snapshot(&mut self, watches: &[WatchRequest]) -> DebugSnapshot;
+    /// Read watches periodically; implementations may briefly interrupt a running target.
+    fn sample_watches(&mut self, watches: &[WatchRequest]) -> DebugSnapshot;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

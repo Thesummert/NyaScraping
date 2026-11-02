@@ -17,6 +17,8 @@ export component FirmwarePage inherits VerticalLayout {
     in property <string> details;
     in property <int> selected-node;
     in-out property <bool> functions-visible;
+    in-out property <string> search-query;
+    callback search(string);
     callback open();
     callback select-node(int);
     callback show-functions(bool);
@@ -32,6 +34,16 @@ export component FirmwarePage inherits VerticalLayout {
         accepted => { root.open(); }
     }
     Text { text: root.title; color: Theme.muted; font-size: 12px; overflow: elide; }
+    HorizontalLayout {
+        spacing: 4px;
+        LineEdit {
+            text <=> root.search-query;
+            placeholder-text: "搜索文件 / 函数名…";
+            horizontal-stretch: 1;
+            edited => { root.search(self.text); }
+        }
+        Button { text: "×"; enabled: root.search-query != ""; clicked => { root.search-query = ""; root.search(""); } }
+    }
     CheckBox {
         text: "显示函数";
         checked <=> root.functions-visible;
@@ -71,7 +83,7 @@ export component FirmwarePage inherits VerticalLayout {
             }
         }
         if root.tree.length == 0: Text {
-            text: "尚无文件条目\n\n解析编译产物以浏览\n源文件、函数与变量";
+            text: root.search-query != "" ? "没有匹配的文件或函数" : "尚无文件条目\n\n解析编译产物以浏览\n源文件、函数与变量";
             color: Theme.muted;
             font-size: 12px;
             horizontal-alignment: center;

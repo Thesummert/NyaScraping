@@ -64,6 +64,14 @@ export component AppWindow inherits Window {
     callback remove-watch(int);
     callback toggle-watch(int, int);
     callback show-functions(bool);
+    in-out property <string> firmware-search;
+    callback search-firmware(string);
+    in-out property <bool> live-enabled: false;
+    in-out property <int> live-interval-index: 1;
+    in-out property <string> watch-sample-status: "实时刷新已关闭";
+    callback live-refresh();
+    in-out property <int> watch-revision;
+    callback write-watch(int, int, string);
 
     VerticalLayout {
         spacing: 0px;
@@ -126,6 +134,8 @@ export component AppWindow inherits Window {
                     details: root.firmware-details;
                     selected-node: root.firmware-selected-node;
                     functions-visible <=> root.functions-visible;
+                    search-query <=> root.firmware-search;
+                    search(query) => { root.search-firmware(query); }
                     select-node(index) => { root.select-firmware-node(index); }
                     show-functions(show) => { root.show-functions(show); }
                     open => { root.open-firmware(); }
@@ -212,6 +222,13 @@ export component AppWindow inherits Window {
                 VariablesPage {
                     padding: 12px;
                     watches: root.watches;
+                    live-enabled <=> root.live-enabled;
+                    live-interval-index <=> root.live-interval-index;
+                    sample-status: root.watch-sample-status;
+                    live-refresh => { root.live-refresh(); }
+                    revision: root.watch-revision;
+                    can-write: root.debug-connected && !root.busy;
+                    write(entry, node, value) => { root.write-watch(entry, node, value); }
                     add(expression) => { root.add-expression(expression); }
                     remove(index) => { root.remove-watch(index); }
                     toggle(entry, node) => { root.toggle-watch(entry, node); }

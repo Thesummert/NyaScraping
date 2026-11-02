@@ -93,7 +93,7 @@ impl Session {
         }
         Ok(())
     }
-    fn evaluate(&mut self, watch: &WatchRequest) -> Result<WatchValue> {
+    fn validate_scope(&self, watch: &WatchRequest) -> Result<()> {
         if let Some(function) = &watch.function {
             let current = self
                 .frames
@@ -109,6 +109,10 @@ impl Session {
                 return Err(Error(format!("变量属于 {function}，当前栈帧为 {current}")));
             }
         }
+        Ok(())
+    }
+    fn evaluate(&mut self, watch: &WatchRequest) -> Result<WatchValue> {
+        self.validate_scope(watch)?;
         let result = self.halted()?.command_timeout(
             &format!("-var-create - * {}", mi::quote(&watch.expression)),
             Duration::from_millis(700),
@@ -127,6 +131,161 @@ impl Session {
             )?;
         }
         Ok(value)
+    }
+    fn values(
+        &mut self,
+        watches: &[WatchRequest],
+        limit: usize,
+        budget: Duration,
+    ) -> Vec<EvaluatedWatch> {
+        let start = Instant::now();
+        watches
+            .iter()
+            .enumerate()
+            .map(|(index, watch)| {
+                let result = if index >= limit || start.elapsed() >= budget {
+                    Err(Error("本轮刷新达到上限，请减少展开项或增大刷新间隔".into()))
+                } else {
+                    self.evaluate(watch)
+                };
+                EvaluatedWatch {
+                    id: watch.id.clone(),
+                    value: result.unwrap_or_else(|error| WatchValue {
+                        expression: watch.expression.clone(),
+                        type_name: String::new(),
+                        display_value: "—".into(),
+                        error: Some(error.to_string()),
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    fn interrupt_for_sample(&mut self) -> Result<bool> {
+        self.client()?.poll()?;
+        if self.client()?.state != SessionState::Running {
+            return Ok(false);
+        }
+        self.client()?.command("-exec-interrupt --all")?;
+        let start = Instant::now();
+        while self.client()?.state == SessionState::Running {
+            self.client()?.poll()?;
+            if start.elapsed() > Duration::from_secs(1) {
+                return Err(Error("实时采样等待暂停超时，已停止自动刷新".into()));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Never automatically continue a breakpoint/exception that raced with sampling.
+        let interrupted = self.client()?.stop.as_ref().is_some_and(|s| {
+            s.field("reason") == "signal-received" && s.field("signal-name") == "SIGINT"
+        });
+        self.selected_frame = 0;
+        self.context()?;
+        self.last_stop = self.client()?.stop_generation;
+        if !interrupted {
+            return Err(Error("目标因断点或其他事件暂停，已停止自动刷新".into()));
+        }
+        self.halted()?.command("-stack-select-frame 0")?;
+        Ok(true)
+    }
+
+    fn assign(&mut self, watch: &WatchRequest, value: &str) -> Result<String> {
+        self.validate_scope(watch)?;
+        let variable = self
+            .halted()?
+            .command(&format!("-var-create - * {}", mi::quote(&watch.expression)))?;
+        let name = variable.field("name");
+        if name.is_empty() {
+            return Err(Error("GDB 未返回变量标识".into()));
+        }
+        let result = (|| {
+            let attributes = self
+                .halted()?
+                .command(&format!("-var-show-attributes {}", mi::quote(name)))?;
+            if attributes.field("attr") != "editable" {
+                return Err(Error("该表达式不可写，请选择可修改的变量或成员".into()));
+            }
+            self.halted()?.command(&format!(
+                "-var-assign {} {}",
+                mi::quote(name),
+                mi::quote(value)
+            ))?;
+            let readback = self.halted()?.command(&format!(
+                "-data-evaluate-expression {}",
+                mi::quote(&watch.expression)
+            ))?;
+            Ok(readback.field("value").to_owned())
+        })();
+        let cleanup = self
+            .client()?
+            .command(&format!("-var-delete {}", mi::quote(name)));
+        match result {
+            Ok(value) => {
+                cleanup?;
+                Ok(value)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn write_watch(&mut self, watch: &WatchRequest, value: &str) -> Result<()> {
+        let value = value.trim();
+        if value.is_empty() || value.len() > 4096 {
+            return Err(Error("请输入有效参数值（最多 4096 字节）".into()));
+        }
+        self.client()?.poll()?;
+        let resume = self.client()?.state == SessionState::Running;
+        if !resume
+            && self.client()?.state == SessionState::Halted
+            && self.last_stop != self.client()?.stop_generation
+        {
+            self.selected_frame = 0;
+            self.context()?;
+            self.last_stop = self.client()?.stop_generation;
+        }
+        if resume {
+            self.client()?.command("-exec-interrupt --all")?;
+            let start = Instant::now();
+            while self.client()?.state == SessionState::Running {
+                self.client()?.poll()?;
+                if start.elapsed() > Duration::from_secs(3) {
+                    return Err(Error("等待目标暂停超时，未写入参数".into()));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // A breakpoint racing with our interrupt must remain stopped.
+            self.last_stop = self.client()?.stop_generation;
+            let stop = self.client()?.stop.as_ref();
+            if !stop.is_some_and(|s| {
+                s.field("reason") == "signal-received" && s.field("signal-name") == "SIGINT"
+            }) {
+                self.context()?;
+                return Err(Error(
+                    "目标因断点或其他事件暂停，未写入参数；请检查后重试".into(),
+                ));
+            }
+            self.selected_frame = 0;
+            self.halted()?.command("-stack-select-frame 0")?;
+            self.context()?;
+        }
+        let readback = self
+            .assign(watch, value)
+            .map_err(|error| Error(format!("参数写入或回读失败，目标保持暂停：{error}")))?;
+        if resume {
+            self.halted()?.command("-exec-continue").map_err(|error| {
+                Error(format!(
+                    "参数已写入并回读为 {readback}，恢复运行失败：{error}"
+                ))
+            })?;
+            self.frames.clear();
+        }
+        self.message = format!(
+            "{} 已写入，回读：{}{}",
+            watch.expression,
+            readback,
+            if resume { "；已恢复运行" } else { "" }
+        );
+        Ok(())
     }
 }
 
@@ -263,6 +422,12 @@ impl DebugSession for DebugAdapter {
                 self.session.selected_frame = level;
                 self.session.message = format!("已选择栈帧 #{level}");
             }
+            DebugAction::WriteWatch { watch, value } => {
+                if let Err(error) = self.session.write_watch(&watch, &value) {
+                    self.session.message = format!("操作失败：{error}");
+                    return Err(error);
+                }
+            }
             DebugAction::Refresh => {
                 self.session.thread_state()?;
                 self.session.context()?;
@@ -324,6 +489,47 @@ impl DebugSession for DebugAdapter {
         }
         result
     }
+    fn sample_watches(&mut self, watches: &[WatchRequest]) -> DebugSnapshot {
+        if watches.is_empty() || self.session.client.is_none() {
+            return self.debug_snapshot(&[]);
+        }
+        let result: Result<Vec<EvaluatedWatch>> = (|| {
+            let resume = self.session.interrupt_for_sample()?;
+            // Use a smaller budget while running to limit the time spent stopped.
+            let values = self.session.values(
+                watches,
+                if resume { 32 } else { 128 },
+                if resume {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(2)
+                },
+            );
+            if resume {
+                self.session.halted()?.command("-exec-continue")?;
+                self.session.frames.clear();
+            }
+            Ok(values)
+        })();
+        let mut snapshot = self.debug_snapshot(&[]);
+        snapshot.watch_sample = true;
+        match result {
+            Ok(values)
+                if matches!(snapshot.state, SessionState::Halted | SessionState::Running) =>
+            {
+                snapshot.values = values
+            }
+            Ok(_) => {
+                snapshot.watch_sample_error = Some("采样期间连接状态改变，已停止自动刷新".into())
+            }
+            Err(error) => snapshot.watch_sample_error = Some(error.to_string()),
+        }
+        if snapshot.watch_sample_error.is_some() {
+            snapshot.values.clear();
+        }
+        snapshot
+    }
+
     fn debug_snapshot(&mut self, watches: &[WatchRequest]) -> DebugSnapshot {
         let state = self
             .session
@@ -333,23 +539,7 @@ impl DebugSession for DebugAdapter {
             .unwrap_or(self.session.state);
         let mut values = Vec::new();
         if state == SessionState::Halted {
-            let start = Instant::now();
-            for (index, watch) in watches.iter().enumerate() {
-                let result = if index >= 128 || start.elapsed() > Duration::from_secs(2) {
-                    Err(Error("本轮刷新达到上限，请减少展开项后刷新".into()))
-                } else {
-                    self.session.evaluate(watch)
-                };
-                values.push(EvaluatedWatch {
-                    id: watch.id.clone(),
-                    value: result.unwrap_or_else(|error| WatchValue {
-                        expression: watch.expression.clone(),
-                        type_name: String::new(),
-                        display_value: "—".into(),
-                        error: Some(error.to_string()),
-                    }),
-                });
-            }
+            values = self.session.values(watches, 128, Duration::from_secs(2));
         }
         if let Some(client) = &mut self.session.client {
             self.session.log = client.logs.iter().cloned().collect::<Vec<_>>().join("\n");
@@ -371,6 +561,8 @@ impl DebugSession for DebugAdapter {
             self.session.state = SessionState::Faulted;
         }
         DebugSnapshot {
+            watch_sample: false,
+            watch_sample_error: None,
             source: None,
             state,
             message: self.session.message.clone(),
@@ -414,6 +606,159 @@ mod tests {
             firmware,
         };
         (root, adapter, profile)
+    }
+
+    #[test]
+    fn live_samples_change_while_running_and_preserve_stop_events() {
+        let (_root, mut adapter, profile) = fixture();
+        let watches = vec![
+            WatchRequest {
+                id: "live".into(),
+                expression: "live_counter".into(),
+                function: None,
+            },
+            WatchRequest {
+                id: "missing".into(),
+                expression: "missing".into(),
+                function: None,
+            },
+            WatchRequest {
+                id: "scope".into(),
+                expression: "local".into(),
+                function: Some("other_function".into()),
+            },
+        ];
+        assert_eq!(
+            adapter.sample_watches(&watches).state,
+            SessionState::Disconnected
+        );
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+            })
+            .unwrap();
+        let paused = adapter.sample_watches(&watches);
+        assert!(paused.watch_sample);
+        assert_eq!(paused.state, SessionState::Halted);
+        adapter.execute_debug(DebugAction::Continue).unwrap();
+        let first = adapter.sample_watches(&watches);
+        assert_eq!(first.state, SessionState::Running);
+        assert!(first.watch_sample_error.is_none());
+        assert_eq!(first.values[0].id, "live");
+        assert_eq!(first.values[0].value.display_value, "1");
+        assert!(first.values[1].value.error.is_some());
+        assert!(first.values[2].value.error.is_some());
+        assert!(first.frames.is_empty());
+        assert!(adapter.debug_snapshot(&watches).values.is_empty());
+        assert!(adapter.sample_watches(&[]).values.is_empty());
+        let second = adapter.sample_watches(&watches);
+        assert_eq!(second.state, SessionState::Running);
+        assert_eq!(second.values[0].value.display_value, "2");
+        adapter
+            .session
+            .client()
+            .unwrap()
+            .command("-test-break-on-interrupt")
+            .unwrap();
+        let breakpoint = adapter.sample_watches(&watches);
+        assert_eq!(breakpoint.state, SessionState::Halted);
+        assert!(breakpoint.watch_sample_error.is_some());
+        assert!(breakpoint.values.is_empty());
+        assert!(!breakpoint.frames.is_empty());
+        adapter.execute_debug(DebugAction::Disconnect).unwrap();
+        assert_eq!(
+            adapter.sample_watches(&watches).state,
+            SessionState::Disconnected
+        );
+    }
+
+    #[test]
+    fn live_sampling_resume_failure_keeps_target_halted() {
+        let (_root, mut adapter, profile) = fixture();
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+            })
+            .unwrap();
+        adapter.execute_debug(DebugAction::Continue).unwrap();
+        adapter
+            .session
+            .client()
+            .unwrap()
+            .command("-test-fail-continue")
+            .unwrap();
+        let snapshot = adapter.sample_watches(&[WatchRequest {
+            id: "live".into(),
+            expression: "counter".into(),
+            function: None,
+        }]);
+        assert_eq!(snapshot.state, SessionState::Halted);
+        assert!(snapshot
+            .watch_sample_error
+            .unwrap()
+            .contains("Continue failed"));
+        assert!(snapshot.values.is_empty());
+    }
+
+    #[test]
+    fn parameter_writes_read_back_and_resume_only_on_success() {
+        let (_root, mut adapter, profile) = fixture();
+        let watch = WatchRequest {
+            id: "parameter".into(),
+            expression: "counter".into(),
+            function: None,
+        };
+        assert!(adapter
+            .execute_debug(DebugAction::WriteWatch {
+                watch: watch.clone(),
+                value: "1".into()
+            })
+            .is_err());
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+            })
+            .unwrap();
+        let write = |adapter: &mut DebugAdapter, expression: &str, value: &str| {
+            adapter.execute_debug(DebugAction::WriteWatch {
+                watch: WatchRequest {
+                    expression: expression.into(),
+                    ..watch.clone()
+                },
+                value: value.into(),
+            })
+        };
+        write(&mut adapter, "counter", "17").unwrap();
+        let snapshot = adapter.debug_snapshot(std::slice::from_ref(&watch));
+        assert_eq!(snapshot.state, SessionState::Halted);
+        assert_eq!(snapshot.values[0].value.display_value, "17");
+        assert!(write(&mut adapter, "readonly", "5").is_err());
+        assert!(write(&mut adapter, "2 + 3", "5").is_err());
+        assert!(write(&mut adapter, "counter", "").is_err());
+        adapter.execute_debug(DebugAction::Continue).unwrap();
+        write(&mut adapter, "counter", "23").unwrap();
+        let snapshot = adapter.debug_snapshot(&[]);
+        assert_eq!(snapshot.state, SessionState::Running);
+        assert!(snapshot.message.contains("23"));
+        assert!(snapshot.message.contains("已恢复运行"));
+        assert!(write(&mut adapter, "counter", "invalid").is_err());
+        let snapshot = adapter.debug_snapshot(std::slice::from_ref(&watch));
+        assert_eq!(snapshot.state, SessionState::Halted);
+        assert_eq!(snapshot.values[0].value.display_value, "23");
+        adapter.execute_debug(DebugAction::Continue).unwrap();
+        adapter
+            .session
+            .client()
+            .unwrap()
+            .command("-test-break-on-interrupt")
+            .unwrap();
+        assert!(write(&mut adapter, "counter", "99").is_err());
+        let snapshot = adapter.debug_snapshot(std::slice::from_ref(&watch));
+        assert_eq!(snapshot.state, SessionState::Halted);
+        assert_eq!(snapshot.values[0].value.display_value, "23");
     }
 
     #[test]

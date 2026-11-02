@@ -1,6 +1,9 @@
 //! A stable tree independent of Slint; visible rows are rebuilt when a branch toggles.
 use nya_domain::firmware::*;
-use std::{collections::HashMap, fmt::Write};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+};
 
 struct Node {
     label: String,
@@ -9,6 +12,7 @@ struct Node {
     expanded: bool,
     variable: Option<BrowserVariable>,
     function: bool,
+    search_name: String,
 }
 
 #[derive(Clone)]
@@ -36,6 +40,9 @@ pub struct FirmwareBrowser {
     visible: Vec<usize>,
     selected: Option<usize>,
     show_functions: bool,
+    query: String,
+    matches: Vec<bool>,
+    search_collapsed: HashSet<usize>,
 }
 
 impl FirmwareBrowser {
@@ -46,6 +53,9 @@ impl FirmwareBrowser {
             visible: Vec::new(),
             selected: None,
             show_functions: false,
+            query: String::new(),
+            matches: Vec::new(),
+            search_collapsed: HashSet::new(),
         };
         let mut directories = HashMap::new();
         let mut files = Vec::new();
@@ -77,6 +87,7 @@ impl FirmwareBrowser {
                     file.path
                 ),
             );
+            tree.nodes[id].search_name = file.path.to_lowercase();
             files.push(id);
         }
         // Keep entries lacking source locations visible without inventing a source file.
@@ -122,6 +133,12 @@ impl FirmwareBrowser {
             }
             let id = tree.add(Some(parent), format!("ƒ {}", function.name), details);
             tree.nodes[id].function = true;
+            tree.nodes[id].search_name = format!(
+                "{} {}",
+                function.name,
+                function.linkage_name.as_deref().unwrap_or_default()
+            )
+            .to_lowercase();
             functions.push(id);
         }
         for (variable_id, variable) in info.variables.iter().enumerate() {
@@ -286,6 +303,7 @@ impl FirmwareBrowser {
             expanded: false,
             variable: None,
             function: false,
+            search_name: String::new(),
         });
         match parent {
             Some(parent) => self.nodes[parent].children.push(id),
@@ -300,7 +318,9 @@ impl FirmwareBrowser {
         let mut stack: Vec<_> = self.roots.iter().rev().map(|id| (*id, 0)).collect();
         while let Some((id, depth)) = stack.pop() {
             let node = &self.nodes[id];
-            if node.function && !self.show_functions {
+            if (!self.query.is_empty() && !self.matches[id])
+                || (self.query.is_empty() && node.function && !self.show_functions)
+            {
                 continue;
             }
             self.visible.push(id);
@@ -317,9 +337,9 @@ impl FirmwareBrowser {
                     .unwrap_or_default(),
                 depth,
                 branch: self.has_visible_children(id),
-                expanded: node.expanded,
+                expanded: self.expanded(id),
             });
-            if node.expanded {
+            if self.expanded(id) {
                 stack.extend(node.children.iter().rev().map(|id| (*id, depth + 1)));
             }
         }
@@ -330,11 +350,14 @@ impl FirmwareBrowser {
         let id = *self.visible.get(row)?;
         self.selected = Some(id);
         let branch = self.has_visible_children(id);
-        let node = &mut self.nodes[id];
         if branch {
-            node.expanded = !node.expanded;
+            if self.query.is_empty() {
+                self.nodes[id].expanded = !self.nodes[id].expanded;
+            } else if !self.search_collapsed.remove(&id) {
+                self.search_collapsed.insert(id);
+            }
         }
-        Some(node.details.clone())
+        Some(self.nodes[id].details.clone())
     }
 
     pub fn is_branch(&self, row: usize) -> bool {
@@ -344,10 +367,46 @@ impl FirmwareBrowser {
     }
 
     fn has_visible_children(&self, id: usize) -> bool {
-        self.nodes[id]
-            .children
-            .iter()
-            .any(|child| self.show_functions || !self.nodes[*child].function)
+        self.nodes[id].children.iter().any(|child| {
+            if self.query.is_empty() {
+                self.show_functions || !self.nodes[*child].function
+            } else {
+                self.matches[*child]
+            }
+        })
+    }
+
+    fn expanded(&self, id: usize) -> bool {
+        if self.query.is_empty() {
+            self.nodes[id].expanded
+        } else {
+            !self.search_collapsed.contains(&id)
+        }
+    }
+
+    pub fn set_query(&mut self, query: &str) {
+        self.query = query.trim().replace('\\', "/").to_lowercase();
+        self.selected = None;
+        self.search_collapsed.clear();
+        self.matches = vec![false; self.nodes.len()];
+        if self.query.is_empty() {
+            return;
+        }
+        // Include a matching file/function's contents, then retain its ancestors.
+        let mut stack: Vec<_> = self.roots.iter().map(|id| (*id, false)).collect();
+        while let Some((id, inherited)) = stack.pop() {
+            let node = &self.nodes[id];
+            let matched = inherited
+                || (!node.search_name.is_empty() && node.search_name.contains(&self.query));
+            self.matches[id] = matched;
+            stack.extend(node.children.iter().map(|child| (*child, matched)));
+        }
+        for id in (0..self.nodes.len()).rev() {
+            self.matches[id] |= self.nodes[id]
+                .children
+                .iter()
+                .any(|child| self.matches[*child]);
+        }
     }
 
     pub fn set_show_functions(&mut self, show: bool) {
@@ -433,6 +492,40 @@ mod tests {
         browser.select(compute).unwrap();
         assert!(browser.selected_variable().is_none());
         assert!(!browser.rows().iter().any(|r| r.label == "nested"));
+    }
+
+    #[test]
+    fn search_reveals_hidden_functions_and_restores_expansion() {
+        let image = NativeFirmwareBackend
+            .parse(
+                Path::new("firmware.axf"),
+                include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf4.axf"),
+            )
+            .unwrap();
+        let mut browser = FirmwareBrowser::new(&image.debug);
+        let original: Vec<_> = browser.rows().into_iter().map(|row| row.label).collect();
+        browser.set_query("COMPUTE");
+        let rows = browser.rows();
+        assert!(rows.iter().any(|row| row.label == "ƒ compute"));
+        assert!(rows.iter().any(|row| row.label == "main.c"));
+        assert!(!rows.iter().any(|row| row.label == "ƒ main"));
+        let variable = rows.iter().position(|row| row.label == "nested").unwrap();
+        browser.select(variable).unwrap();
+        assert_eq!(browser.selected_variable().unwrap().name, "nested");
+        browser.set_query("not_a_real_file_or_function");
+        assert!(browser.rows().is_empty());
+        assert!(browser.select(0).is_none());
+        browser.set_query("  source\\main.c  ");
+        assert!(browser.rows().iter().any(|row| row.label == "main.c"));
+        browser.set_query("");
+        assert_eq!(
+            browser
+                .rows()
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>(),
+            original
+        );
     }
 
     #[test]

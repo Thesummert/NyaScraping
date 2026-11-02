@@ -9,7 +9,7 @@ use nya_firmware_backend::NativeFirmwareBackend;
 use nya_text_backend::NativeTextBackend;
 use slint::ComponentHandle;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, SyncSender},
     Arc, Mutex,
 };
@@ -109,7 +109,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_presenter = presenter.clone();
     let watch_updates: WatchUpdates = Arc::new(Mutex::new(None));
     let worker_updates = watch_updates.clone();
+    // Zero disables sampling. Settings are coalesced without occupying the command queue.
+    let live_interval = Arc::new(AtomicU64::new(0));
+    let worker_interval = live_interval.clone();
     let worker = std::thread::spawn(move || {
+        let mut last_sample = std::time::Instant::now();
         while !worker_shutdown.load(Ordering::Relaxed) {
             let pending = worker_updates.lock().expect("watch updates lock").take();
             let event = if let Some(watches) = pending {
@@ -117,13 +121,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 match receiver.recv_timeout(std::time::Duration::from_millis(60)) {
                     Ok(command) => Some(application.execute(command)),
-                    Err(mpsc::RecvTimeoutError::Timeout) => application.poll(),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let event = application.poll();
+                        let interval = worker_interval.load(Ordering::Relaxed);
+                        if interval != 0
+                            && last_sample.elapsed() >= std::time::Duration::from_millis(interval)
+                        {
+                            let mut sample = application.sample_watches();
+                            if let (
+                                Some(nya_application::Event::DebugUpdated {
+                                    snapshot: sampled,
+                                    ..
+                                }),
+                                Some(nya_application::Event::DebugUpdated {
+                                    snapshot: polled, ..
+                                }),
+                            ) = (&mut sample, &event)
+                            {
+                                if sampled.state == polled.state && sampled.source.is_none() {
+                                    sampled.source = polled.source.clone();
+                                }
+                            }
+                            // Schedule from completion, avoiding catch-up bursts on slow probes.
+                            last_sample = std::time::Instant::now();
+                            sample.or(event)
+                        } else {
+                            event
+                        }
+                    }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             };
             let Some(event) = event else {
                 continue;
             };
+            if matches!(&event, nya_application::Event::DebugUpdated { snapshot, .. } if snapshot.watch_sample_error.is_some())
+            {
+                worker_interval.store(0, Ordering::Relaxed);
+            }
             let event = presenter::PreparedEvent::from(event);
             let sync = matches!(&event, presenter::PreparedEvent::Firmware(_));
             let updates = worker_updates.clone();
@@ -307,6 +342,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let weak = ui.as_weak();
+    let search_presenter = presenter.clone();
+    ui.on_search_firmware(move |query| {
+        if let Some(ui) = weak.upgrade() {
+            search_presenter
+                .lock()
+                .expect("presenter lock")
+                .search_firmware(&ui, &query);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let write_presenter = presenter.clone();
+    let write_sender = sender.clone();
+    ui.on_write_watch(move |entry, node, value| {
+        if let Some(ui) = weak.upgrade() {
+            let request = write_presenter
+                .lock()
+                .expect("presenter lock")
+                .write_request(entry, node);
+            if let Some(watch) = request {
+                submit(
+                    &ui,
+                    &write_sender,
+                    Command::Debug(DebugAction::WriteWatch {
+                        watch,
+                        value: value.to_string(),
+                    }),
+                );
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
     let watch_presenter = presenter.clone();
     let callback_updates = watch_updates.clone();
     ui.on_add_expression(move |expression| {
@@ -341,11 +409,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let weak = ui.as_weak();
     let callback_updates = watch_updates.clone();
+    let remove_presenter = presenter.clone();
     ui.on_remove_watch(move |index| {
         if let Some(ui) = weak.upgrade() {
-            let mut presenter = presenter.lock().expect("presenter lock");
+            let mut presenter = remove_presenter.lock().expect("presenter lock");
             presenter.remove_watch(&ui, index);
             sync_watches(&callback_updates, &presenter);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let live_presenter = presenter.clone();
+    ui.on_live_refresh(move || {
+        if let Some(ui) = weak.upgrade() {
+            let interval = if ui.get_live_enabled() {
+                [200, 500, 1000, 2000]
+                    .get(ui.get_live_interval_index() as usize)
+                    .copied()
+                    .unwrap_or(500)
+            } else {
+                0
+            };
+            live_interval.store(interval, Ordering::Relaxed);
+            live_presenter
+                .lock()
+                .expect("presenter lock")
+                .live_refresh_changed(&ui);
+            ui.set_watch_sample_status(if interval == 0 {
+                "实时刷新已关闭".into()
+            } else {
+                "等待采样；运行中会短暂暂停目标".into()
+            });
         }
     });
 

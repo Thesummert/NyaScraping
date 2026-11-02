@@ -7,7 +7,7 @@ use nya_domain::{
     firmware::FirmwareImage, DebugSnapshot, Document, EvaluatedWatch, SessionState, ToolKind,
     ToolState, WatchRequest,
 };
-use slint::{ModelRc, VecModel};
+use slint::{Model, ModelRc, VecModel};
 use std::{collections::HashMap, rc::Rc};
 
 #[derive(Default)]
@@ -15,6 +15,7 @@ pub struct Presenter {
     browser: Option<FirmwareBrowser>,
     watches: WatchList,
     watch_revision: u64,
+    sample_count: u64,
     values: HashMap<String, EvaluatedWatch>,
 }
 
@@ -112,6 +113,44 @@ impl Presenter {
                 ui.set_status(message.into());
             }
             PreparedEvent::Debug(snapshot, _) => {
+                let keep_sample = ui.get_live_enabled()
+                    && ui.get_debug_running()
+                    && snapshot.state == SessionState::Running
+                    && !snapshot.watch_sample
+                    && snapshot.values.is_empty();
+                if let Some(error) = &snapshot.watch_sample_error {
+                    ui.set_live_enabled(false);
+                    ui.set_watch_sample_status(format!("自动刷新已停止：{error}").into());
+                } else if snapshot.watch_sample && ui.get_live_enabled() {
+                    self.sample_count += 1;
+                    ui.set_watch_sample_status(
+                        format!(
+                            "已采样 #{} · {} 项{}",
+                            self.sample_count,
+                            snapshot.values.len(),
+                            if snapshot.state == SessionState::Running {
+                                " · 运行中（最近采样值）"
+                            } else {
+                                " · 已暂停"
+                            }
+                        )
+                        .into(),
+                    );
+                } else if ui.get_live_enabled()
+                    && snapshot.state == SessionState::Running
+                    && !ui.get_debug_running()
+                {
+                    ui.set_watch_sample_status("等待下一轮采样".into());
+                } else if !matches!(snapshot.state, SessionState::Running | SessionState::Halted) {
+                    ui.set_watch_sample_status(
+                        if ui.get_live_enabled() {
+                            "等待连接目标"
+                        } else {
+                            "实时刷新已关闭"
+                        }
+                        .into(),
+                    );
+                }
                 ui.set_debug_halted(snapshot.state == SessionState::Halted);
                 ui.set_debug_running(snapshot.state == SessionState::Running);
                 ui.set_debug_connected(matches!(
@@ -133,11 +172,17 @@ impl Presenter {
                     }
                     .into(),
                 );
-                self.values = snapshot
-                    .values
-                    .into_iter()
-                    .map(|v| (v.id.clone(), v))
-                    .collect();
+                if !keep_sample {
+                    self.values = if snapshot.watch_sample && !ui.get_live_enabled() {
+                        HashMap::new()
+                    } else {
+                        snapshot
+                            .values
+                            .into_iter()
+                            .map(|v| (v.id.clone(), v))
+                            .collect()
+                    };
+                }
                 self.refresh_watches(ui);
                 let frames: Vec<_> = snapshot
                     .frames
@@ -213,6 +258,7 @@ impl Presenter {
                 ui.set_firmware_details(view.details.into());
                 let mut browser = view.browser;
                 browser.set_show_functions(ui.get_functions_visible());
+                browser.set_query(&ui.get_firmware_search());
                 self.browser = Some(browser);
                 self.watches.reset_firmware();
                 self.invalidate_watches(ui);
@@ -243,6 +289,33 @@ impl Presenter {
             }
             self.add_selected_variable(ui);
         }
+    }
+
+    pub fn search_firmware(&mut self, ui: &AppWindow, query: &str) {
+        if let Some(browser) = &mut self.browser {
+            browser.set_query(query);
+            self.refresh_tree(ui);
+            ui.set_firmware_selected_node(-1);
+        }
+    }
+
+    pub fn live_refresh_changed(&mut self, ui: &AppWindow) {
+        if !ui.get_live_enabled() && ui.get_debug_running() {
+            self.values.clear();
+            self.refresh_watches(ui);
+        }
+    }
+
+    pub fn write_request(&self, entry: i32, node: i32) -> Option<WatchRequest> {
+        self.watches
+            .rows()
+            .into_iter()
+            .find(|row| row.entry as i32 == entry && row.node as i32 == node)
+            .map(|row| WatchRequest {
+                id: format!("{}:{}:{}", self.watch_revision, row.entry, row.node),
+                expression: row.expression,
+                function: row.function,
+            })
     }
 
     pub fn show_functions(&mut self, ui: &AppWindow, show: bool) {
@@ -301,7 +374,11 @@ impl Presenter {
     }
 
     fn invalidate_watches(&mut self, ui: &AppWindow) {
+        if ui.get_live_enabled() {
+            ui.set_watch_sample_status("监视项已变化，等待下一轮采样".into());
+        }
         self.watch_revision += 1;
+        ui.set_watch_revision(self.watch_revision as i32);
         self.values.clear();
         self.refresh_watches(ui);
     }
@@ -350,6 +427,28 @@ impl Presenter {
                 }
             })
             .collect();
+        let current = ui.get_watches();
+        if let Some(model) = current.as_any().downcast_ref::<VecModel<WatchRow>>() {
+            // Preserve the list's scroll position and row components during value refreshes.
+            if model.row_count() == rows.len()
+                && rows.iter().enumerate().all(|(i, row)| {
+                    model.row_data(i).is_some_and(|old| {
+                        old.entry_index == row.entry_index
+                            && old.node_index == row.node_index
+                            && old.expression == row.expression
+                            && old.depth == row.depth
+                            && old.expanded == row.expanded
+                    })
+                })
+            {
+                for (index, row) in rows.into_iter().enumerate() {
+                    if model.row_data(index).as_ref() != Some(&row) {
+                        model.set_row_data(index, row);
+                    }
+                }
+                return;
+            }
+        }
         ui.set_watches(ModelRc::from(Rc::new(VecModel::from(rows))));
     }
 

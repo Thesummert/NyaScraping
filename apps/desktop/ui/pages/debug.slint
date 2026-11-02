@@ -1,0 +1,97 @@
+import { Button, CheckBox, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export struct FrameRow { level: int, label: string, selected: bool }
+export struct BreakpointRow { id: string, label: string }
+export component DebugPage inherits ScrollView {
+    in property <bool> busy;
+    in property <bool> connected;
+    in property <bool> halted;
+    in property <string> state-label;
+    in property <string> backend;
+    in-out property <string> gdb-path;
+    in-out property <string> target;
+    in-out property <string> interface;
+    in-out property <string> port;
+    in-out property <string> firmware;
+    in-out property <bool> external-server;
+    in property <[FrameRow]> frames;
+    in property <[BreakpointRow]> breakpoints;
+    in property <string> log;
+    callback action(int);
+    callback add-breakpoint(string);
+    callback remove-breakpoint(string);
+    callback select-frame(int);
+    VerticalLayout {
+        padding-top: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            Text { text: "调试会话 · " + root.state-label; color: Theme.text; font-size: 18px; font-weight: 700; horizontal-stretch: 1; }
+            Button { text: root.connected ? "断开" : "连接"; enabled: !root.busy; clicked => { root.action(root.connected ? 1 : 0); } }
+        }
+        Text { text: root.external-server ? "连接外部本机服务：127.0.0.1:" + root.port : "后端：" + root.backend; color: Theme.accent; overflow: elide; }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "GDB"; color: Theme.muted; width: 60px; vertical-alignment: center; }
+            LineEdit { text <=> root.gdb-path; placeholder-text: "arm-none-eabi-gdb 路径"; enabled: !root.busy && !root.connected; horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "调试文件"; color: Theme.muted; width: 60px; vertical-alignment: center; }
+            LineEdit { text <=> root.firmware; placeholder-text: "ELF / AXF 路径（含符号）"; enabled: !root.busy && !root.connected; horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "目标"; color: Theme.muted; width: 60px; vertical-alignment: center; }
+            LineEdit { text <=> root.target; placeholder-text: "OpenOCD target/*.cfg 或芯片名称"; enabled: !root.busy && !root.connected && !root.external-server; horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "接口"; color: Theme.muted; width: 60px; vertical-alignment: center; }
+            LineEdit { text <=> root.interface; placeholder-text: "OpenOCD interface/*.cfg（其他后端留空）"; enabled: !root.busy && !root.connected && !root.external-server; horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "GDB 端口"; color: Theme.muted; width: 60px; vertical-alignment: center; }
+            LineEdit { text <=> root.port; enabled: !root.busy && !root.connected; width: 90px; }
+            CheckBox { text: "连接已有本机 GDB 服务"; checked <=> root.external-server; enabled: !root.busy && !root.connected; }
+        }
+        Text { text: "连接只加载调试符号。需要写入目标时，暂停后点击顶部「下载」。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 8px;
+            breakpoint := LineEdit { placeholder-text: "断点：函数名 或 文件:行号"; horizontal-stretch: 1; enabled: root.halted && !root.busy; accepted => { root.add-breakpoint(self.text); } }
+            Button { text: "添加断点"; enabled: root.halted && !root.busy && breakpoint.text != ""; clicked => { root.add-breakpoint(breakpoint.text); } }
+            Button { text: "刷新"; enabled: root.connected && !root.busy; clicked => { root.action(9); } }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                Text { text: "调用栈（点击切换帧）"; color: Theme.text; }
+                ListView {
+                    min-height: 90px;
+                    for frame in root.frames: Rectangle {
+                        height: 28px;
+                        background: frame.selected ? Theme.selection : transparent;
+                        Text { text: frame.label; color: Theme.text; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-alignment: left; }
+                        TouchArea { enabled: root.halted && !root.busy; clicked => { root.select-frame(frame.level); } }
+                    }
+                }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                Text { text: "断点"; color: Theme.text; }
+                ListView {
+                    min-height: 90px;
+                    for bp in root.breakpoints: HorizontalLayout {
+                        height: 28px;
+                        Text { text: bp.label; color: Theme.text; font-size: 11px; overflow: elide; horizontal-stretch: 1; }
+                        Button { text: "×"; enabled: root.halted && !root.busy; clicked => { root.remove-breakpoint(bp.id); } }
+                    }
+                }
+            }
+        }
+        Text { text: "调试日志"; color: Theme.muted; font-size: 12px; }
+        TextEdit { text: root.log; read-only: true; font-family: "monospace"; font-size: 11px; min-height: 70px; vertical-stretch: 1; }
+    }
+}

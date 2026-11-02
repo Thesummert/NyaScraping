@@ -151,6 +151,7 @@ impl NativeFirmwareBackend {
                     name: symbol.name.clone(),
                     type_name: None,
                     byte_size: Some(symbol.size),
+                    members: Vec::new(),
                     declaration: None,
                     function: None,
                     kind: VariableKind::Global,

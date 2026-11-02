@@ -196,6 +196,7 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
                 .unwrap_or_else(|| "<匿名变量>".into()),
             type_name: ty.as_ref().map(|t| t.0.clone()),
             byte_size: ty.and_then(|t| t.1),
+            members: ctx.variable_members(node.key, &mut Vec::new(), &mut 4096)?,
             declaration: ctx.source_location(node.key)?,
             function: owner,
             kind: if node.tag == gimli::DW_TAG_formal_parameter {
@@ -353,6 +354,72 @@ impl Context {
         self.reference(owner, value)
             .map(|key| self.type_name(key, &mut Vec::new()))
             .transpose()
+    }
+
+    fn variable_members(
+        &self,
+        key: Key,
+        visited: &mut Vec<Key>,
+        budget: &mut usize,
+    ) -> Result<Vec<DebugMember>> {
+        match self.attr(key, gimli::DW_AT_type)? {
+            Some((owner, value)) => match self.reference(owner, value) {
+                Some(target) => self.type_members(target, visited, budget),
+                None => Ok(Vec::new()),
+            },
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn type_members(
+        &self,
+        key: Key,
+        visited: &mut Vec<Key>,
+        budget: &mut usize,
+    ) -> Result<Vec<DebugMember>> {
+        if visited.len() >= 32 || visited.contains(&key) || *budget == 0 {
+            return Ok(Vec::new());
+        }
+        visited.push(key);
+        let tag = self.units[key.0].entry(key.1).map_err(error)?.tag();
+        let mut members = Vec::new();
+        match tag {
+            gimli::DW_TAG_typedef
+            | gimli::DW_TAG_const_type
+            | gimli::DW_TAG_volatile_type
+            | gimli::DW_TAG_restrict_type => {
+                members = self.variable_members(key, visited, budget)?;
+            }
+            gimli::DW_TAG_structure_type | gimli::DW_TAG_class_type | gimli::DW_TAG_union_type => {
+                let mut tree = self.units[key.0].entries_tree(Some(key.1)).map_err(error)?;
+                let root = tree.root().map_err(error)?;
+                let mut children = root.children();
+                while let Some(child) = children.next().map_err(error)? {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if child.entry().tag() != gimli::DW_TAG_member {
+                        continue;
+                    }
+                    *budget -= 1;
+                    let member = (key.0, child.entry().offset());
+                    members.push(DebugMember {
+                        name: self
+                            .string(member, gimli::DW_AT_name)?
+                            .unwrap_or_else(|| "<匿名成员>".into()),
+                        type_name: self
+                            .referenced_type(member)?
+                            .map(|t| t.0)
+                            .unwrap_or_else(|| "类型未记录".into()),
+                        members: self.variable_members(member, visited, budget)?,
+                    });
+                }
+            }
+            // Pointers stay leaves: inspecting their target requires a live session.
+            _ => {}
+        }
+        visited.pop();
+        Ok(members)
     }
 
     fn type_name(&self, key: Key, visited: &mut Vec<Key>) -> Result<(String, Option<u64>)> {

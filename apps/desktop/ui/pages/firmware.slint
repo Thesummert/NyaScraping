@@ -1,8 +1,9 @@
-import { Button, LineEdit, TextEdit, ListView } from "std-widgets.slint";
+import { Button, CheckBox, LineEdit, TextEdit, ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct FirmwareTreeRow {
     label: string,
+    type-name: string,
     depth: int,
     branch: bool,
     expanded: bool,
@@ -15,10 +16,10 @@ export component FirmwarePage inherits VerticalLayout {
     in property <[FirmwareTreeRow]> tree;
     in property <string> details;
     in property <int> selected-node;
-    in property <bool> can-add-variable;
+    in-out property <bool> functions-visible;
     callback open();
     callback select-node(int);
-    callback add-variable();
+    callback show-functions(bool);
     spacing: 10px;
     HorizontalLayout {
         Text { text: "文件树"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
@@ -31,6 +32,11 @@ export component FirmwarePage inherits VerticalLayout {
         accepted => { root.open(); }
     }
     Text { text: root.title; color: Theme.muted; font-size: 12px; overflow: elide; }
+    CheckBox {
+        text: "显示函数";
+        checked <=> root.functions-visible;
+        toggled => { root.show-functions(self.checked); }
+    }
     Rectangle {
         min-height: 140px;
         vertical-stretch: 3;
@@ -43,13 +49,23 @@ export component FirmwarePage inherits VerticalLayout {
                 background: index == root.selected-node ? Theme.selection : (area.has-hover ? Theme.panel : transparent);
                 Text {
                     x: 8px + row.depth * 14px;
-                    width: max(0px, parent.width - self.x - 8px);
+                    width: max(0px, parent.width - self.x - (row.type-name != "" ? 100px : 8px));
                     height: parent.height;
                     vertical-alignment: center;
                     text: (row.branch ? (row.expanded ? "▾ " : "▸ ") : "  ") + row.label;
                     color: index == root.selected-node ? Theme.text : Theme.muted;
                     font-size: 12px;
                     overflow: elide;
+                }
+                if row.type-name != "": Text {
+                    x: max(0px, parent.width - 94px);
+                    width: 86px;
+                    height: parent.height;
+                    text: row.type-name;
+                    color: Theme.accent;
+                    font-size: 12px;
+                    overflow: elide;
+                    vertical-alignment: center;
                 }
                 area := TouchArea { clicked => { root.select-node(index); } }
             }
@@ -63,14 +79,7 @@ export component FirmwarePage inherits VerticalLayout {
         }
     }
     Rectangle { height: 1px; background: Theme.border; }
-    HorizontalLayout {
-        Text { text: "变量解析"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
-        Button {
-            text: "+ 监视";
-            enabled: root.can-add-variable && !root.busy;
-            clicked => { root.add-variable(); }
-        }
-    }
+    Text { text: "变量解析"; color: Theme.text; font-size: 15px; font-weight: 700; }
     TextEdit {
         text: root.details;
         read-only: true;

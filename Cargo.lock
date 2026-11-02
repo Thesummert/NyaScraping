@@ -2755,6 +2755,7 @@ version = "0.1.0"
 dependencies = [
  "nya-domain",
  "nya-scraping-core",
+ "tempfile",
 ]
 
 [[package]]

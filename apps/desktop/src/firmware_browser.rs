@@ -8,6 +8,7 @@ struct Node {
     children: Vec<usize>,
     expanded: bool,
     variable: Option<BrowserVariable>,
+    function: bool,
 }
 
 #[derive(Clone)]
@@ -16,10 +17,14 @@ pub struct BrowserVariable {
     pub name: String,
     pub type_name: String,
     pub scope: String,
+    pub members: Vec<DebugMember>,
+    pub evaluation_expression: String,
+    pub function: Option<String>,
 }
 
 pub struct BrowserRow {
     pub label: String,
+    pub type_name: String,
     pub depth: usize,
     pub branch: bool,
     pub expanded: bool,
@@ -30,6 +35,7 @@ pub struct FirmwareBrowser {
     roots: Vec<usize>,
     visible: Vec<usize>,
     selected: Option<usize>,
+    show_functions: bool,
 }
 
 impl FirmwareBrowser {
@@ -39,6 +45,7 @@ impl FirmwareBrowser {
             roots: Vec::new(),
             visible: Vec::new(),
             selected: None,
+            show_functions: false,
         };
         let mut directories = HashMap::new();
         let mut files = Vec::new();
@@ -114,6 +121,7 @@ impl FirmwareBrowser {
                 details.push_str("未记录 / 已优化\n");
             }
             let id = tree.add(Some(parent), format!("ƒ {}", function.name), details);
+            tree.nodes[id].function = true;
             functions.push(id);
         }
         for (variable_id, variable) in info.variables.iter().enumerate() {
@@ -199,6 +207,27 @@ impl FirmwareBrowser {
                     .type_name
                     .clone()
                     .unwrap_or_else(|| "类型未记录".into()),
+                members: variable.members.clone(),
+                function: variable
+                    .function
+                    .and_then(|id| info.functions.get(id))
+                    .map(|f| f.name.clone()),
+                evaluation_expression: if variable.kind == VariableKind::Global {
+                    variable
+                        .declaration
+                        .as_ref()
+                        .and_then(|loc| info.files.get(loc.file))
+                        .map(|file| {
+                            format!(
+                                "'{}'::{}",
+                                file.path.replace('\\', "\\\\").replace('\'', "\\'"),
+                                variable.name
+                            )
+                        })
+                        .unwrap_or_else(|| variable.name.clone())
+                } else {
+                    variable.name.clone()
+                },
                 scope: format!(
                     "{} · {}",
                     variable
@@ -256,6 +285,7 @@ impl FirmwareBrowser {
             children: Vec::new(),
             expanded: false,
             variable: None,
+            function: false,
         });
         match parent {
             Some(parent) => self.nodes[parent].children.push(id),
@@ -270,11 +300,23 @@ impl FirmwareBrowser {
         let mut stack: Vec<_> = self.roots.iter().rev().map(|id| (*id, 0)).collect();
         while let Some((id, depth)) = stack.pop() {
             let node = &self.nodes[id];
+            if node.function && !self.show_functions {
+                continue;
+            }
             self.visible.push(id);
             rows.push(BrowserRow {
-                label: node.label.clone(),
+                label: node
+                    .variable
+                    .as_ref()
+                    .map(|v| v.name.clone())
+                    .unwrap_or_else(|| node.label.clone()),
+                type_name: node
+                    .variable
+                    .as_ref()
+                    .map(|v| v.type_name.clone())
+                    .unwrap_or_default(),
                 depth,
-                branch: !node.children.is_empty(),
+                branch: self.has_visible_children(id),
                 expanded: node.expanded,
             });
             if node.expanded {
@@ -287,8 +329,9 @@ impl FirmwareBrowser {
     pub fn select(&mut self, row: usize) -> Option<String> {
         let id = *self.visible.get(row)?;
         self.selected = Some(id);
+        let branch = self.has_visible_children(id);
         let node = &mut self.nodes[id];
-        if !node.children.is_empty() {
+        if branch {
             node.expanded = !node.expanded;
         }
         Some(node.details.clone())
@@ -297,7 +340,19 @@ impl FirmwareBrowser {
     pub fn is_branch(&self, row: usize) -> bool {
         self.visible
             .get(row)
-            .is_some_and(|id| !self.nodes[*id].children.is_empty())
+            .is_some_and(|id| self.has_visible_children(*id))
+    }
+
+    fn has_visible_children(&self, id: usize) -> bool {
+        self.nodes[id]
+            .children
+            .iter()
+            .any(|child| self.show_functions || !self.nodes[*child].function)
+    }
+
+    pub fn set_show_functions(&mut self, show: bool) {
+        self.show_functions = show;
+        self.selected = None;
     }
 
     pub fn selected_variable(&self) -> Option<BrowserVariable> {
@@ -347,6 +402,12 @@ mod tests {
             .unwrap()
             .contains("/firmware/source/main.c"));
         let rows = browser.rows();
+        assert!(!rows.iter().any(|r| r.label == "ƒ compute"));
+        assert!(rows
+            .iter()
+            .any(|r| r.label == "sensor" && r.type_name == "Sensor"));
+        browser.set_show_functions(true);
+        let rows = browser.rows();
         let compute = rows.iter().position(|r| r.label == "ƒ compute").unwrap();
         let details = browser.select(compute).unwrap();
         assert!(details.contains("main.c:8:"));
@@ -354,7 +415,7 @@ mod tests {
         let rows = browser.rows();
         let local = rows
             .iter()
-            .position(|r| r.label == "v nested : int")
+            .position(|r| r.label == "nested" && r.type_name == "int")
             .unwrap();
         assert_eq!(rows[local].depth, rows[compute].depth + 1);
         assert!(!rows[local].branch);
@@ -371,10 +432,7 @@ mod tests {
         assert!(browser.select(usize::MAX).is_none());
         browser.select(compute).unwrap();
         assert!(browser.selected_variable().is_none());
-        assert!(!browser
-            .rows()
-            .iter()
-            .any(|r| r.label.starts_with("v nested")));
+        assert!(!browser.rows().iter().any(|r| r.label == "nested"));
     }
 
     #[test]

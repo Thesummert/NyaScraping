@@ -1,4 +1,6 @@
-//! All NyaScrapingCore-specific types stay inside this adapter.
+mod mi;
+mod session;
+// All NyaScrapingCore-specific types stay inside this adapter.
 use nya_domain::{
     DebugBackend, Error, Result, TargetProfile, ToolInstallation, ToolKind, ToolRegistry,
 };
@@ -7,7 +9,7 @@ use nya_scraping_core::{
     gdbserver::{GdbServer, RunningGdbServer},
     manager::{Manager, Tool},
 };
-use std::time::Duration;
+use std::{fs, time::Duration};
 
 fn error(error: impl std::fmt::Display) -> Error {
     Error(error.to_string())
@@ -32,6 +34,7 @@ fn options(profile: &TargetProfile) -> GdbServerOptions {
 pub struct DebugAdapter {
     manager: Manager,
     server: Option<RunningGdbServer>,
+    session: session::Session,
 }
 
 impl DebugAdapter {
@@ -39,11 +42,12 @@ impl DebugAdapter {
         Ok(Self {
             manager: Manager::new().map_err(error)?,
             server: None,
+            session: session::Session::default(),
         })
     }
 
     fn operation(&mut self, profile: &TargetProfile, operation: Operation) -> Result<()> {
-        if self.server.is_some() {
+        if self.server.is_some() || self.session.client.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before a maintenance operation".into(),
             ));
@@ -91,6 +95,25 @@ impl ToolRegistry for DebugAdapter {
         Ok(installations)
     }
 
+    fn active_backend(&self) -> Result<Option<ToolKind>> {
+        let path = self.manager.config_path.with_file_name("desktop-backend");
+        let value = match fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(error(e)),
+        };
+        match value.trim() {
+            "openocd" => Ok(Some(ToolKind::OpenOcd)),
+            "pyocd" => Ok(Some(ToolKind::PyOcd)),
+            "probe-rs" => Ok(Some(ToolKind::ProbeRs)),
+            other => Err(Error(format!("无效的调试后端配置：{other}"))),
+        }
+    }
+
+    fn install_latest(&mut self, tool: ToolKind) -> Result<()> {
+        self.manager.install_latest(core_tool(tool)).map_err(error)
+    }
+
     fn install(&mut self, tool: ToolKind, version: &str) -> Result<()> {
         self.manager
             .install(core_tool(tool), version)
@@ -98,11 +121,23 @@ impl ToolRegistry for DebugAdapter {
     }
 
     fn select(&mut self, tool: ToolKind, version: &str) -> Result<()> {
-        self.manager.select(core_tool(tool), version).map_err(error)
+        if self.server.is_some() || self.session.client.is_some() {
+            return Err(Error(
+                "Disconnect the GDB server before switching a backend".into(),
+            ));
+        }
+        self.manager
+            .select(core_tool(tool), version)
+            .map_err(error)?;
+        fs::write(
+            self.manager.config_path.with_file_name("desktop-backend"),
+            core_tool(tool).to_string(),
+        )
+        .map_err(error)
     }
 
     fn uninstall(&mut self, tool: ToolKind, version: &str) -> Result<()> {
-        if self.server.is_some() {
+        if self.server.is_some() || self.session.client.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before uninstalling a tool".into(),
             ));
@@ -127,10 +162,9 @@ impl DebugBackend for DebugAdapter {
     }
 
     fn stop_server(&mut self) -> Result<()> {
-        if let Some(server) = self.server.as_mut() {
+        if let Some(mut server) = self.server.take() {
             server.stop().map_err(error)?;
         }
-        self.server = None;
         Ok(())
     }
 
@@ -140,5 +174,91 @@ impl DebugBackend for DebugAdapter {
 
     fn reset(&mut self, profile: &TargetProfile) -> Result<()> {
         self.operation(profile, Operation::Reset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            Self(std::env::temp_dir().join(format!("nya-adapter-{}-{stamp}", std::process::id())))
+        }
+        fn adapter(&self) -> DebugAdapter {
+            DebugAdapter {
+                manager: Manager {
+                    config_path: self.0.join("config/config"),
+                    data_dir: self.0.join("data"),
+                },
+                server: None,
+                session: session::Session::default(),
+            }
+        }
+        fn add_pyocd(&self, version: &str) -> PathBuf {
+            let executable = self
+                .0
+                .join("data/pyocd")
+                .join(version)
+                .join(if cfg!(windows) {
+                    "Scripts/pyocd.exe"
+                } else {
+                    "bin/pyocd"
+                });
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            fs::write(&executable, "fixture").unwrap();
+            executable
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn backend_and_version_survive_reopening_and_invalid_selection() {
+        let fixture = Fixture::new();
+        let executable = fixture.add_pyocd("1.0");
+        fixture.add_pyocd("2.0");
+        let mut adapter = fixture.adapter();
+        assert_eq!(adapter.active_backend().unwrap(), None);
+        adapter.select(ToolKind::PyOcd, "1.0").unwrap();
+        let mut reopened = fixture.adapter();
+        assert_eq!(reopened.active_backend().unwrap(), Some(ToolKind::PyOcd));
+        assert_eq!(reopened.manager.resolve(Tool::PyOcd).unwrap(), executable);
+        assert!(reopened.select(ToolKind::PyOcd, "9.0").is_err());
+        assert!(reopened.select(ToolKind::OpenOcd, "../config").is_err());
+        assert_eq!(reopened.manager.resolve(Tool::PyOcd).unwrap(), executable);
+        assert_eq!(reopened.active_backend().unwrap(), Some(ToolKind::PyOcd));
+        reopened.select(ToolKind::PyOcd, "2.0").unwrap();
+        let discovered = reopened.discover().unwrap();
+        assert!(discovered.iter().any(|t| t.version == "2.0" && t.selected));
+        assert!(!discovered.iter().any(|t| t.version == "1.0" && t.selected));
+    }
+
+    #[test]
+    fn uninstall_clears_version_and_never_removes_system_tools() {
+        let fixture = Fixture::new();
+        let executable = fixture.add_pyocd("1.0");
+        let mut adapter = fixture.adapter();
+        adapter.select(ToolKind::PyOcd, "1.0").unwrap();
+        assert!(adapter.uninstall(ToolKind::PyOcd, "system").is_err());
+        assert!(executable.exists());
+        adapter.uninstall(ToolKind::PyOcd, "1.0").unwrap();
+        assert!(!executable.exists());
+        assert_eq!(adapter.manager.selected(Tool::PyOcd).unwrap(), None);
+        assert_eq!(adapter.active_backend().unwrap(), Some(ToolKind::PyOcd));
+        assert!(!adapter
+            .discover()
+            .unwrap()
+            .iter()
+            .any(|t| t.version == "1.0"));
     }
 }

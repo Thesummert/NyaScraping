@@ -1,0 +1,22 @@
+import { Button, LineEdit, TextEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export component SourcePage inherits VerticalLayout {
+    in property <bool> busy;
+    in-out property <string> path;
+    in property <string> source-title;
+    in property <string> metadata;
+    in property <string> source-text;
+    callback open();
+    spacing: 12px;
+    Text { text: "源码工作台"; color: Theme.text; font-size: 22px; font-weight: 700; }
+    Text { text: "通过 Rust 文本后端读取源码与编码信息"; color: Theme.muted; }
+    HorizontalLayout {
+        spacing: 8px;
+        LineEdit { text <=> root.path; placeholder-text: "输入源码文件路径…"; enabled: !root.busy; }
+        Button { text: "打开源码"; enabled: !root.busy; clicked => { root.open(); } }
+    }
+    Text { text: root.source-title; color: Theme.text; overflow: elide; }
+    Text { text: root.metadata; color: Theme.muted; }
+    TextEdit { text: root.source-text; read-only: true; font-family: "monospace"; vertical-stretch: 1; }
+}

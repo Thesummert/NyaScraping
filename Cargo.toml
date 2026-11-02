@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["apps/desktop", "crates/*"]
+default-members = ["apps/desktop"]
+exclude = ["backends/NyaScrapingCore"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+nya-domain = { path = "crates/domain" }
+nya-application = { path = "crates/application" }
+nya-debug-adapter = { path = "crates/debug-adapter" }
+nya-text-backend = { path = "crates/text-backend" }
+nya-scraping-core = { path = "backends/NyaScrapingCore" }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "accessibility", "compat-1-2"] }
+slint-build = "=1.18.1"
+encoding_rs = "0.8"
+chardetng = "1.0"
+tempfile = "3"

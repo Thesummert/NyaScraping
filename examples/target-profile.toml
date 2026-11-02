@@ -1,0 +1,11 @@
+# 设计样例：配置解析和持久化将在会话阶段实现，当前程序不会读取此文件。
+name = "STM32F4 / ST-Link"
+tool = "openocd" # openocd | pyocd | probe-rs（probers 别名归一到 probe-rs）
+target = "target/stm32f4x.cfg"
+interface = "interface/stlink.cfg" # 仅 OpenOCD 使用，其他工具应省略
+gdb_port = 3333
+gdb_executable = "arm-none-eabi-gdb"
+firmware = "build/firmware.elf" # 相对工程根目录
+
+# pyOCD: tool = "pyocd", target = "STM32F407VGTx"，省略 interface
+# probe-rs: tool = "probe-rs", target 使用 probe-rs 实际列出的芯片名，省略 interface

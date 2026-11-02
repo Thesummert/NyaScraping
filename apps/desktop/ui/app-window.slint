@@ -1,0 +1,96 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Panel } from "components/panel.slint";
+import { SourcePage } from "pages/source.slint";
+import { ToolsPage } from "pages/tools.slint";
+import { VariablesPage } from "pages/variables.slint";
+import { WaveformsPage } from "pages/waveforms.slint";
+
+export component AppWindow inherits Window {
+    title: "NyaScraping · Embedded Debug Studio";
+    preferred-width: 1280px;
+    preferred-height: 820px;
+    min-width: 960px;
+    min-height: 640px;
+    background: Theme.background;
+    default-font-size: 14px;
+
+    in-out property <bool> busy: false;
+    in-out property <string> status: "就绪";
+    in-out property <[string]> tools;
+    in-out property <string> source-path;
+    in-out property <string> source-title: "尚未打开文件";
+    in-out property <string> source-meta: "";
+    in-out property <string> source-text: "打开一个源码文件以开始浏览。";
+    private property <int> page: 0;
+    callback refresh-tools();
+    callback open-source();
+
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: 68px;
+            background: Theme.sidebar;
+            HorizontalLayout {
+                padding: 18px;
+                spacing: 14px;
+                Text { text: "NYA /"; font-weight: 800; font-size: 22px; color: Theme.accent; }
+                Text { text: "Embedded Debug Studio"; color: Theme.text; horizontal-stretch: 1; }
+                Text { text: "●  未连接目标"; color: Theme.muted; }
+                Button { text: "连接"; enabled: false; }
+                Button { text: "下载程序"; enabled: false; }
+            }
+        }
+        HorizontalLayout {
+            spacing: 0px;
+            Rectangle {
+                width: 206px;
+                background: Theme.sidebar;
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 10px;
+                    Text { text: "工作空间"; color: Theme.muted; font-size: 12px; }
+                    Button { text: "源码工作台"; primary: root.page == 0; clicked => { root.page = 0; } }
+                    Button { text: "变量监视"; primary: root.page == 1; clicked => { root.page = 1; } }
+                    Button { text: "实时波形"; primary: root.page == 2; clicked => { root.page = 2; } }
+                    Button { text: "调试工具"; primary: root.page == 3; clicked => { root.page = 3; } }
+                    Rectangle { vertical-stretch: 1; }
+                    Text { text: "NyaScraping  0.1\nMCU DEBUG WORKSPACE"; color: Theme.muted; font-size: 11px; }
+                }
+            }
+            VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                Panel {
+                    vertical-stretch: 1;
+                    if root.page == 0: SourcePage {
+                        busy: root.busy;
+                        path <=> root.source-path;
+                        source-title: root.source-title;
+                        metadata: root.source-meta;
+                        source-text: root.source-text;
+                        open => { root.open-source(); }
+                    }
+                    if root.page == 1: VariablesPage { }
+                    if root.page == 2: WaveformsPage { }
+                    if root.page == 3: ToolsPage {
+                        busy: root.busy;
+                        tools: root.tools;
+                        refresh => { root.refresh-tools(); }
+                    }
+                }
+                Text { text: "会话与烧录控制待接入；变量、波形页面当前展示功能布局。"; color: Theme.muted; }
+            }
+        }
+        Rectangle {
+            height: 34px;
+            background: Theme.sidebar;
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 18px;
+                Text { text: root.status; color: Theme.muted; overflow: elide; horizontal-stretch: 1; }
+                Text { text: root.busy ? "处理中" : "Slint / Rust"; color: Theme.accent; }
+            }
+        }
+    }
+}

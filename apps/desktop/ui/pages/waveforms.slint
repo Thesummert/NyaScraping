@@ -1,0 +1,24 @@
+import { Theme } from "../theme.slint";
+import { Panel } from "../components/panel.slint";
+
+export component WaveformsPage inherits VerticalLayout {
+    spacing: 16px;
+    Text { text: "实时波形"; color: Theme.text; font-size: 22px; font-weight: 700; }
+    Text { text: "通道管理  ·  时基  ·  触发  ·  游标  ·  数据导出"; color: Theme.muted; }
+    Panel {
+        vertical-stretch: 1;
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.background;
+            border-radius: 8px;
+            for index in 7: Rectangle {
+                y: (index + 1) * parent.height / 8;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
+            Text { text: "等待采集数据"; color: Theme.muted; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        Text { text: "采集接口待实现；有限容量的样本缓冲已就绪。"; color: Theme.muted; wrap: word-wrap; }
+    }
+}

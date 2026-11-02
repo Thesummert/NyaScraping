@@ -1,0 +1,29 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Panel } from "../components/panel.slint";
+
+export component ToolsPage inherits VerticalLayout {
+    in property <bool> busy;
+    in property <[string]> tools;
+    callback refresh();
+    spacing: 16px;
+    HorizontalLayout {
+        Text { text: "调试工具"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: "刷新工具"; enabled: !root.busy; clicked => { root.refresh(); } }
+    }
+    Text { text: "OpenOCD  /  pyOCD  /  probe-rs"; color: Theme.accent; }
+    Text { text: "显示 PATH 工具与 NyaScrapingCore 管理的版本。安装、切换与卸载界面将在后续接入。"; color: Theme.muted; wrap: word-wrap; }
+    if root.tools.length == 0: Panel {
+        Text { text: "尚未发现可用工具，可安装工具后刷新。"; color: Theme.muted; wrap: word-wrap; }
+    }
+    ScrollView {
+        vertical-stretch: 1;
+        VerticalLayout {
+            spacing: 10px;
+            for tool in root.tools: Panel {
+                Text { text: tool; color: Theme.text; wrap: word-wrap; }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}

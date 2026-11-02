@@ -1,0 +1,9 @@
+[package]
+name = "nya-debug-adapter"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+nya-domain.workspace = true
+nya-scraping-core.workspace = true

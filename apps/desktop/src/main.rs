@@ -1,0 +1,74 @@
+mod presenter;
+
+use nya_application::{Application, Command};
+use nya_debug_adapter::DebugAdapter;
+use nya_text_backend::NativeTextBackend;
+use slint::ComponentHandle;
+use std::sync::mpsc::{self, SyncSender};
+
+slint::include_modules!();
+
+fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
+    match sender.try_send(command) {
+        Ok(()) => {
+            ui.set_busy(true);
+            ui.set_status("正在处理…".into());
+        }
+        Err(error) => ui.set_status(format!("无法提交任务：{error}").into()),
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let ui = AppWindow::new()?;
+    let mut application = Application::new(DebugAdapter::new()?, NativeTextBackend);
+    // A bounded queue prevents repeated UI actions from accumulating indefinitely.
+    let (sender, receiver) = mpsc::sync_channel(8);
+    let weak = ui.as_weak();
+    let worker = std::thread::spawn(move || {
+        while let Ok(command) = receiver.recv() {
+            let event = application.execute(command);
+            if weak
+                .upgrade_in_event_loop(move |ui| presenter::apply(&ui, event))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    let tool_sender = sender.clone();
+    ui.on_refresh_tools(move || {
+        if let Some(ui) = weak.upgrade() {
+            submit(&ui, &tool_sender, Command::RefreshTools);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let source_sender = sender.clone();
+    ui.on_open_source(move || {
+        if let Some(ui) = weak.upgrade() {
+            let path = ui.get_source_path();
+            if path.trim().is_empty() {
+                ui.set_status("请输入源码文件路径".into());
+                return;
+            }
+            submit(
+                &ui,
+                &source_sender,
+                Command::OpenSource(path.as_str().into()),
+            );
+        }
+    });
+
+    ui.invoke_refresh_tools();
+    let result = ui.run();
+    // Dropping the UI releases callback senders; closing the channel stops the worker.
+    drop(ui);
+    drop(sender);
+    worker
+        .join()
+        .map_err(|_| std::io::Error::other("Application worker panicked"))?;
+    result?;
+    Ok(())
+}

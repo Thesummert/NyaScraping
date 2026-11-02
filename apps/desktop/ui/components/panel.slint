@@ -1,0 +1,13 @@
+import { Theme } from "../theme.slint";
+
+export component Panel inherits Rectangle {
+    background: Theme.panel;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 12px;
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        @children
+    }
+}

@@ -1,0 +1,14 @@
+import { Theme } from "../theme.slint";
+import { Panel } from "../components/panel.slint";
+
+export component VariablesPage inherits VerticalLayout {
+    spacing: 16px;
+    Text { text: "变量监视"; color: Theme.text; font-size: 22px; font-weight: 700; }
+    Panel {
+        Text { text: "表达式                         类型                         当前值"; color: Theme.muted; }
+        Rectangle { height: 1px; background: Theme.border; }
+        Text { text: "等待 GDB/MI 会话接入"; color: Theme.text; font-size: 18px; }
+        Text { text: "规划支持局部变量、监视表达式、结构体展开与数值格式切换。"; color: Theme.muted; wrap: word-wrap; }
+    }
+    Rectangle { vertical-stretch: 1; }
+}

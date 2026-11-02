@@ -1,0 +1,93 @@
+# 架构设计
+
+## 依赖方向
+
+```mermaid
+flowchart TD
+    Desktop[apps/desktop · Slint + Rust] --> Application[application · 命令与事件]
+    Desktop --> Debug[debug-adapter]
+    Desktop --> Text[text-backend · 原生 Rust]
+    Application --> Domain[domain · 接口与模型]
+    Debug --> Domain
+    Text --> Domain
+    Debug --> Core[NyaScrapingCore · Rust 子模块]
+    Text --> Encoding[encoding_rs + chardetng · 编码]
+    Text --> Files[std::fs + tempfile · 文件读写与保存]
+```
+
+`domain` 不依赖 Slint 或外部进程。`application` 只使用领域接口。`desktop` 是依赖组装入口，持有 Slint 模型，注册界面回调。调试后端子模块排除在父 workspace 外，保留独立构建和发布边界；文本后端直接作为 workspace 成员开发。
+
+## 职责与当前落地
+
+| 模块 | 负责 | 当前实现 |
+| --- | --- | --- |
+| domain | 目标配置、会话状态、监视值、工具与文本接口 | 已定义；含有界波形缓冲 |
+| application | 操作编排、命令和事件 | 工具刷新、打开源码 |
+| debug-adapter | 调用 NyaScrapingCore | 工具发现/安装/选择/卸载、GDB 服务启停、烧录、复位的适配接口 |
+| text-backend | 原生 Rust 文本处理 | 读取、编码检测/转换、保留编码/BOM/换行的保存 |
+| desktop | 工作线程、模型映射、窗口生命周期 | 页面布局、工具列表、只读源码预览 |
+
+适配接口存在不代表界面功能已经接通。硬件连接、烧录和工具版本变更目前没有应用层命令或可操作的界面。
+
+## 线程与生命周期
+
+UI 回调将命令写入容量为 8 的队列，工作线程调用应用用例，随后用 `Weak::upgrade_in_event_loop` 将事件送回 Slint 主线程。只有主线程创建、修改 Slint 模型。此模式遵循 [Slint 的线程通信接口](https://docs.slint.dev/latest/docs/rust/slint/fn.invoke_from_event_loop)。
+
+当前队列串行处理工具发现和文件读取，页面按钮在执行时禁用；关闭窗口会释放发送端并等待线程结束。加入下载、安装等长任务前，需要实现任务 ID、超时、取消和优雅退出，不能直接把无限期阻塞的任务加入此循环。
+
+GDB 服务句柄由 `DebugAdapter` 独占，停止或释放句柄时由 NyaScrapingCore 清理子进程。烧录、复位在已有服务时被拒绝，避免多个进程争用探针。未来每个物理探针应有独立的排他任务队列；不要只以 TCP 端口判断探针是否空闲。
+
+## 调试与变量
+
+NyaScrapingCore 当前能管理调试工具，生成烧录/擦除/复位命令，管理 GDB 服务并启动交互式 GDB。它没有面向 GUI 的结构化 GDB/MI 结果、变量树、断点事件或采集协议。
+
+`DebugBackend` 负责现有硬件操作，`DebugSession` 定义后续 GDB/MI 能力，两者分开。服务端 TCP 就绪只对应 `ServerReady`，不能直接标为已连接目标或已暂停。
+
+后续增加一个 GDB/MI 会话适配模块：启动 `gdb --interpreter=mi2`，维护命令 token、解析结果记录和异步事件、关联错误与超时。变量使用结构化结果与 var-object，暂停后刷新；继续执行后标记旧值失效。断点 ID 使用 GDB 返回值，不以源码行号充当服务端 ID。固件 ELF 符号、目标配置与工具选择共同组成一次会话。
+
+状态流规划：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Disconnected
+    Disconnected --> Starting: 启动 GDB 服务
+    Starting --> ServerReady: TCP 就绪
+    ServerReady --> Attaching: GDB/MI attach
+    Attaching --> Halted: 收到目标暂停事件
+    Halted --> Running: continue
+    Running --> Halted: breakpoint / interrupt
+    Halted --> Disconnected: detach / stop
+    Running --> Disconnected: detach / stop
+    Starting --> Faulted: 失败
+    Attaching --> Faulted: 失败
+    Running --> Faulted: 意外退出
+    Faulted --> Disconnected: 清理资源
+```
+
+## 波形数据
+
+`domain::waveform::SampleBuffer` 以单调相对时间记录有限数值，容量通过非零类型约束，写满后淘汰旧样本，并拒绝 NaN、无穷值和倒退时间。当前没有采集器，也没有将缓冲映射到图形。
+
+下一步区分三层：采集源 → 每通道样本缓冲 → 视口数据与渲染。低速变量趋势可以通过暂停时的 GDB 读取实现；持续实时数据需要 RTT、SWO 或目标端协议等实际可用的数据源，不能承诺运行中通过普通 GDB 轮询获得稳定高采样率。
+
+采样频率与 UI 刷新频率分离。规划按 30–60 Hz 批量刷新视口，并按像素宽度保留桶内最小/最大值，避免丢失尖峰。触发、暂停显示、时间游标和 CSV 导出操作基于原始缓冲。每通道设置容量和丢样计数，采集任务不能向无界消息队列逐点推送。
+
+## Rust 原生文本后端
+
+`nya-text-backend` 实现领域层的 `TextBackend` 接口，正文统一使用 Rust UTF-8 `String`，文件路径使用原生 `Path`。它由 `encoding.rs`、`newline.rs` 和文件读写入口组成，内部禁止 unsafe 代码，没有跨语言桥接或原生库构建脚本。
+
+读取先识别 Unicode BOM，其次识别有效 UTF-8，剩余内容由 `chardetng` 推测旧编码，`encoding_rs` 负责严格解码。检测属于启发式判断；`load_with_encoding` 允许显式指定编码，也支持没有 BOM 的 UTF-16。冲突的 BOM、带 BOM 或显式指定编码后的损坏 Unicode、无法按选定编码解码的数据返回错误。当前支持 UTF-8、UTF-16LE/BE 及 encoding_rs 支持的旧编码，不支持 UTF-32。
+
+文档内换行统一为 LF，同时记录主要换行类型与是否混合；U+2028/U+2029 保持原样。保存时按选定换行与编码生成字节，不能编码的字符会导致操作失败。UTF-16 输出使用 Rust 的 UTF-16 码元转换显式处理大小端。编码后的文件大小限制为 128 MiB；读取还通过有界 reader 防止增长文件绕过大小检查。
+
+保存先在目标同目录创建临时文件，写入并同步、保留已有权限，再由 `tempfile::NamedTempFile::persist` 替换目标；提交前的错误不会截断原文件。保存已有符号链接时解析其目标，保留链接本身。读取和保存均使用原生路径，在文件系统允许时也可处理非 UTF-8 文件名；该路径测试仅在 Linux 上执行。
+
+当前源码页面只读。后续编辑需要增量文本模型、撤销栈和视口虚拟化，避免每次输入重新传递整份文档。搜索与编辑接口应明确偏移单位，统一在合法 UTF-8 字符边界操作；与 Slint 选择范围交互时再按其接口约定转换。
+
+## 工具与配置
+
+统一使用 `OpenOCD`、`pyOCD`、`probe-rs` 三种工具身份；用户提到的 `probers` 对应 probe-rs。发现、安装、版本选择、卸载直接复用 NyaScrapingCore 的 `Manager`，不另建安装目录或第二份选中版本配置。
+
+领域层保存工具类型，适配层才转换为后端枚举。工具路径与参数通过 `std::process::Command` 传递。安装和卸载由显式用户操作触发，发现工具不运行安装脚本；后续工具探测应设置超时，避免异常程序阻塞。
+
+`examples/target-profile.toml` 描述目标配置拟采用的格式，当前尚未实现解析或持久化。目标配置保存工程内可共享的板卡与固件路径；窗口布局、最近打开文件、工具安装路径等用户偏好后续存入用户目录。不要将本机绝对工具路径写入共享工程配置。

@@ -1,0 +1,16 @@
+[package]
+name = "nya-firmware-backend"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+nya-domain.workspace = true
+object.workspace = true
+gimli.workspace = true
+
+[dev-dependencies]
+object = { workspace = true, features = ["write"] }
+tempfile.workspace = true
+gimli = { workspace = true, features = ["write"] }
+flate2 = "1"

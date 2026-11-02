@@ -14,6 +14,9 @@ nya-domain = { path = "crates/domain" }
 nya-application = { path = "crates/application" }
 nya-debug-adapter = { path = "crates/debug-adapter" }
 nya-text-backend = { path = "crates/text-backend" }
+nya-firmware-backend = { path = "crates/firmware-backend" }
+object = { version = "0.36.7", default-features = false, features = ["read", "std", "compression"] }
+gimli = { version = "0.31.1", default-features = false, features = ["read", "std", "endian-reader"] }
 nya-scraping-core = { path = "backends/NyaScrapingCore" }
 slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "accessibility", "compat-1-2"] }
 slint-build = "=1.18.1"

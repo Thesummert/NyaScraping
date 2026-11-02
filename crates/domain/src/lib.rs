@@ -1,4 +1,5 @@
 //! UI-independent contracts. This crate has no Slint, process, or native dependencies.
+pub mod firmware;
 pub mod waveform;
 
 use std::{fmt, path::PathBuf};

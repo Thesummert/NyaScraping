@@ -5,6 +5,8 @@ import { SourcePage } from "pages/source.slint";
 import { ToolsPage } from "pages/tools.slint";
 import { VariablesPage } from "pages/variables.slint";
 import { WaveformsPage } from "pages/waveforms.slint";
+import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
+export { FirmwareTreeRow }
 
 export component AppWindow inherits Window {
     title: "NyaScraping · Embedded Debug Studio";
@@ -22,9 +24,18 @@ export component AppWindow inherits Window {
     in-out property <string> source-title: "尚未打开文件";
     in-out property <string> source-meta: "";
     in-out property <string> source-text: "打开一个源码文件以开始浏览。";
+    in-out property <string> firmware-path;
+    in-out property <string> firmware-title: "尚未打开编译产物";
+    in-out property <string> firmware-meta;
+    in-out property <string> firmware-report;
+    in-out property <[FirmwareTreeRow]> firmware-tree;
+    in-out property <int> firmware-selected-node: -1;
+    in-out property <string> firmware-details: "打开包含 DWARF 调试信息的编译产物以浏览源码文件、函数及变量。";
     private property <int> page: 0;
     callback refresh-tools();
     callback open-source();
+    callback open-firmware();
+    callback select-firmware-node(int);
 
     VerticalLayout {
         spacing: 0px;
@@ -54,6 +65,7 @@ export component AppWindow inherits Window {
                     Button { text: "变量监视"; primary: root.page == 1; clicked => { root.page = 1; } }
                     Button { text: "实时波形"; primary: root.page == 2; clicked => { root.page = 2; } }
                     Button { text: "调试工具"; primary: root.page == 3; clicked => { root.page = 3; } }
+                    Button { text: "编译产物"; primary: root.page == 4; clicked => { root.page = 4; } }
                     Rectangle { vertical-stretch: 1; }
                     Text { text: "NyaScraping  0.1\nMCU DEBUG WORKSPACE"; color: Theme.muted; font-size: 11px; }
                 }
@@ -73,6 +85,18 @@ export component AppWindow inherits Window {
                     }
                     if root.page == 1: VariablesPage { }
                     if root.page == 2: WaveformsPage { }
+                    if root.page == 4: FirmwarePage {
+                        busy: root.busy;
+                        path <=> root.firmware-path;
+                        title: root.firmware-title;
+                        metadata: root.firmware-meta;
+                        report: root.firmware-report;
+                        tree: root.firmware-tree;
+                        details: root.firmware-details;
+                        selected-node: root.firmware-selected-node;
+                        select-node(index) => { root.select-firmware-node(index); }
+                        open => { root.open-firmware(); }
+                    }
                     if root.page == 3: ToolsPage {
                         busy: root.busy;
                         tools: root.tools;

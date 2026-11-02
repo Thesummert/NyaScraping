@@ -1,0 +1,352 @@
+//! A stable tree independent of Slint; visible rows are rebuilt when a branch toggles.
+use nya_domain::firmware::*;
+use std::{collections::HashMap, fmt::Write};
+
+struct Node {
+    label: String,
+    details: String,
+    children: Vec<usize>,
+    expanded: bool,
+}
+
+pub struct BrowserRow {
+    pub label: String,
+    pub depth: usize,
+    pub branch: bool,
+    pub expanded: bool,
+}
+
+pub struct FirmwareBrowser {
+    nodes: Vec<Node>,
+    roots: Vec<usize>,
+    visible: Vec<usize>,
+}
+
+impl FirmwareBrowser {
+    pub fn new(info: &FirmwareDebugInfo) -> Self {
+        let mut tree = Self {
+            nodes: Vec::new(),
+            roots: Vec::new(),
+            visible: Vec::new(),
+        };
+        let mut directories = HashMap::new();
+        let mut files = Vec::new();
+        for file in &info.files {
+            let mut parent = None;
+            let mut prefix = String::new();
+            let mut parts: Vec<_> = file.path.split('/').filter(|s| !s.is_empty()).collect();
+            let filename = parts.pop().unwrap_or(&file.path);
+            if file.path.starts_with('/') {
+                prefix.push('/');
+                let root = *directories
+                    .entry(prefix.clone())
+                    .or_insert_with(|| tree.add(None, "/".into(), "源码路径根目录".into()));
+                parent = Some(root);
+            }
+            for part in parts {
+                prefix.push_str(part);
+                prefix.push('/');
+                let id = *directories
+                    .entry(prefix.clone())
+                    .or_insert_with(|| tree.add(parent, part.into(), prefix.clone()));
+                parent = Some(id);
+            }
+            let id = tree.add(
+                parent,
+                filename.into(),
+                format!(
+                    "源文件\n{}\n\n文件树来自编译器记录的路径；源文件不需要在本机存在。",
+                    file.path
+                ),
+            );
+            files.push(id);
+        }
+        // Keep entries lacking source locations visible without inventing a source file.
+        let mut unknown = None;
+        let mut functions = Vec::new();
+        for function in &info.functions {
+            let parent = function
+                .declaration
+                .as_ref()
+                .and_then(|loc| files.get(loc.file).copied())
+                .unwrap_or_else(|| {
+                    *unknown.get_or_insert_with(|| {
+                        tree.add(
+                            None,
+                            "无源码位置".into(),
+                            "这些条目没有可用的源码声明位置。".into(),
+                        )
+                    })
+                });
+            let mut details = format!(
+                "函数：{}\n链接名：{}\n返回类型：{}\n{}\n{}{}\n",
+                function.name,
+                function.linkage_name.as_deref().unwrap_or("—"),
+                function.return_type.as_deref().unwrap_or("void / 未记录"),
+                source_position(info, function.declaration.as_ref()),
+                if function.declaration_only {
+                    "仅声明；没有函数体地址。"
+                } else {
+                    ""
+                },
+                if function.inlined {
+                    "内联实例。"
+                } else {
+                    ""
+                }
+            );
+            details.push_str("\n地址范围（结束地址不包含在内）：\n");
+            for range in &function.ranges {
+                let _ = writeln!(details, "0x{:X} .. 0x{:X}", range.begin, range.end);
+            }
+            if function.ranges.is_empty() {
+                details.push_str("未记录 / 已优化\n");
+            }
+            let id = tree.add(Some(parent), format!("ƒ {}", function.name), details);
+            functions.push(id);
+        }
+        for variable in &info.variables {
+            let parent = variable
+                .function
+                .and_then(|index| functions.get(index).copied())
+                .or_else(|| {
+                    variable
+                        .declaration
+                        .as_ref()
+                        .and_then(|loc| files.get(loc.file).copied())
+                })
+                .unwrap_or_else(|| {
+                    *unknown.get_or_insert_with(|| {
+                        tree.add(
+                            None,
+                            "无源码位置".into(),
+                            "这些条目没有可用的源码声明位置。".into(),
+                        )
+                    })
+                });
+            let kind = match variable.kind {
+                VariableKind::Global => "全局 / 静态变量",
+                VariableKind::Local => "局部变量",
+                VariableKind::Parameter => "参数",
+            };
+            let mut details = format!(
+                "{kind}：{}\n类型：{}\n大小：{}\n{}\n",
+                variable.name,
+                variable.type_name.as_deref().unwrap_or("未记录"),
+                variable
+                    .byte_size
+                    .map(|size| format!("{size} bytes"))
+                    .unwrap_or_else(|| "未记录".into()),
+                source_position(info, variable.declaration.as_ref())
+            );
+            if let Some(value) = &variable.constant {
+                let _ = writeln!(details, "编译期常量：{value}");
+            }
+            details.push_str("\n存储位置：\n");
+            match &variable.location {
+                VariableLocation::Address(address) => {
+                    let _ = writeln!(details, "静态地址 0x{address:X}");
+                }
+                VariableLocation::Expression(expression) => {
+                    let _ = writeln!(details, "{expression}");
+                }
+                VariableLocation::List(locations) => {
+                    for loc in locations.iter().take(1000) {
+                        let _ = writeln!(
+                            details,
+                            "PC 0x{:X} .. 0x{:X}: {}",
+                            loc.range.begin, loc.range.end, loc.expression
+                        );
+                    }
+                    if locations.len() > 1000 {
+                        details.push_str("仅预览前 1000 个位置范围。\n");
+                    }
+                }
+                VariableLocation::Unavailable => {
+                    details.push_str("不可用：编译器未记录、仅声明或已优化。\n")
+                }
+            }
+            details.push_str("\n位置表达式需要目标寄存器、栈帧或内存上下文；这里展示静态信息。\n");
+            let prefix = if variable.kind == VariableKind::Parameter {
+                "p"
+            } else {
+                "v"
+            };
+            tree.add(
+                Some(parent),
+                format!(
+                    "{prefix} {} : {}",
+                    variable.name,
+                    variable.type_name.as_deref().unwrap_or("?")
+                ),
+                details,
+            );
+        }
+        let mut counts = vec![(0, 0); files.len()];
+        for function in &info.functions {
+            if let Some(count) = function
+                .declaration
+                .as_ref()
+                .and_then(|loc| counts.get_mut(loc.file))
+            {
+                count.0 += 1;
+            }
+        }
+        for variable in &info.variables {
+            if let Some(count) = variable
+                .declaration
+                .as_ref()
+                .and_then(|loc| counts.get_mut(loc.file))
+            {
+                count.1 += 1;
+            }
+        }
+        for (index, file) in files.iter().enumerate() {
+            let (function_count, variable_count) = counts[index];
+            let _ = writeln!(
+                tree.nodes[*file].details,
+                "\n包含 {function_count} 个函数条目、{variable_count} 个变量/参数条目。"
+            );
+        }
+        let labels: Vec<_> = tree.nodes.iter().map(|n| n.label.clone()).collect();
+        for node in &mut tree.nodes {
+            node.children.sort_by(|a, b| labels[*a].cmp(&labels[*b]));
+        }
+        tree.roots.sort_by(|a, b| labels[*a].cmp(&labels[*b]));
+        // Reveal directory and file nodes initially; function/local branches remain collapsed.
+        for id in directories.values() {
+            tree.nodes[*id].expanded = true;
+        }
+        tree
+    }
+
+    fn add(&mut self, parent: Option<usize>, label: String, details: String) -> usize {
+        let id = self.nodes.len();
+        self.nodes.push(Node {
+            label,
+            details,
+            children: Vec::new(),
+            expanded: false,
+        });
+        match parent {
+            Some(parent) => self.nodes[parent].children.push(id),
+            None => self.roots.push(id),
+        }
+        id
+    }
+
+    pub fn rows(&mut self) -> Vec<BrowserRow> {
+        self.visible.clear();
+        let mut rows = Vec::new();
+        let mut stack: Vec<_> = self.roots.iter().rev().map(|id| (*id, 0)).collect();
+        while let Some((id, depth)) = stack.pop() {
+            let node = &self.nodes[id];
+            self.visible.push(id);
+            rows.push(BrowserRow {
+                label: node.label.clone(),
+                depth,
+                branch: !node.children.is_empty(),
+                expanded: node.expanded,
+            });
+            if node.expanded {
+                stack.extend(node.children.iter().rev().map(|id| (*id, depth + 1)));
+            }
+        }
+        rows
+    }
+
+    pub fn select(&mut self, row: usize) -> Option<String> {
+        let id = *self.visible.get(row)?;
+        let node = &mut self.nodes[id];
+        node.expanded = !node.expanded;
+        Some(node.details.clone())
+    }
+}
+
+fn source_position(info: &FirmwareDebugInfo, location: Option<&SourceLocation>) -> String {
+    match location.and_then(|loc| info.files.get(loc.file).map(|file| (loc, file))) {
+        Some((loc, file)) => format!(
+            "声明位置：{}:{}:{}",
+            file.path,
+            loc.line
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
+            loc.column
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into())
+        ),
+        None => "声明位置：未记录".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nya_firmware_backend::NativeFirmwareBackend;
+    use std::path::Path;
+
+    #[test]
+    fn expanding_files_and_functions_reveals_owned_variables_and_details() {
+        let image = NativeFirmwareBackend
+            .parse(
+                Path::new("firmware.axf"),
+                include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf4.axf"),
+            )
+            .unwrap();
+        let mut browser = FirmwareBrowser::new(&image.debug);
+        let rows = browser.rows();
+        assert!(!rows.iter().any(|r| r.label == "ƒ compute"));
+        let file = rows.iter().position(|r| r.label == "main.c").unwrap();
+        assert!(browser
+            .select(file)
+            .unwrap()
+            .contains("/firmware/source/main.c"));
+        let rows = browser.rows();
+        let compute = rows.iter().position(|r| r.label == "ƒ compute").unwrap();
+        let details = browser.select(compute).unwrap();
+        assert!(details.contains("main.c:8:"));
+        assert!(details.contains("返回类型：int"));
+        let rows = browser.rows();
+        let local = rows
+            .iter()
+            .position(|r| r.label == "v nested : int")
+            .unwrap();
+        assert_eq!(rows[local].depth, rows[compute].depth + 1);
+        assert!(!rows[local].branch);
+        let details = browser.select(local).unwrap();
+        assert!(details.contains("局部变量：nested"));
+        assert!(details.contains("FrameOffset"));
+        assert!(browser.select(usize::MAX).is_none());
+        browser.select(compute).unwrap();
+        assert!(!browser
+            .rows()
+            .iter()
+            .any(|r| r.label.starts_with("v nested")));
+    }
+
+    #[test]
+    fn identical_basenames_in_different_directories_remain_separate() {
+        let info = FirmwareDebugInfo {
+            files: vec![
+                SourceFile {
+                    path: "C:/project/a/common.c".into(),
+                },
+                SourceFile {
+                    path: "C:/project/b/common.c".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut browser = FirmwareBrowser::new(&info);
+        let rows = browser.rows();
+        let files: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.label == "common.c")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(files.len(), 2);
+        assert!(browser.select(files[0]).unwrap().contains("a/common.c"));
+        assert!(browser.select(files[1]).unwrap().contains("b/common.c"));
+    }
+}

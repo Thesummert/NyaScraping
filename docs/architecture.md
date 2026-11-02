@@ -7,9 +7,11 @@ flowchart TD
     Desktop[apps/desktop · Slint + Rust] --> Application[application · 命令与事件]
     Desktop --> Debug[debug-adapter]
     Desktop --> Text[text-backend · 原生 Rust]
+    Desktop --> Firmware[firmware-backend · 原生 Rust]
     Application --> Domain[domain · 接口与模型]
     Debug --> Domain
     Text --> Domain
+    Firmware --> Domain
     Debug --> Core[NyaScrapingCore · Rust 子模块]
     Text --> Encoding[encoding_rs + chardetng · 编码]
     Text --> Files[std::fs + tempfile · 文件读写与保存]
@@ -22,10 +24,11 @@ flowchart TD
 | 模块 | 负责 | 当前实现 |
 | --- | --- | --- |
 | domain | 目标配置、会话状态、监视值、工具与文本接口 | 已定义；含有界波形缓冲 |
-| application | 操作编排、命令和事件 | 工具刷新、打开源码 |
+| application | 操作编排、命令和事件 | 工具刷新、打开源码、解析编译产物 |
+| firmware-backend | 编译产物静态解析 | ELF/AXF、PE/COFF、Mach-O；段、节、符号表及 DWARF 函数/变量/类型/声明位置 |
 | debug-adapter | 调用 NyaScrapingCore | 工具发现/安装/选择/卸载、GDB 服务启停、烧录、复位的适配接口 |
 | text-backend | 原生 Rust 文本处理 | 读取、编码检测/转换、保留编码/BOM/换行的保存 |
-| desktop | 工作线程、模型映射、窗口生命周期 | 页面布局、工具列表、只读源码预览 |
+| desktop | 工作线程、模型映射、窗口生命周期 | 页面布局、工具列表、只读源码预览、编译产物报告 |
 
 适配接口存在不代表界面功能已经接通。硬件连接、烧录和工具版本变更目前没有应用层命令或可操作的界面。
 
@@ -83,6 +86,18 @@ stateDiagram-v2
 保存先在目标同目录创建临时文件，写入并同步、保留已有权限，再由 `tempfile::NamedTempFile::persist` 替换目标；提交前的错误不会截断原文件。保存已有符号链接时解析其目标，保留链接本身。读取和保存均使用原生路径，在文件系统允许时也可处理非 UTF-8 文件名；该路径测试仅在 Linux 上执行。
 
 当前源码页面只读。后续编辑需要增量文本模型、撤销栈和视口虚拟化，避免每次输入重新传递整份文档。搜索与编辑接口应明确偏移单位，统一在合法 UTF-8 字符边界操作；与 Slint 选择范围交互时再按其接口约定转换。
+
+## 编译产物解析
+
+`domain::firmware` 定义 `FirmwareBackend` 和静态镜像、段、节、符号模型；`nya-firmware-backend::NativeFirmwareBackend` 使用 `object` 按文件内容解析，不依赖文件扩展名、外部工具或硬件。`parse` 可直接处理内存字节，`load` 使用有界读取并拒绝非普通文件和超过 128 MiB 的输入。校验段和节的文件范围，合计记录数限制为 200000。
+
+`Command::OpenFirmware` 在现有工作线程读取并解析，`Event::FirmwareOpened` 返回完整元数据。ELF AXF 与 ELF 共用解析路径；普通与动态符号保留来源，不合并同名符号。无符号文件仍可读取入口和段信息。
+
+`firmware-backend::dwarf` 通过 `gimli` 解析嵌入式 DWARF 2–5，加载调试节并限制解压大小，通过 `RelocateReader` 应用对象节重定位。首先索引各编译单元 DIE 和父级关系，再解析源码文件表、函数与地址范围、变量与类型引用。`abstract_origin` 和 `specification` 可跨单元继承名称、类型和声明位置；函数体的声明标志直接读取自身 DIE。词法块中的变量保留所属函数，内联实例独立记录。变量位置区分静态地址、表达式、位置列表和不可用，不据此生成运行时监视值。类型引用有循环检测和深度限制。
+
+缺失或解析失败的 DWARF 产生提示，静态镜像信息仍可使用；函数或变量元数据缺失时，以符号表回退并明确缺少源码/类型。外部调试信息暂不加载。编译路径按平台无关规则归一化，不访问或扫描源码目录，也不把虚拟地址当作烧录物理地址。
+
+桌面 `firmware_browser` 将源码文件、函数和所属变量组织成可折叠树，未记录声明位置的条目放入独立分组。Slint `ListView` 仅实例化可见行，选中节点显示详情；原有段/节/符号报告保留在另一标签页，每类至多预览 1000 条。Presenter 保存展开状态，所有 Slint 模型更新仍在 UI 线程。
 
 ## 工具与配置
 

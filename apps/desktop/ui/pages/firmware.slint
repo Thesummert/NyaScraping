@@ -1,0 +1,73 @@
+import { Button, LineEdit, TextEdit, TabWidget, ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export struct FirmwareTreeRow {
+    label: string,
+    depth: int,
+    branch: bool,
+    expanded: bool,
+}
+
+export component FirmwarePage inherits VerticalLayout {
+    in property <bool> busy;
+    in-out property <string> path;
+    in property <string> title;
+    in property <string> metadata;
+    in property <string> report;
+    in property <[FirmwareTreeRow]> tree;
+    in property <string> details;
+    in property <int> selected-node;
+    callback open();
+    callback select-node(int);
+    spacing: 12px;
+    Text { text: "编译产物"; color: Theme.text; font-size: 22px; font-weight: 700; }
+    Text { text: "查看源码文件树、函数、参数及变量的类型与声明位置"; color: Theme.muted; wrap: word-wrap; }
+    HorizontalLayout {
+        spacing: 8px;
+        LineEdit { text <=> root.path; placeholder-text: "输入 ELF、AXF 等编译产物路径…"; enabled: !root.busy; }
+        Button { text: "解析文件"; enabled: !root.busy; clicked => { root.open(); } }
+    }
+    Text { text: root.title; color: Theme.text; overflow: elide; }
+    Text { text: root.metadata; color: Theme.muted; wrap: word-wrap; }
+    TabWidget {
+        vertical-stretch: 1;
+        Tab {
+            title: "文件、函数与变量";
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    min-width: 220px;
+                    horizontal-stretch: 1;
+                    background: Theme.background;
+                    ListView {
+                        for row[index] in root.tree: Rectangle {
+                            height: 30px;
+                            background: index == root.selected-node ? Theme.sidebar : transparent;
+                            Text {
+                                x: 8px + row.depth * 16px;
+                                width: parent.width - self.x - 8px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                text: (row.branch ? (row.expanded ? "▾ " : "▸ ") : "  ") + row.label;
+                                color: Theme.text;
+                                overflow: elide;
+                            }
+                            TouchArea { clicked => { root.select-node(index); } }
+                        }
+                    }
+                    if root.tree.length == 0: Text {
+                        text: "没有可用的文件条目\n请查看右侧解析提示";
+                        color: Theme.muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                TextEdit { text: root.details; read-only: true; font-family: "monospace"; horizontal-stretch: 2; }
+            }
+        }
+        Tab {
+            title: "段、节与符号表";
+            TextEdit { text: root.report; read-only: true; font-family: "monospace"; }
+        }
+    }
+}

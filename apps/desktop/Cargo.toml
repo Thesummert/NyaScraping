@@ -11,6 +11,7 @@ nya-domain.workspace = true
 nya-application.workspace = true
 nya-debug-adapter.workspace = true
 nya-text-backend.workspace = true
+nya-firmware-backend.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

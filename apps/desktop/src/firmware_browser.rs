@@ -7,6 +7,15 @@ struct Node {
     details: String,
     children: Vec<usize>,
     expanded: bool,
+    variable: Option<BrowserVariable>,
+}
+
+#[derive(Clone)]
+pub struct BrowserVariable {
+    pub id: usize,
+    pub name: String,
+    pub type_name: String,
+    pub scope: String,
 }
 
 pub struct BrowserRow {
@@ -20,6 +29,7 @@ pub struct FirmwareBrowser {
     nodes: Vec<Node>,
     roots: Vec<usize>,
     visible: Vec<usize>,
+    selected: Option<usize>,
 }
 
 impl FirmwareBrowser {
@@ -28,6 +38,7 @@ impl FirmwareBrowser {
             nodes: Vec::new(),
             roots: Vec::new(),
             visible: Vec::new(),
+            selected: None,
         };
         let mut directories = HashMap::new();
         let mut files = Vec::new();
@@ -105,7 +116,7 @@ impl FirmwareBrowser {
             let id = tree.add(Some(parent), format!("ƒ {}", function.name), details);
             functions.push(id);
         }
-        for variable in &info.variables {
+        for (variable_id, variable) in info.variables.iter().enumerate() {
             let parent = variable
                 .function
                 .and_then(|index| functions.get(index).copied())
@@ -172,7 +183,7 @@ impl FirmwareBrowser {
             } else {
                 "v"
             };
-            tree.add(
+            let id = tree.add(
                 Some(parent),
                 format!(
                     "{prefix} {} : {}",
@@ -181,6 +192,23 @@ impl FirmwareBrowser {
                 ),
                 details,
             );
+            tree.nodes[id].variable = Some(BrowserVariable {
+                id: variable_id,
+                name: variable.name.clone(),
+                type_name: variable
+                    .type_name
+                    .clone()
+                    .unwrap_or_else(|| "类型未记录".into()),
+                scope: format!(
+                    "{} · {}",
+                    variable
+                        .function
+                        .and_then(|id| info.functions.get(id))
+                        .map(|function| function.name.as_str())
+                        .unwrap_or(kind),
+                    source_position(info, variable.declaration.as_ref()),
+                ),
+            });
         }
         let mut counts = vec![(0, 0); files.len()];
         for function in &info.functions {
@@ -227,6 +255,7 @@ impl FirmwareBrowser {
             details,
             children: Vec::new(),
             expanded: false,
+            variable: None,
         });
         match parent {
             Some(parent) => self.nodes[parent].children.push(id),
@@ -257,9 +286,22 @@ impl FirmwareBrowser {
 
     pub fn select(&mut self, row: usize) -> Option<String> {
         let id = *self.visible.get(row)?;
+        self.selected = Some(id);
         let node = &mut self.nodes[id];
-        node.expanded = !node.expanded;
+        if !node.children.is_empty() {
+            node.expanded = !node.expanded;
+        }
         Some(node.details.clone())
+    }
+
+    pub fn is_branch(&self, row: usize) -> bool {
+        self.visible
+            .get(row)
+            .is_some_and(|id| !self.nodes[*id].children.is_empty())
+    }
+
+    pub fn selected_variable(&self) -> Option<BrowserVariable> {
+        self.nodes.get(self.selected?)?.variable.clone()
     }
 }
 
@@ -297,6 +339,9 @@ mod tests {
         let rows = browser.rows();
         assert!(!rows.iter().any(|r| r.label == "ƒ compute"));
         let file = rows.iter().position(|r| r.label == "main.c").unwrap();
+        assert!(browser.selected_variable().is_none());
+        assert!(browser.is_branch(file));
+        assert!(!browser.is_branch(usize::MAX));
         assert!(browser
             .select(file)
             .unwrap()
@@ -313,11 +358,19 @@ mod tests {
             .unwrap();
         assert_eq!(rows[local].depth, rows[compute].depth + 1);
         assert!(!rows[local].branch);
+        assert!(!browser.is_branch(local));
         let details = browser.select(local).unwrap();
+        assert!(!browser.rows()[local].expanded);
+        let variable = browser.selected_variable().unwrap();
+        assert_eq!(variable.name, "nested");
+        assert_eq!(variable.type_name, "int");
+        assert!(variable.scope.contains("compute"));
+        assert!(variable.scope.contains("main.c:"));
         assert!(details.contains("局部变量：nested"));
         assert!(details.contains("FrameOffset"));
         assert!(browser.select(usize::MAX).is_none());
         browser.select(compute).unwrap();
+        assert!(browser.selected_variable().is_none());
         assert!(!browser
             .rows()
             .iter()

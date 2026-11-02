@@ -1,5 +1,6 @@
 mod firmware_browser;
 mod presenter;
+mod watch_list;
 
 use nya_application::{Application, Command};
 use nya_debug_adapter::DebugAdapter;
@@ -37,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_presenter = presenter.clone();
     let worker = std::thread::spawn(move || {
         while let Ok(command) = receiver.recv() {
-            let event = application.execute(command);
+            let event = presenter::PreparedEvent::from(application.execute(command));
             if weak
                 .upgrade_in_event_loop({
                     let presenter = worker_presenter.clone();
@@ -93,12 +94,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let weak = ui.as_weak();
+    let tree_presenter = presenter.clone();
     ui.on_select_firmware_node(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            tree_presenter
+                .lock()
+                .expect("presenter lock")
+                .select_firmware(&ui, index);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let watch_presenter = presenter.clone();
+    ui.on_add_selected_variable(move || {
+        if let Some(ui) = weak.upgrade() {
+            watch_presenter
+                .lock()
+                .expect("presenter lock")
+                .add_selected_variable(&ui);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let watch_presenter = presenter.clone();
+    ui.on_add_expression(move |expression| {
+        if let Some(ui) = weak.upgrade() {
+            watch_presenter
+                .lock()
+                .expect("presenter lock")
+                .add_expression(&ui, &expression);
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_remove_watch(move |index| {
         if let Some(ui) = weak.upgrade() {
             presenter
                 .lock()
                 .expect("presenter lock")
-                .select_firmware(&ui, index);
+                .remove_watch(&ui, index);
         }
     });
 

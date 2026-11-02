@@ -34,7 +34,7 @@ flowchart TD
 
 ## 线程与生命周期
 
-UI 回调将命令写入容量为 8 的队列，工作线程调用应用用例，随后用 `Weak::upgrade_in_event_loop` 将事件送回 Slint 主线程。只有主线程创建、修改 Slint 模型。此模式遵循 [Slint 的线程通信接口](https://docs.slint.dev/latest/docs/rust/slint/fn.invoke_from_event_loop)。
+UI 回调将命令写入容量为 8 的队列，工作线程调用应用用例，并通过 `PreparedEvent` 完成固件文件树构建、排序和报告格式化，随后用 `Weak::upgrade_in_event_loop` 将事件送回 Slint 主线程。只有主线程创建、修改 Slint 模型。此模式遵循 [Slint 的线程通信接口](https://docs.slint.dev/latest/docs/rust/slint/fn.invoke_from_event_loop)。
 
 当前队列串行处理工具发现和文件读取，页面按钮在执行时禁用；关闭窗口会释放发送端并等待线程结束。加入下载、安装等长任务前，需要实现任务 ID、超时、取消和优雅退出，不能直接把无限期阻塞的任务加入此循环。
 
@@ -97,7 +97,7 @@ stateDiagram-v2
 
 缺失或解析失败的 DWARF 产生提示，静态镜像信息仍可使用；函数或变量元数据缺失时，以符号表回退并明确缺少源码/类型。外部调试信息暂不加载。编译路径按平台无关规则归一化，不访问或扫描源码目录，也不把虚拟地址当作烧录物理地址。
 
-桌面 `firmware_browser` 将源码文件、函数和所属变量组织成可折叠树，未记录声明位置的条目放入独立分组。Slint `ListView` 仅实例化可见行，选中节点显示详情；原有段/节/符号报告保留在另一标签页，每类至多预览 1000 条。Presenter 保存展开状态，所有 Slint 模型更新仍在 UI 线程。
+桌面 `firmware_browser` 将源码文件、函数和所属变量组织成可折叠树，未记录声明位置的条目放入独立分组。Slint `ListView` 仅实例化可见行，选中节点显示详情；原有段/节/符号报告保留在另一标签页，每类至多预览 1000 条。工作线程构建初始树与详情，Presenter 保存展开状态；仅展开/折叠分支时重建可见行，选择变量不替换列表模型。所有 Slint 模型更新仍在 UI 线程。
 
 ## 工具与配置
 

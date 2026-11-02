@@ -1,19 +1,69 @@
-use crate::{firmware_browser::FirmwareBrowser, AppWindow, FirmwareTreeRow};
+use crate::{
+    firmware_browser::FirmwareBrowser, watch_list::WatchList, AppWindow, FirmwareTreeRow, WatchRow,
+};
 use nya_application::Event;
-use nya_domain::firmware::FirmwareImage;
+use nya_domain::{firmware::FirmwareImage, Document, ToolInstallation};
 use slint::{ModelRc, SharedString, VecModel};
 use std::rc::Rc;
 
 #[derive(Default)]
 pub struct Presenter {
     browser: Option<FirmwareBrowser>,
+    watches: WatchList,
+}
+
+/// Plain Rust data prepared on the worker, before entering the Slint event loop.
+pub enum PreparedEvent {
+    Tools(Vec<ToolInstallation>),
+    Source(Document),
+    Firmware(Box<FirmwareView>),
+    Failed(String),
+}
+
+pub struct FirmwareView {
+    title: String,
+    metadata: String,
+    report: String,
+    details: String,
+    status: String,
+    browser: FirmwareBrowser,
+}
+
+impl From<Event> for PreparedEvent {
+    fn from(event: Event) -> Self {
+        match event {
+            Event::ToolsDiscovered(tools) => Self::Tools(tools),
+            Event::SourceOpened(document) => Self::Source(document),
+            Event::Failed(error) => Self::Failed(error),
+            Event::FirmwareOpened(image) => Self::Firmware(Box::new(FirmwareView {
+                title: image.path.display().to_string(),
+                metadata: format!(
+                    "{} · {} · {} 位 · {} · {} · 入口 0x{:X} · {} bytes",
+                    image.format, image.architecture, image.address_bits,
+                    if image.little_endian { "小端" } else { "大端" },
+                    image.kind, image.entry, image.file_size,
+                ),
+                report: firmware_report(&image),
+                details: format!(
+                    "{} 个源文件，{} 个函数条目，{} 个变量/参数。\n\n点击目录、文件或函数可展开；点击变量查看类型、源码位置及存储位置。\n\n{}",
+                    image.debug.files.len(), image.debug.functions.len(), image.debug.variables.len(), image.debug.warnings.join("\n"),
+                ),
+                status: format!(
+                    "解析完成：{} 个源文件，{} 个函数，{} 个变量/参数{}",
+                    image.debug.files.len(), image.debug.functions.len(), image.debug.variables.len(),
+                    if image.debug.warnings.is_empty() { "" } else { "（存在调试信息提示，见详情）" },
+                ),
+                browser: FirmwareBrowser::new(&image.debug),
+            })),
+        }
+    }
 }
 
 impl Presenter {
-    pub fn apply(&mut self, ui: &AppWindow, event: Event) {
+    pub fn apply(&mut self, ui: &AppWindow, event: PreparedEvent) {
         ui.set_busy(false);
         match event {
-            Event::ToolsDiscovered(installations) => {
+            PreparedEvent::Tools(installations) => {
                 let count = installations.len();
                 let rows: Vec<SharedString> = installations
                     .into_iter()
@@ -35,7 +85,7 @@ impl Presenter {
                 ui.set_tools(ModelRc::from(Rc::new(VecModel::from(rows))));
                 ui.set_status(format!("扫描完成，找到 {count} 个工具安装位置").into());
             }
-            Event::SourceOpened(document) => {
+            PreparedEvent::Source(document) => {
                 ui.set_source_title(document.path.display().to_string().into());
                 ui.set_source_meta(
                     format!(
@@ -53,61 +103,92 @@ impl Presenter {
                 ui.set_source_text(document.text.into());
                 ui.set_status("源码已通过 Rust 文本后端读取".into());
             }
-            Event::FirmwareOpened(image) => {
-                ui.set_firmware_title(image.path.display().to_string().into());
-                ui.set_firmware_meta(
-                    format!(
-                        "{} · {} · {} 位 · {} · {} · 入口 0x{:X} · {} bytes",
-                        image.format,
-                        image.architecture,
-                        image.address_bits,
-                        if image.little_endian {
-                            "小端"
-                        } else {
-                            "大端"
-                        },
-                        image.kind,
-                        image.entry,
-                        image.file_size,
-                    )
-                    .into(),
-                );
-                ui.set_firmware_report(firmware_report(&image).into());
-                ui.set_firmware_details(format!(
-                "{} 个源文件，{} 个函数条目，{} 个变量/参数。\n\n点击目录、文件或函数可展开；点击变量查看类型、源码位置及存储位置。\n\n{}",
-                image.debug.files.len(), image.debug.functions.len(), image.debug.variables.len(), image.debug.warnings.join("\n")
-            ).into());
-                self.browser = Some(FirmwareBrowser::new(&image.debug));
+            PreparedEvent::Firmware(view) => {
+                ui.set_firmware_title(view.title.into());
+                ui.set_firmware_meta(view.metadata.into());
+                ui.set_firmware_report(view.report.into());
+                ui.set_firmware_details(view.details.into());
+                self.browser = Some(view.browser);
+                self.watches.reset_firmware();
+                self.refresh_watches(ui);
+                ui.set_can_add_variable(false);
                 self.refresh_tree(ui);
                 ui.set_firmware_selected_node(-1);
-                ui.set_status(
-                    format!(
-                        "解析完成：{} 个源文件，{} 个函数，{} 个变量/参数{}",
-                        image.debug.files.len(),
-                        image.debug.functions.len(),
-                        image.debug.variables.len(),
-                        if image.debug.warnings.is_empty() {
-                            ""
-                        } else {
-                            "（存在调试信息提示，见详情）"
-                        }
-                    )
-                    .into(),
-                );
+                ui.set_status(view.status.into());
             }
-            Event::Failed(error) => ui.set_status(format!("操作失败：{error}").into()),
+            PreparedEvent::Failed(error) => ui.set_status(format!("操作失败：{error}").into()),
         }
     }
 
     pub fn select_firmware(&mut self, ui: &AppWindow, index: i32) {
+        let structure_changed = usize::try_from(index)
+            .ok()
+            .is_some_and(|index| self.browser.as_ref().is_some_and(|b| b.is_branch(index)));
         if let Some(details) = usize::try_from(index)
             .ok()
             .and_then(|index| self.browser.as_mut()?.select(index))
         {
             ui.set_firmware_details(details.into());
             ui.set_firmware_selected_node(index);
-            self.refresh_tree(ui);
+            ui.set_can_add_variable(
+                self.browser
+                    .as_ref()
+                    .and_then(|b| b.selected_variable())
+                    .is_some(),
+            );
+            if structure_changed {
+                self.refresh_tree(ui);
+            }
         }
+    }
+
+    pub fn add_selected_variable(&mut self, ui: &AppWindow) {
+        if let Some(variable) = self.browser.as_ref().and_then(|b| b.selected_variable()) {
+            let added = self.watches.add_variable(variable);
+            self.refresh_watches(ui);
+            ui.set_status(
+                if added {
+                    "变量已添加到右侧监视列表"
+                } else {
+                    "该变量已在监视列表中"
+                }
+                .into(),
+            );
+        }
+    }
+
+    pub fn add_expression(&mut self, ui: &AppWindow, expression: &str) {
+        let added = self.watches.add_expression(expression);
+        self.refresh_watches(ui);
+        ui.set_status(
+            if added {
+                "表达式已添加，等待调试会话求值"
+            } else {
+                "表达式为空或已在监视列表中"
+            }
+            .into(),
+        );
+    }
+
+    pub fn remove_watch(&mut self, ui: &AppWindow, index: i32) {
+        if usize::try_from(index).is_ok_and(|index| self.watches.remove(index)) {
+            self.refresh_watches(ui);
+            ui.set_status("已移除监视变量".into());
+        }
+    }
+
+    fn refresh_watches(&self, ui: &AppWindow) {
+        let rows: Vec<_> = self
+            .watches
+            .entries
+            .iter()
+            .map(|entry| WatchRow {
+                expression: entry.expression.as_str().into(),
+                type_name: entry.type_name.as_str().into(),
+                scope: entry.scope.as_str().into(),
+            })
+            .collect();
+        ui.set_watches(ModelRc::from(Rc::new(VecModel::from(rows))));
     }
 
     fn refresh_tree(&mut self, ui: &AppWindow) {

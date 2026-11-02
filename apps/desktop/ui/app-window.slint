@@ -1,19 +1,18 @@
-import { Button } from "std-widgets.slint";
+import { Button, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Panel } from "components/panel.slint";
 import { SourcePage } from "pages/source.slint";
 import { ToolsPage } from "pages/tools.slint";
-import { VariablesPage } from "pages/variables.slint";
+import { VariablesPage, WatchRow } from "pages/variables.slint";
 import { WaveformsPage } from "pages/waveforms.slint";
 import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
-export { FirmwareTreeRow }
+export { FirmwareTreeRow, WatchRow }
 
 export component AppWindow inherits Window {
     title: "NyaScraping · Embedded Debug Studio";
-    preferred-width: 1280px;
-    preferred-height: 820px;
-    min-width: 960px;
-    min-height: 640px;
+    preferred-width: 1480px;
+    preferred-height: 900px;
+    min-width: 1180px;
+    min-height: 720px;
     background: Theme.background;
     default-font-size: 14px;
 
@@ -27,93 +26,151 @@ export component AppWindow inherits Window {
     in-out property <string> firmware-path;
     in-out property <string> firmware-title: "尚未打开编译产物";
     in-out property <string> firmware-meta;
-    in-out property <string> firmware-report;
+    in-out property <string> firmware-report: "解析编译产物后，在这里查看段、节与符号表。";
     in-out property <[FirmwareTreeRow]> firmware-tree;
     in-out property <int> firmware-selected-node: -1;
-    in-out property <string> firmware-details: "打开包含 DWARF 调试信息的编译产物以浏览源码文件、函数及变量。";
-    private property <int> page: 0;
+    in-out property <string> firmware-details: "选择文件树中的函数或变量，查看类型、声明位置及存储位置。";
+    in-out property <bool> can-add-variable: false;
+    in-out property <[WatchRow]> watches;
     callback refresh-tools();
     callback open-source();
     callback open-firmware();
     callback select-firmware-node(int);
+    callback add-selected-variable();
+    callback add-expression(string);
+    callback remove-watch(int);
 
     VerticalLayout {
         spacing: 0px;
         Rectangle {
-            height: 68px;
+            height: 76px;
             background: Theme.sidebar;
             HorizontalLayout {
-                padding: 18px;
-                spacing: 14px;
-                Text { text: "NYA /"; font-weight: 800; font-size: 22px; color: Theme.accent; }
-                Text { text: "Embedded Debug Studio"; color: Theme.text; horizontal-stretch: 1; }
-                Text { text: "●  未连接目标"; color: Theme.muted; }
-                Button { text: "连接"; enabled: false; }
-                Button { text: "下载程序"; enabled: false; }
-            }
-        }
-        HorizontalLayout {
-            spacing: 0px;
-            Rectangle {
-                width: 206px;
-                background: Theme.sidebar;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 12px;
                 VerticalLayout {
-                    padding: 18px;
-                    spacing: 10px;
-                    Text { text: "工作空间"; color: Theme.muted; font-size: 12px; }
-                    Button { text: "源码工作台"; primary: root.page == 0; clicked => { root.page = 0; } }
-                    Button { text: "变量监视"; primary: root.page == 1; clicked => { root.page = 1; } }
-                    Button { text: "实时波形"; primary: root.page == 2; clicked => { root.page = 2; } }
-                    Button { text: "调试工具"; primary: root.page == 3; clicked => { root.page = 3; } }
-                    Button { text: "编译产物"; primary: root.page == 4; clicked => { root.page = 4; } }
-                    Rectangle { vertical-stretch: 1; }
-                    Text { text: "NyaScraping  0.1\nMCU DEBUG WORKSPACE"; color: Theme.muted; font-size: 11px; }
+                    width: 264px;
+                    alignment: center;
+                    spacing: 4px;
+                    Text { text: "NYA /"; font-weight: 800; font-size: 22px; color: Theme.accent; }
+                    Text { text: "Embedded Debug Studio"; font-size: 11px; color: Theme.muted; }
                 }
-            }
-            VerticalLayout {
-                padding: 24px;
-                spacing: 16px;
-                Panel {
-                    vertical-stretch: 1;
-                    if root.page == 0: SourcePage {
-                        busy: root.busy;
-                        path <=> root.source-path;
-                        source-title: root.source-title;
-                        metadata: root.source-meta;
-                        source-text: root.source-text;
-                        open => { root.open-source(); }
-                    }
-                    if root.page == 1: VariablesPage { }
-                    if root.page == 2: WaveformsPage { }
-                    if root.page == 4: FirmwarePage {
-                        busy: root.busy;
-                        path <=> root.firmware-path;
-                        title: root.firmware-title;
-                        metadata: root.firmware-meta;
-                        report: root.firmware-report;
-                        tree: root.firmware-tree;
-                        details: root.firmware-details;
-                        selected-node: root.firmware-selected-node;
-                        select-node(index) => { root.select-firmware-node(index); }
-                        open => { root.open-firmware(); }
-                    }
-                    if root.page == 3: ToolsPage {
-                        busy: root.busy;
-                        tools: root.tools;
-                        refresh => { root.refresh-tools(); }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Button { text: "▶ 继续"; enabled: false; }
+                        Button { text: "Ⅱ 暂停"; enabled: false; }
+                        Button { text: "■ 停止"; enabled: false; }
+                        Rectangle { width: 1px; background: Theme.border; }
+                        Button { text: "↷ 步过"; enabled: false; }
+                        Button { text: "↓ 步入"; enabled: false; }
+                        Button { text: "↑ 步出"; enabled: false; }
+                        Button { text: "↻ 复位"; enabled: false; }
                     }
                 }
-                Text { text: "会话与烧录控制待接入；变量、波形页面当前展示功能布局。"; color: Theme.muted; }
+                VerticalLayout {
+                    width: 264px;
+                    alignment: center;
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        Text { text: "● 未连接"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                        Button { text: "连接"; enabled: false; }
+                        Button { text: "下载"; enabled: false; }
+                    }
+                }
             }
         }
+        Rectangle { height: 1px; background: Theme.border; }
+        HorizontalLayout {
+            spacing: 1px;
+            Rectangle {
+                width: 300px;
+                background: Theme.sidebar;
+                FirmwarePage {
+                    padding: 12px;
+                    busy: root.busy;
+                    path <=> root.firmware-path;
+                    title: root.firmware-title;
+                    tree: root.firmware-tree;
+                    details: root.firmware-details;
+                    selected-node: root.firmware-selected-node;
+                    can-add-variable: root.can-add-variable;
+                    select-node(index) => { root.select-firmware-node(index); }
+                    add-variable => { root.add-selected-variable(); }
+                    open => { root.open-firmware(); }
+                }
+            }
+            Rectangle {
+                background: Theme.background;
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 10px;
+                    TabWidget {
+                        Tab {
+                            title: "源码";
+                            SourcePage {
+                                padding-top: 12px;
+                                busy: root.busy;
+                                path <=> root.source-path;
+                                source-title: root.source-title;
+                                metadata: root.source-meta;
+                                source-text: root.source-text;
+                                open => { root.open-source(); }
+                            }
+                        }
+                        Tab {
+                            title: "波形";
+                            WaveformsPage { padding-top: 12px; }
+                        }
+                        Tab {
+                            title: "段 / 节 / 符号";
+                            VerticalLayout {
+                                padding-top: 12px;
+                                spacing: 10px;
+                                Text { text: root.firmware-title; color: Theme.text; overflow: elide; }
+                                Text { text: root.firmware-meta; color: Theme.muted; wrap: word-wrap; }
+                                TextEdit { text: root.firmware-report; read-only: true; wrap: no-wrap; font-family: "monospace"; vertical-stretch: 1; }
+                            }
+                        }
+                        Tab {
+                            title: "调试工具";
+                            ToolsPage {
+                                padding-top: 12px;
+                                busy: root.busy;
+                                tools: root.tools;
+                                refresh => { root.refresh-tools(); }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                width: 300px;
+                background: Theme.sidebar;
+                VariablesPage {
+                    padding: 12px;
+                    watches: root.watches;
+                    add(expression) => { root.add-expression(expression); }
+                    remove(index) => { root.remove-watch(index); }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
         Rectangle {
             height: 34px;
             background: Theme.sidebar;
             HorizontalLayout {
-                padding-left: 18px;
-                padding-right: 18px;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 16px;
                 Text { text: root.status; color: Theme.muted; overflow: elide; horizontal-stretch: 1; }
-                Text { text: root.busy ? "处理中" : "Slint / Rust"; color: Theme.accent; }
+                Text { text: root.busy ? "处理中" : "调试会话未接入"; color: Theme.accent; font-size: 12px; }
             }
         }
     }

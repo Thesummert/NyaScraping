@@ -1,14 +1,73 @@
+import { Button, LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
-import { Panel } from "../components/panel.slint";
+
+export struct WatchRow {
+    expression: string,
+    type-name: string,
+    scope: string,
+}
 
 export component VariablesPage inherits VerticalLayout {
-    spacing: 16px;
-    Text { text: "变量监视"; color: Theme.text; font-size: 22px; font-weight: 700; }
-    Panel {
-        Text { text: "表达式                         类型                         当前值"; color: Theme.muted; }
-        Rectangle { height: 1px; background: Theme.border; }
-        Text { text: "等待 GDB/MI 会话接入"; color: Theme.text; font-size: 18px; }
-        Text { text: "规划支持局部变量、监视表达式、结构体展开与数值格式切换。"; color: Theme.muted; wrap: word-wrap; }
+    in property <[WatchRow]> watches;
+    callback add(string);
+    callback remove(int);
+    spacing: 10px;
+    HorizontalLayout {
+        Text { text: "监视变量"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
+        Text { text: root.watches.length; color: Theme.accent; }
     }
-    Rectangle { vertical-stretch: 1; }
+    Text { text: "从左侧添加变量，或输入表达式"; color: Theme.muted; font-size: 12px; }
+    HorizontalLayout {
+        spacing: 6px;
+        expression := LineEdit {
+            placeholder-text: "变量名 / 表达式…";
+            horizontal-stretch: 1;
+            accepted => {
+                root.add(self.text);
+                self.text = "";
+            }
+        }
+        Button {
+            text: "+";
+            enabled: expression.text != "";
+            clicked => {
+                root.add(expression.text);
+                expression.text = "";
+            }
+        }
+    }
+    Rectangle { height: 1px; background: Theme.border; }
+    Rectangle {
+        vertical-stretch: 1;
+        background: transparent;
+        ListView {
+            for watch[index] in root.watches: Rectangle {
+                height: 126px;
+                background: Theme.panel;
+                border-color: Theme.border;
+                border-width: 1px;
+                border-radius: 6px;
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: watch.expression; color: Theme.text; font-family: "monospace"; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                        Button { text: "移除"; clicked => { root.remove(index); } }
+                    }
+                    Text { text: watch.type-name; color: Theme.accent; font-size: 12px; overflow: elide; }
+                    Text { text: watch.scope; color: Theme.muted; font-size: 11px; overflow: elide; }
+                    Text { text: "当前值：等待调试会话"; color: Theme.muted; font-size: 12px; }
+                }
+            }
+        }
+        if root.watches.length == 0: Text {
+            text: "尚未添加监视变量\n\n在文件树中选择变量\n点击「+ 监视」添加到此处";
+            color: Theme.muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    Text { text: "类型来自静态解析；运行时值待接入。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
 }

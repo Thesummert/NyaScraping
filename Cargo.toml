@@ -23,3 +23,14 @@ slint-build = "=1.18.1"
 encoding_rs = "0.8"
 chardetng = "1.0"
 tempfile = "3"
+
+# The desktop uses CPU rendering; unoptimized HiDPI redraws block the event loop.
+# Keep debug symbols and assertions while optimizing the interactive build.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package.i-slint-core]
+opt-level = 2
+
+[profile.dev.package.i-slint-renderer-software]
+opt-level = 3

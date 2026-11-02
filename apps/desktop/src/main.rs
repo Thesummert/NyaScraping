@@ -93,6 +93,27 @@ fn sync_watches(updates: &WatchUpdates, presenter: &presenter::Presenter) {
     *updates.lock().expect("watch updates lock") = Some(presenter.watch_requests());
 }
 
+// Keep sub-millisecond precision when converting fractional custom frequencies.
+fn sampling_interval_micros(index: i32, custom_hz: &str) -> Result<u64, &'static str> {
+    const PRESETS_MS: [u64; 10] = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
+    if index == PRESETS_MS.len() as i32 {
+        let hz = custom_hz
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| "请输入 0.1–1000 Hz 的有效频率")?;
+        if !hz.is_finite() || !(0.1..=1000.0).contains(&hz) {
+            return Err("自定义频率须在 0.1–1000 Hz 范围内");
+        }
+        Ok((1_000_000.0 / hz).round() as u64)
+    } else {
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| PRESETS_MS.get(i))
+            .map(|ms| ms * 1000)
+            .ok_or("请选择有效的采样频率")
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = AppWindow::new()?;
     let mut application = Application::new(
@@ -109,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_presenter = presenter.clone();
     let watch_updates: WatchUpdates = Arc::new(Mutex::new(None));
     let worker_updates = watch_updates.clone();
-    // Zero disables sampling. Settings are coalesced without occupying the command queue.
+    // Intervals use microseconds; zero disables sampling. Settings bypass the command queue.
     let live_interval = Arc::new(AtomicU64::new(0));
     let worker_interval = live_interval.clone();
     let worker = std::thread::spawn(move || {
@@ -119,13 +140,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let event = if let Some(watches) = pending {
                 Some(application.execute(Command::UpdateWatches(watches)))
             } else {
-                match receiver.recv_timeout(std::time::Duration::from_millis(60)) {
+                let interval = worker_interval.load(Ordering::Relaxed);
+                let poll_interval = std::time::Duration::from_millis(60);
+                // Wake at the sampling deadline while still accepting queued controls first.
+                let wait = if interval == 0 {
+                    poll_interval
+                } else {
+                    std::time::Duration::from_micros(interval)
+                        .saturating_sub(last_sample.elapsed())
+                        .min(poll_interval)
+                };
+                match receiver.recv_timeout(wait) {
                     Ok(command) => Some(application.execute(command)),
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         let event = application.poll();
                         let interval = worker_interval.load(Ordering::Relaxed);
                         if interval != 0
-                            && last_sample.elapsed() >= std::time::Duration::from_millis(interval)
+                            && last_sample.elapsed() >= std::time::Duration::from_micros(interval)
                         {
                             let mut sample = application.sample_watches();
                             if let (
@@ -422,13 +453,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live_presenter = presenter.clone();
     ui.on_live_refresh(move || {
         if let Some(ui) = weak.upgrade() {
-            let interval = if ui.get_live_enabled() {
-                [200, 500, 1000, 2000]
-                    .get(ui.get_live_interval_index() as usize)
-                    .copied()
-                    .unwrap_or(500)
-            } else {
-                0
+            let configured =
+                sampling_interval_micros(ui.get_live_interval_index(), &ui.get_live_custom_hz());
+            let interval = match configured {
+                Ok(interval) => {
+                    ui.set_live_frequency_error("".into());
+                    if ui.get_live_enabled() {
+                        interval
+                    } else {
+                        0
+                    }
+                }
+                Err(error) => {
+                    ui.set_live_frequency_error(error.into());
+                    ui.set_live_enabled(false);
+                    0
+                }
             };
             live_interval.store(interval, Ordering::Relaxed);
             live_presenter
@@ -454,4 +494,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| std::io::Error::other("Application worker panicked"))?;
     result?;
     Ok(())
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    use super::sampling_interval_micros;
+
+    #[test]
+    fn custom_frequency_preserves_precision_and_rejects_invalid_rates() {
+        assert_eq!(sampling_interval_micros(5, "").unwrap(), 500_000);
+        assert_eq!(sampling_interval_micros(10, " 3 ").unwrap(), 333_333);
+        assert_eq!(sampling_interval_micros(10, "7.5").unwrap(), 133_333);
+        assert_eq!(sampling_interval_micros(10, "0.1").unwrap(), 10_000_000);
+        assert_eq!(sampling_interval_micros(10, "1000").unwrap(), 1000);
+        for invalid in ["", "no", "0", "-1", "NaN", "inf", "0.01", "1001"] {
+            assert!(sampling_interval_micros(10, invalid).is_err());
+        }
+        assert!(sampling_interval_micros(-1, "1").is_err());
+        assert!(sampling_interval_micros(11, "1").is_err());
+    }
 }

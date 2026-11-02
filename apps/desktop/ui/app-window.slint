@@ -67,7 +67,9 @@ export component AppWindow inherits Window {
     in-out property <string> firmware-search;
     callback search-firmware(string);
     in-out property <bool> live-enabled: false;
-    in-out property <int> live-interval-index: 1;
+    in-out property <int> live-interval-index: 5;
+    in-out property <string> live-custom-hz: "10";
+    in-out property <string> live-frequency-error;
     in-out property <string> watch-sample-status: "实时刷新已关闭";
     callback live-refresh();
     in-out property <int> watch-revision;
@@ -224,6 +226,8 @@ export component AppWindow inherits Window {
                     watches: root.watches;
                     live-enabled <=> root.live-enabled;
                     live-interval-index <=> root.live-interval-index;
+                    live-custom-hz <=> root.live-custom-hz;
+                    frequency-error: root.live-frequency-error;
                     sample-status: root.watch-sample-status;
                     live-refresh => { root.live-refresh(); }
                     revision: root.watch-revision;

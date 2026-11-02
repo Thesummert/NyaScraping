@@ -19,7 +19,9 @@ export component VariablesPage inherits VerticalLayout {
     in property <bool> can-write;
     in property <int> revision;
     in-out property <bool> live-enabled;
-    in-out property <int> live-interval-index: 1;
+    in-out property <int> live-interval-index: 5;
+    in-out property <string> live-custom-hz: "10";
+    in property <string> frequency-error;
     in property <string> sample-status;
     callback live-refresh();
     private property <int> edit-revision: -1;
@@ -36,10 +38,27 @@ export component VariablesPage inherits VerticalLayout {
         spacing: 6px;
         CheckBox { text: "实时刷新"; checked <=> root.live-enabled; toggled => { root.live-refresh(); } }
         ComboBox {
-            model: ["200 ms", "500 ms", "1 s", "2 s"];
+            model: ["100 Hz · 10 ms", "50 Hz · 20 ms", "20 Hz · 50 ms", "10 Hz · 100 ms", "5 Hz · 200 ms", "2 Hz · 500 ms", "1 Hz · 1 s", "0.5 Hz · 2 s", "0.2 Hz · 5 s", "0.1 Hz · 10 s", "自定义…"];
             current-index <=> root.live-interval-index;
             selected => { root.live-refresh(); }
         }
+    }
+    if root.live-interval-index == 10: HorizontalLayout {
+        spacing: 6px;
+        LineEdit {
+            text <=> root.live-custom-hz;
+            placeholder-text: "0.1–1000 Hz";
+            horizontal-stretch: 1;
+            accepted => { root.live-refresh(); }
+        }
+        Text { text: "Hz"; color: Theme.muted; vertical-alignment: center; }
+        Button { text: "应用"; clicked => { root.live-refresh(); } }
+    }
+    if root.frequency-error != "": Text {
+        text: root.frequency-error;
+        color: #f08a80;
+        font-size: 11px;
+        wrap: word-wrap;
     }
     Text { text: root.sample-status; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
     HorizontalLayout {

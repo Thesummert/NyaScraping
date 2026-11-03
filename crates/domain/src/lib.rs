@@ -203,6 +203,10 @@ pub trait DebugSession: Send {
     fn debug_snapshot(&mut self, watches: &[WatchRequest]) -> DebugSnapshot;
     /// Refresh watches without interrupting or resuming a running target.
     fn sample_watches(&mut self, watches: &[WatchRequest]) -> DebugSnapshot;
+    /// Read bytes through the existing session without interrupt/resume or a second attachment.
+    fn read_live_memory(&mut self, _blocks: &[waveform::ReadBlock]) -> Result<Vec<Vec<u8>>> {
+        Err(Error("当前调试会话不支持无暂停内存读取".into()))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

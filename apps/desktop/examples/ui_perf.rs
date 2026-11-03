@@ -326,6 +326,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!ui.get_acquisition_active());
     println!("Waveform and monitor shared RPC, preserved history, frequency changes and shutdown: passed");
 
+    // Both additional backends use the existing application's command channel,
+    // not an OpenOCD socket or a second connection to the physical probe.
+    for kind in [1, 2] {
+        let mut backend_presenter = presenter::Presenter::default();
+        backend_presenter.apply(
+            &ui,
+            nya_application::Event::FirmwareOpened(Box::new(image.clone())).into(),
+        );
+        ui.set_backend_kind(kind);
+        ui.set_debug_connected(false);
+        backend_presenter.select_firmware(&ui, 0);
+        backend_presenter.plot_variable(&ui, 1);
+        backend_presenter.start_acquisition(&ui);
+        assert!(!ui.get_acquisition_active());
+        assert!(ui.get_acquisition_status().contains("请先"));
+        ui.set_debug_connected(true);
+        let (commands, receiver) = std::sync::mpsc::sync_channel(8);
+        let sampler = backend_presenter.acquisition.clone();
+        sampler.set_command_sender(commands);
+        let command_worker = std::thread::spawn(move || {
+            let mut reads = 0u32;
+            while let Ok(nya_application::Command::ReadLiveMemory(request)) = receiver.recv() {
+                assert_eq!(request.blocks.len(), 1);
+                assert_eq!(request.blocks[0].address, 0);
+                reads += 1;
+                let _ = request
+                    .response
+                    .try_send(Ok(vec![reads.to_le_bytes().to_vec()]));
+            }
+            assert!(reads >= 10);
+        });
+        let run_sampler = sampler.clone();
+        let sample_worker = std::thread::spawn(move || run_sampler.run());
+        backend_presenter.start_acquisition(&ui);
+        assert!(ui.get_acquisition_uses_session());
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while sampler.state.lock().unwrap().sweeps < 10 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        backend_presenter.refresh_acquisition(&ui);
+        assert!(
+            ui.get_waveform_channels()
+                .row_data(0)
+                .unwrap()
+                .value
+                .parse::<u32>()
+                .unwrap()
+                >= 10
+        );
+        assert_eq!(
+            sampler.state.lock().unwrap().endpoint,
+            Some(acquisition::MemorySource::DebugSession)
+        );
+        redraw(&window, &mut pixels, 2960);
+        // A lost debug connection must stop this source without resuming a core.
+        backend_presenter.apply(
+            &ui,
+            nya_application::Event::DebugUpdated {
+                snapshot: nya_domain::DebugSnapshot::default(),
+                completes_command: false,
+            }
+            .into(),
+        );
+        assert!(!ui.get_acquisition_active());
+        sampler.shutdown();
+        sample_worker.join().unwrap();
+        drop(backend_presenter);
+        drop(sampler);
+        command_worker.join().unwrap();
+    }
+    ui.set_backend_kind(-1);
+    ui.set_debug_connected(false);
+    // Restore the presenter's models before the remaining UI regressions.
+    presenter.apply(
+        &ui,
+        nya_application::Event::FirmwareOpened(Box::new(image.clone())).into(),
+    );
+    println!(
+        "pyOCD / probe-rs source selection, session reads, waveform display and disconnect: passed"
+    );
+
     // Verify click-to-watch and aggregate expansion through the real UI models.
     let image = nya_firmware_backend::NativeFirmwareBackend.parse(
         std::path::Path::new("fixture.axf"),

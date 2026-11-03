@@ -1,13 +1,17 @@
+use crate::non_stop::NonStopBridge;
 use crate::{
     mi::{self, Client, Value},
     DebugAdapter,
 };
+use nya_domain::waveform::ReadBlock;
 use nya_domain::*;
 use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub(super) struct Session {
     pub client: Option<Client>,
+    bridge: Option<NonStopBridge>,
+    memory_backend: Option<ToolKind>,
     state: SessionState,
     last_stop: u64,
     frames: Vec<StackFrame>,
@@ -284,6 +288,16 @@ impl DebugSession for DebugAdapter {
                 client.command("-gdb-set confirm off")?;
                 client.command("-gdb-set mi-async on")?;
                 client.command("-gdb-set may-call-functions off")?;
+                if matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs) {
+                    client.command(&format!(
+                        "-interpreter-exec console {}",
+                        mi::quote("maintenance set target-non-stop on")
+                    ))?;
+                    client.command("-gdb-set trust-readonly-sections off")?;
+                    client.command("-gdb-set code-cache off")?;
+                    client.command("-gdb-set stack-cache off")?;
+                    client.command("-gdb-set mem inaccessible-by-default off")?;
+                }
                 client.command(&format!(
                     "-file-exec-and-symbols {}",
                     mi::quote(&profile.firmware.to_string_lossy())
@@ -291,21 +305,34 @@ impl DebugSession for DebugAdapter {
                 if !external_server {
                     self.start_server(&profile)?;
                 }
-                let result = client.command(&format!(
-                    "-target-select remote 127.0.0.1:{}",
-                    profile.gdb_port
-                ));
+                let mut endpoint = std::net::SocketAddr::from(([127, 0, 0, 1], profile.gdb_port));
+                if profile.tool == ToolKind::ProbeRs {
+                    let bridge = match NonStopBridge::start(endpoint) {
+                        Ok(bridge) => bridge,
+                        Err(error) => {
+                            let _ = self.stop_server();
+                            return Err(error);
+                        }
+                    };
+                    endpoint = bridge.address();
+                    self.session.bridge = Some(bridge);
+                }
+                let result = client.command(&format!("-target-select remote {endpoint}"));
                 if let Err(error) = result {
+                    self.session.bridge = None;
                     let _ = self.stop_server();
                     return Err(error);
                 }
                 self.session.client = Some(client);
+                self.session.memory_backend = Some(profile.tool);
                 if let Err(error) = self
                     .session
                     .thread_state()
                     .and_then(|()| self.session.context())
                 {
                     self.session.client = None;
+                    self.session.bridge = None;
+                    self.session.memory_backend = None;
                     let _ = self.stop_server();
                     return Err(error);
                 }
@@ -323,6 +350,8 @@ impl DebugSession for DebugAdapter {
                     let _ = client.command_timeout("-target-disconnect", Duration::from_secs(1));
                 }
                 self.session.client = None;
+                self.session.bridge = None;
+                self.session.memory_backend = None;
                 self.session.state = SessionState::Disconnected;
                 self.session.frames.clear();
                 self.session.breakpoints.clear();
@@ -454,6 +483,8 @@ impl DebugSession for DebugAdapter {
                 self.session.log = client.logs.iter().cloned().collect::<Vec<_>>().join("\n");
             }
             self.session.client = None;
+            self.session.bridge = None;
+            self.session.memory_backend = None;
             let _ = self.stop_server();
             self.session.state = SessionState::Faulted;
             self.session.frames.clear();
@@ -467,6 +498,47 @@ impl DebugSession for DebugAdapter {
         let mut snapshot = self.debug_snapshot(watches);
         snapshot.watch_sample = snapshot.state == SessionState::Halted && !watches.is_empty();
         snapshot
+    }
+
+    fn read_live_memory(&mut self, blocks: &[ReadBlock]) -> Result<Vec<Vec<u8>>> {
+        if !matches!(
+            self.session.memory_backend,
+            Some(ToolKind::PyOcd | ToolKind::ProbeRs)
+        ) {
+            return Err(Error("请先连接 pyOCD 或 probe-rs 调试会话".into()));
+        }
+        if blocks.len() > 64
+            || blocks.iter().any(|b| {
+                b.byte_size == 0
+                    || b.byte_size > 1024
+                    || b.address.checked_add(b.byte_size as u64).is_none()
+            })
+        {
+            return Err(Error("内存采集读取块超出限制".into()));
+        }
+        let client = self.session.client()?;
+        if !matches!(client.state, SessionState::Running | SessionState::Halted) {
+            return Err(Error("当前调试连接无法采集内存".into()));
+        }
+        // Stop scheduling new blocks after 500 ms, but give an issued command
+        // its full timeout so an exhausted batch budget cannot poison GDB.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        blocks
+            .iter()
+            .map(|block| {
+                if Instant::now() >= deadline {
+                    return Err(Error("本轮内存读取超时，请减少不连续地址".into()));
+                }
+                let result = client.command_timeout(
+                    &format!(
+                        "-data-read-memory-bytes 0x{:x} {}",
+                        block.address, block.byte_size
+                    ),
+                    Duration::from_millis(500),
+                )?;
+                decode_memory(&result, block)
+            })
+            .collect()
     }
 
     fn debug_snapshot(&mut self, watches: &[WatchRequest]) -> DebugSnapshot {
@@ -512,6 +584,42 @@ impl DebugSession for DebugAdapter {
             log: self.session.log.clone(),
         }
     }
+}
+
+fn decode_memory(result: &Value, block: &ReadBlock) -> Result<Vec<u8>> {
+    let chunks = result.get("memory").map(Value::list).unwrap_or_default();
+    let invalid = || Error("调试后端返回了不完整或无效的内存数据".into());
+    let mut bytes = Vec::with_capacity(block.byte_size);
+    for chunk in chunks {
+        let begin = chunk
+            .field("begin")
+            .strip_prefix("0x")
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .ok_or_else(invalid)?;
+        let end = chunk
+            .field("end")
+            .strip_prefix("0x")
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .ok_or_else(invalid)?;
+        let contents = chunk.field("contents");
+        if begin != block.address + bytes.len() as u64
+            || end < begin
+            || end > block.address + block.byte_size as u64
+            || contents.len() != (end - begin) as usize * 2
+            || !contents.is_ascii()
+        {
+            return Err(invalid());
+        }
+        for offset in (0..contents.len()).step_by(2) {
+            bytes.push(
+                u8::from_str_radix(&contents[offset..offset + 2], 16).map_err(|_| invalid())?,
+            );
+        }
+    }
+    if bytes.len() != block.byte_size {
+        return Err(invalid());
+    }
+    Ok(bytes)
 }
 
 #[cfg(all(test, unix))]
@@ -582,6 +690,96 @@ mod tests {
         adapter.execute_debug(DebugAction::Pause).unwrap();
         adapter.poll_debug().unwrap();
         assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Halted);
+    }
+
+    #[test]
+    fn additional_backends_read_live_bytes_without_interrupt_or_reconnect() {
+        for tool in [ToolKind::PyOcd, ToolKind::ProbeRs] {
+            let (_root, mut adapter, mut profile) = fixture();
+            profile.tool = tool;
+            adapter
+                .execute_debug(DebugAction::Connect {
+                    profile,
+                    external_server: true,
+                })
+                .unwrap();
+            adapter.execute_debug(DebugAction::Continue).unwrap();
+            adapter
+                .session
+                .client()
+                .unwrap()
+                .command("-test-break-on-interrupt")
+                .unwrap();
+            let blocks = [ReadBlock {
+                address: 0x20000000,
+                byte_size: 4,
+                little_endian: true,
+            }];
+            assert_eq!(
+                adapter.read_live_memory(&blocks).unwrap(),
+                [vec![1, 2, 3, 4]]
+            );
+            assert_eq!(
+                adapter.read_live_memory(&blocks).unwrap(),
+                [vec![2, 3, 4, 5]]
+            );
+            assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
+            let invalid = [ReadBlock {
+                address: 0xdeadbeef,
+                ..blocks[0].clone()
+            }];
+            assert!(adapter
+                .read_live_memory(&invalid)
+                .unwrap_err()
+                .0
+                .contains("Memory access failed"));
+            assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
+            adapter
+                .session
+                .client()
+                .unwrap()
+                .command("-test-break-on-memory")
+                .unwrap();
+            assert!(adapter.read_live_memory(&blocks).is_ok());
+            adapter.poll_debug().unwrap();
+            let snapshot = adapter.debug_snapshot(&[]);
+            assert_eq!(snapshot.state, SessionState::Halted);
+            assert!(!snapshot.frames.is_empty());
+            adapter.execute_debug(DebugAction::Disconnect).unwrap();
+            assert!(adapter.read_live_memory(&blocks).is_err());
+            assert!(adapter.session.bridge.is_none());
+        }
+    }
+
+    #[test]
+    fn memory_results_reject_gaps_overlaps_wrong_addresses_and_invalid_hex() {
+        let block = ReadBlock {
+            address: 0x20000000,
+            byte_size: 4,
+            little_endian: false,
+        };
+        let response = |begin: &str, end: &str, contents: &str| {
+            Value::Tuple(vec![(
+                "memory".into(),
+                Value::List(vec![Value::Tuple(vec![
+                    ("begin".into(), Value::Text(begin.into())),
+                    ("end".into(), Value::Text(end.into())),
+                    ("contents".into(), Value::Text(contents.into())),
+                ])]),
+            )])
+        };
+        assert_eq!(
+            decode_memory(&response("0x20000000", "0x20000004", "12345678"), &block).unwrap(),
+            [0x12, 0x34, 0x56, 0x78]
+        );
+        for invalid in [
+            response("0x20000001", "0x20000005", "12345678"),
+            response("0x20000000", "0x20000002", "1234"),
+            response("0x20000000", "0x20000004", "gggggggg"),
+            Value::Tuple(vec![]),
+        ] {
+            assert!(decode_memory(&invalid, &block).is_err());
+        }
     }
 
     #[test]

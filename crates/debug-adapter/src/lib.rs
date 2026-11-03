@@ -1,5 +1,6 @@
 pub mod live_memory;
 mod mi;
+mod non_stop;
 mod session;
 mod targets;
 // All NyaScrapingCore-specific types stay inside this adapter.
@@ -177,6 +178,9 @@ impl DebugBackend for DebugAdapter {
         let server = GdbServer::resolve(&self.manager, core_tool(profile.tool), options(profile))
             .map_err(error)?;
         let mut command = server.command().map_err(error)?;
+        if profile.tool == ToolKind::PyOcd {
+            command.args(["-O", "cache.enable_memory=false"]);
+        }
         self.configure_packs(profile.tool, &mut command)?;
         self.server = Some(
             RunningGdbServer::start(command, profile.gdb_port, Duration::from_secs(10))

@@ -74,7 +74,7 @@ stateDiagram-v2
 ## 波形与监视数据
 
 
-波形链路分三层：`debug-adapter::live_memory::OpenOcdMemoryReader` → `desktop::acquisition` 的每通道缓冲 → `Presenter` 快照与 `waveform_view` 栅格化。左侧右键菜单使用菜单所在行的变量身份，右侧开关使用同一 `WatchEntry::waveform` 状态，最多 16 路波形及合计 64 路内存监视。重新加载固件会停止采集并清空旧通道，未解析手动表达式保留。
+波形链路分三层：OpenOCD Tcl 或已有 GDB/MI 会话 → `desktop::acquisition` 的每通道缓冲 → `Presenter` 快照与 `waveform_view` 栅格化。左侧右键菜单使用菜单所在行的变量身份，右侧开关使用同一 `WatchEntry::waveform` 状态，最多 16 路波形及合计 64 路内存监视。重新加载固件会停止采集并清空旧通道，未解析手动表达式保留。
 
 固件后端从 DWARF 基础类型编码递归解析标量表示，不按类型名猜测。仅静态地址、大小已知的数值变量可采集；不对运行中栈帧求值，不将指针、数组或结构体当成整数。字节序来自固件镜像；可重定位/动态镜像无已解析运行地址时拒绝加入通道。
 
@@ -87,6 +87,12 @@ stateDiagram-v2
 内存读取不消耗目标端采样代码的 CPU 周期，但可能争用总线或受到数据缓存影响；采样率、64 位读的一致性、跨通道同步和短脉冲捕获均无硬件保证。当前显示主机测得的平均采集频率、保留点数、淘汰点数及非有限值数。触发、游标、缩放、CSV 导出和 RTT/SWO 后端留待后续实现，硬件吞吐量及对目标执行的影响需实测。
 
 监视刷新复用同一采集器：`ChannelData::waveform` 区分连续波形与仅监视通道。波形每轮读取，监视按 `monitor_interval` 到期并入同一 RPC；无波形时用可唤醒的条件变量等待下一次监视截止时间，避免忙等。添加监视、调整频率、关闭监视或切换波形角色会更新 revision 和读取计划，保持同一 TCP 连接、采集 epoch 及未移除通道的样本。仅监视的新通道缓冲容量为 1，打开波形时扩容并保留最近值。波形通道优先占用 64 路读取预算，额外监视项需要减少数量。
+
+pyOCD / probe-rs 数据源通过 `Command::ReadLiveMemory` 将合并后的读取块提交给已有应用工作线程。请求携带截止时间及容量为 1 的响应通道；过期请求在触碰目标前拒绝，内部 `MemoryRead` 事件不投递 UI，连续读取间仍轮询异步停止事件。采集器每次最多一个未完成请求，等待上限 1200 ms。原有 UI 命令和内存读取在同一队列串行处理，避免两个客户端争用探针。
+
+`DebugSession::read_live_memory` 只允许已连接的 pyOCD / probe-rs 会话，用 `-data-read-memory-bytes` 读取固定地址并严格校验返回起止地址、长度及十六进制数据。每轮 500 ms 后不再调度新块，已发出的单块请求拥有独立 500 ms 超时，防止批次预算耗尽错误地使 GDB 会话失效。普通内存访问失败仅停止本次采集，不主动 detach 或暂停目标。
+
+pyOCD 通过其原生 QNonStop 支持读取；创建自有服务时禁用内存缓存。probe-rs 的 GDB stub 能在运行时处理内存包，但未声明 QNonStop，因此 `non_stop::NonStopBridge` 在单条后端 RSP 连接上转译握手、ACK、运行命令结果、停止通知与 vStopped 确认。桥接支持分片报文、校验和、有限重传、大小/队列上限，关闭时回收读线程。线程缺失的信号/单步回复补充当前线程；同组多核已停止时为 GDB 补齐停止通知。只有用户显式暂停请求转成 Ctrl-C，采样不会生成控制包。GDB 用 `maintenance set target-non-stop on` 开启底层 non-stop 协议，保持上层 all-stop 调试语义；内存读期间到达的断点/异常仍通过异步事件处理。桥接行为参考 [GDB 维护命令](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Maintenance-Commands.html) 以及 [probe-rs GDB stub](https://github.com/probe-rs/probe-rs/tree/master/probe-rs-tools/src/bin/probe-rs/cmd/gdb_server)。
 
 GDB `sample_watches` 只在目标已暂停时求值；运行中返回空值且不发送 interrupt/continue，应用层抑制这种空周期事件。固定地址数值变量通过采集快照填入监视列表；栈变量、成员或未解析表达式在运行时显示需暂停求值。用户主动写参数、暂停、断开等调试操作仍遵循原有会话语义。
 

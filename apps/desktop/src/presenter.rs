@@ -1,5 +1,7 @@
 use crate::{
-    acquisition::{sampling_interval_micros, Acquisition, CAPACITY, MAX_MEMORY_CHANNELS},
+    acquisition::{
+        sampling_interval_micros, Acquisition, MemorySource, CAPACITY, MAX_MEMORY_CHANNELS,
+    },
     firmware_browser::FirmwareBrowser,
     watch_list::WatchList,
     waveform_view::{self, COLORS, PLOT_WIDTH},
@@ -30,6 +32,7 @@ pub struct Presenter {
 
 /// Plain Rust data prepared on the worker, before entering the Slint event loop.
 pub enum PreparedEvent {
+    Internal,
     Tools(ToolState, String),
     Targets(TargetCatalog),
     Debug(DebugSnapshot, bool),
@@ -50,6 +53,7 @@ pub struct FirmwareView {
 impl From<Event> for PreparedEvent {
     fn from(event: Event) -> Self {
         match event {
+            Event::MemoryRead => Self::Internal,
             Event::ToolsUpdated { state, message } => Self::Tools(state, message),
             Event::TargetsUpdated(catalog) => Self::Targets(catalog),
             Event::DebugUpdated { snapshot, completes_command } => Self::Debug(snapshot, completes_command),
@@ -81,10 +85,14 @@ impl From<Event> for PreparedEvent {
 
 impl Presenter {
     pub fn apply(&mut self, ui: &AppWindow, event: PreparedEvent) {
+        if matches!(&event, PreparedEvent::Internal) {
+            return;
+        }
         if !matches!(&event, PreparedEvent::Debug(_, false)) {
             ui.set_busy(false);
         }
         match event {
+            PreparedEvent::Internal => {}
             PreparedEvent::Tools(state, message) => {
                 let kind = match state.backend {
                     Some(ToolKind::OpenOcd) => 0,
@@ -93,6 +101,9 @@ impl Presenter {
                     None => -1,
                 };
                 if ui.get_backend_kind() != kind {
+                    ui.set_live_enabled(false);
+                    self.acquisition.stop();
+                    self.refresh_acquisition(ui);
                     ui.set_debug_target("".into());
                     ui.set_debug_interface("".into());
                     ui.set_target_search("".into());
@@ -256,6 +267,22 @@ impl Presenter {
                     ui.set_source_path(document.path.display().to_string().into());
                     ui.set_source_text(document.text.into());
                     ui.set_source_meta(document.encoding.into());
+                }
+                if matches!(
+                    snapshot.state,
+                    SessionState::Disconnected | SessionState::Faulted
+                ) && self
+                    .acquisition
+                    .state
+                    .lock()
+                    .expect("acquisition lock")
+                    .endpoint
+                    == Some(MemorySource::DebugSession)
+                {
+                    self.acquisition.stop();
+                    ui.set_live_enabled(false);
+                    self.refresh_acquisition(ui);
+                    self.refresh_watches(ui);
                 }
                 ui.set_debug_log(snapshot.log.into());
                 if !snapshot.message.is_empty() {
@@ -492,7 +519,7 @@ impl Presenter {
                     self.invalidate_watches(ui);
                     self.sync_waveforms(ui);
                     ui.set_current_tab(1);
-                    ui.set_status("已加入实时波形；在波形页连接 OpenOCD 后开始采集".into());
+                    ui.set_status("已加入实时波形；在波形页开始采集".into());
                 }
                 Err(error) => ui.set_status(error.into()),
             }
@@ -527,6 +554,21 @@ impl Presenter {
         }
     }
 
+    fn memory_source(ui: &AppWindow) -> Result<MemorySource, String> {
+        if matches!(ui.get_backend_kind(), 1 | 2) {
+            if !ui.get_debug_connected() {
+                return Err("请先在调试页连接所选的 pyOCD / probe-rs 后端".into());
+            }
+            Ok(MemorySource::DebugSession)
+        } else {
+            ui.get_acquisition_endpoint()
+                .trim()
+                .parse()
+                .map(MemorySource::OpenOcd)
+                .map_err(|_| "请输入 OpenOCD Tcl 的 IP:端口，例如 127.0.0.1:6666".into())
+        }
+    }
+
     pub fn start_acquisition(&mut self, ui: &AppWindow) {
         if self
             .acquisition
@@ -539,14 +581,10 @@ impl Presenter {
             ui.set_acquisition_status("请先添加波形通道".into());
             return;
         }
-        match ui.get_acquisition_endpoint().trim().parse() {
-            Ok(endpoint) => {
-                self.acquisition.start(endpoint);
-            }
-            Err(_) => {
-                ui.set_acquisition_status(
-                    "请输入 OpenOCD Tcl 的 IP:端口，例如 127.0.0.1:6666".into(),
-                );
+        match Self::memory_source(ui) {
+            Ok(source) => self.acquisition.start_source(source),
+            Err(error) => {
+                ui.set_acquisition_status(error.into());
                 return;
             }
         }
@@ -600,9 +638,12 @@ impl Presenter {
                 .endpoint
                 .is_none()
         {
-            match ui.get_acquisition_endpoint().trim().parse() {
-                Ok(endpoint) => self.acquisition.start(endpoint),
-                Err(_) => ui.set_watch_sample_status("请输入有效的 OpenOCD Tcl IP:端口".into()),
+            match Self::memory_source(ui) {
+                Ok(source) => self.acquisition.start_source(source),
+                Err(error) => {
+                    ui.set_watch_sample_status(error.as_str().into());
+                    ui.set_acquisition_status(error.into());
+                }
             }
         }
         self.last_sequence = None;

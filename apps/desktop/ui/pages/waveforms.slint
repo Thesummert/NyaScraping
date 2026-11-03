@@ -19,6 +19,9 @@ export component WaveformsPage inherits VerticalLayout {
     in property <string> status;
     in property <string> statistics;
     in-out property <string> endpoint;
+    in property <string> source-label;
+    in property <bool> use-session;
+    in property <bool> session-ready;
     callback start();
     callback stop();
     callback remove(int);
@@ -29,9 +32,10 @@ export component WaveformsPage inherits VerticalLayout {
     }
     HorizontalLayout {
         spacing: 8px;
-        Text { text: "OpenOCD Tcl"; color: Theme.muted; vertical-alignment: center; }
-        LineEdit { text <=> root.endpoint; placeholder-text: "127.0.0.1:6666"; enabled: !root.active; horizontal-stretch: 1; }
-        Button { text: "开始采集"; enabled: !root.active && root.channels.length > 0; clicked => { root.start(); } }
+        Text { text: root.source-label; color: Theme.muted; vertical-alignment: center; }
+        if !root.use-session: LineEdit { text <=> root.endpoint; placeholder-text: "127.0.0.1:6666"; enabled: !root.active; horizontal-stretch: 1; }
+        if root.use-session: Text { text: root.session-ready ? "复用当前连接" : "请先连接调试后端"; color: Theme.muted; horizontal-stretch: 1; vertical-alignment: center; }
+        Button { text: "开始采集"; enabled: !root.active && root.channels.length > 0 && (!root.use-session || root.session-ready); clicked => { root.start(); } }
         Button { text: "停止"; enabled: root.active; clicked => { root.stop(); } }
     }
     Text { text: root.status; color: Theme.accent; overflow: elide; }

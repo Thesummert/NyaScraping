@@ -22,6 +22,9 @@ export component VariablesPage inherits VerticalLayout {
     in property <bool> can-write;
     in property <bool> acquisition-active;
     in-out property <string> memory-endpoint;
+    in property <string> source-label;
+    in property <bool> use-session;
+    in property <bool> session-ready;
     in property <int> revision;
     in-out property <bool> live-enabled;
     in-out property <int> live-interval-index: 5;
@@ -42,12 +45,13 @@ export component VariablesPage inherits VerticalLayout {
     Text { text: "变量监视"; color: Theme.text; font-size: 15px; font-weight: 700; }
     HorizontalLayout {
         spacing: 6px;
-        Text { text: "OpenOCD Tcl"; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
-        LineEdit { text <=> root.memory-endpoint; placeholder-text: "127.0.0.1:6666"; enabled: !root.acquisition-active; horizontal-stretch: 1; }
+        Text { text: root.source-label; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+        if !root.use-session: LineEdit { text <=> root.memory-endpoint; placeholder-text: "127.0.0.1:6666"; enabled: !root.acquisition-active; horizontal-stretch: 1; }
     }
+    if root.use-session && !root.session-ready: Text { text: "请先在调试页连接当前后端"; color: Theme.muted; font-size: 11px; }
     HorizontalLayout {
         spacing: 6px;
-        CheckBox { text: "实时刷新"; checked <=> root.live-enabled; toggled => { root.live-refresh(); } }
+        CheckBox { text: "实时刷新"; enabled: !root.use-session || root.session-ready; checked <=> root.live-enabled; toggled => { root.live-refresh(); } }
         ComboBox {
             model: ["100 Hz · 10 ms", "50 Hz · 20 ms", "20 Hz · 50 ms", "10 Hz · 100 ms", "5 Hz · 200 ms", "2 Hz · 500 ms", "1 Hz · 1 s", "0.5 Hz · 2 s", "0.2 Hz · 5 s", "0.1 Hz · 10 s", "自定义…"];
             current-index <=> root.live-interval-index;

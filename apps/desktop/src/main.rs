@@ -81,7 +81,7 @@ fn target_profile(ui: &AppWindow) -> Result<TargetProfile, String> {
     let interface = ui.get_debug_interface().trim().to_owned();
     Ok(TargetProfile {
         name: "桌面调试目标".into(),
-        tool: ToolKind::OpenOcd,
+        tool: tool_kind(ui.get_backend_kind()).unwrap_or(ToolKind::OpenOcd),
         target: ui.get_debug_target().trim().into(),
         interface: if interface.is_empty() || ui.get_backend_kind() != 0 {
             None
@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("presenter lock")
         .acquisition
         .clone();
+    acquisition.set_command_sender(sender.clone());
     let sampler = acquisition.clone();
     let acquisition_worker = std::thread::spawn(move || sampler.run());
     let worker_presenter = presenter.clone();
@@ -178,9 +179,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             };
-            let Some(event) = event else {
+            let Some(mut event) = event else {
                 continue;
             };
+            if matches!(&event, nya_application::Event::MemoryRead) {
+                // Sampling commands never create per-point UI events. Preserve
+                // async breakpoint/disconnect notifications during continuous reads.
+                match application.poll() {
+                    Some(update) => event = update,
+                    None => continue,
+                }
+            }
             if matches!(&event, nya_application::Event::DebugUpdated { snapshot, .. } if snapshot.watch_sample_error.is_some())
             {
                 worker_interval.store(0, Ordering::Relaxed);
@@ -557,7 +566,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_watch_sample_status(if interval == 0 {
                 "实时刷新已关闭".into()
             } else {
-                "无暂停刷新：与波形共用 OpenOCD 内存采集".into()
+                "无暂停刷新：与波形共用当前后端采集".into()
             });
         }
     });

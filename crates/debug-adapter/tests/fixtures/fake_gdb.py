@@ -11,6 +11,8 @@ current_expression = ""
 break_on_interrupt = False
 live_counter = 0
 fail_continue = False
+memory_reads = 0
+break_on_memory = False
 
 def send(text):
     print(text, flush=True)
@@ -30,6 +32,10 @@ for line in sys.stdin:
         continue
     if command == '-test-break-on-interrupt':
         break_on_interrupt = True
+        send(token + '^done')
+        continue
+    if command == '-test-break-on-memory':
+        break_on_memory = True
         send(token + '^done')
         continue
     if command == '-test-timeout':
@@ -80,6 +86,19 @@ for line in sys.stdin:
         else:
             values[current_expression] = value
             send(token + '^done,value="' + value + '"')
+    elif command.startswith('-data-read-memory-bytes'):
+        _, address, size = command.split()
+        address, size = int(address, 0), int(size)
+        if address == 0xDEADBEEF:
+            send(token + '^error,msg="Memory access failed"')
+        else:
+            memory_reads += 1
+            if break_on_memory:
+                state = "stopped"
+                stopped()
+                break_on_memory = False
+            data = bytes((memory_reads + i) & 255 for i in range(size)).hex()
+            send(token + '^done,memory=[{begin="' + hex(address) + '",offset="0",end="' + hex(address + size) + '",contents="' + data + '"}]')
     elif command.startswith('-data-evaluate-expression'):
         expression = command.split(' ', 1)[1].strip('"')
         send(token + '^done,value="' + values.get(expression, '42') + '"')

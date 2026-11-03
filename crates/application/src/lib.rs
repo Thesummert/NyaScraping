@@ -4,7 +4,13 @@ use nya_domain::{
     DebugAction, DebugSession, DebugSnapshot, Document, Result, TargetCatalog, TextBackend,
     ToolKind, ToolRegistry, ToolState, WatchRequest,
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::mpsc::SyncSender, time::Instant};
+
+pub struct MemoryReadRequest {
+    pub blocks: Vec<nya_domain::waveform::ReadBlock>,
+    pub deadline: Instant,
+    pub response: SyncSender<Result<Vec<Vec<u8>>>>,
+}
 
 pub enum Command {
     RefreshTools,
@@ -19,9 +25,12 @@ pub enum Command {
     UninstallTool { tool: ToolKind, version: String },
     OpenSource(PathBuf),
     OpenFirmware(PathBuf),
+    ReadLiveMemory(MemoryReadRequest),
 }
 
 pub enum Event {
+    /// Internal acquisition response; never posted to the UI event queue.
+    MemoryRead,
     TargetsUpdated(TargetCatalog),
     ToolsUpdated {
         state: ToolState,
@@ -55,6 +64,15 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
 
     pub fn execute(&mut self, command: Command) -> Event {
         let result: Result<Event> = match command {
+            Command::ReadLiveMemory(request) => {
+                let result = if Instant::now() >= request.deadline {
+                    Err(nya_domain::Error("内存采集请求已过期".into()))
+                } else {
+                    self.tools.read_live_memory(&request.blocks)
+                };
+                let _ = request.response.try_send(result);
+                return Event::MemoryRead;
+            }
             Command::Debug(mut action) => {
                 if let DebugAction::Connect {
                     profile,
@@ -286,6 +304,16 @@ mod tests {
         }
     }
     impl DebugSession for Tools {
+        fn read_live_memory(
+            &mut self,
+            blocks: &[nya_domain::waveform::ReadBlock],
+        ) -> Result<Vec<Vec<u8>>> {
+            self.calls.push("read-memory".into());
+            Ok(blocks
+                .iter()
+                .map(|block| vec![42; block.byte_size])
+                .collect())
+        }
         fn execute_debug(&mut self, action: DebugAction) -> Result<()> {
             use nya_domain::SessionState;
             match &action {
@@ -346,6 +374,41 @@ mod tests {
             Event::ToolsUpdated { state, message } => (state, message),
             _ => panic!("expected tools snapshot"),
         }
+    }
+
+    #[test]
+    fn live_memory_requests_reply_directly_and_expired_requests_never_touch_target() {
+        use nya_domain::waveform::ReadBlock;
+        use std::{sync::mpsc, time::Duration};
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        let block = ReadBlock {
+            address: 0x20000000,
+            byte_size: 4,
+            little_endian: true,
+        };
+        let (response, receiver) = mpsc::sync_channel(1);
+        assert!(matches!(
+            app.execute(Command::ReadLiveMemory(MemoryReadRequest {
+                blocks: vec![block.clone()],
+                deadline: Instant::now() - Duration::from_secs(1),
+                response,
+            })),
+            Event::MemoryRead
+        ));
+        assert!(receiver.recv().unwrap().is_err());
+        assert!(app.tools.calls.is_empty());
+        let (response, receiver) = mpsc::sync_channel(1);
+        assert!(matches!(
+            app.execute(Command::ReadLiveMemory(MemoryReadRequest {
+                blocks: vec![block],
+                deadline: Instant::now() + Duration::from_secs(1),
+                response,
+            })),
+            Event::MemoryRead
+        ));
+        assert_eq!(receiver.recv().unwrap().unwrap(), [vec![42; 4]]);
+        assert_eq!(app.tools.calls, ["read-memory"]);
+        assert!(app.tools.actions.is_empty());
     }
 
     #[test]

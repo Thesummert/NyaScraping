@@ -75,6 +75,8 @@ export component AppWindow inherits Window {
     in-out property <string> acquisition-status: "采集未启动";
     in-out property <string> acquisition-statistics: "每通道最多保留 32768 个样本；尚无采集数据";
     in-out property <string> acquisition-endpoint: "127.0.0.1:6666";
+    out property <bool> acquisition-uses-session: root.backend-kind == 1 || root.backend-kind == 2;
+    out property <string> acquisition-source-label: root.backend-kind == 1 ? "pyOCD · 调试会话" : root.backend-kind == 2 ? "probe-rs · 调试会话" : "OpenOCD Tcl";
     callback refresh-tools();
     callback install-tool(int, string);
     callback select-tool(int, string);
@@ -203,6 +205,9 @@ export component AppWindow inherits Window {
                                 status: root.acquisition-status;
                                 statistics: root.acquisition-statistics;
                                 endpoint <=> root.acquisition-endpoint;
+                                source-label: root.acquisition-source-label;
+                                use-session: root.acquisition-uses-session;
+                                session-ready: root.debug-connected;
                                 start => { root.start-acquisition(); }
                                 stop => { root.stop-acquisition(); }
                                 remove(index) => { root.toggle-waveform(index); }
@@ -283,6 +288,9 @@ export component AppWindow inherits Window {
                     watches: root.watches;
                     acquisition-active: root.acquisition-active;
                     memory-endpoint <=> root.acquisition-endpoint;
+                    source-label: root.acquisition-source-label;
+                    use-session: root.acquisition-uses-session;
+                    session-ready: root.debug-connected;
                     live-enabled <=> root.live-enabled;
                     live-interval-index <=> root.live-interval-index;
                     live-custom-hz <=> root.live-custom-hz;

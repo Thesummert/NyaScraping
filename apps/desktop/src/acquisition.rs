@@ -1,15 +1,23 @@
 //! Sampling owns its socket on a dedicated thread; UI polls bounded shared buffers.
+use nya_application::{Command, MemoryReadRequest};
 use nya_debug_adapter::live_memory::OpenOcdMemoryReader;
 use nya_domain::waveform::{LiveMemoryReader, MemoryChannel, ReadPlan, Sample, SampleBuffer};
+use nya_domain::{Error, Result};
 use std::{
     net::SocketAddr,
     num::NonZeroUsize,
-    sync::{Condvar, Mutex},
+    sync::{
+        mpsc::{self, SyncSender},
+        Condvar, Mutex,
+    },
     time::{Duration, Instant},
 };
 
 // Keep sub-millisecond precision when converting fractional custom frequencies.
-pub fn sampling_interval_micros(index: i32, custom_hz: &str) -> Result<u64, &'static str> {
+pub fn sampling_interval_micros(
+    index: i32,
+    custom_hz: &str,
+) -> std::result::Result<u64, &'static str> {
     const PRESETS_MS: [u64; 10] = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
     if index == PRESETS_MS.len() as i32 {
         let hz = custom_hz
@@ -32,6 +40,32 @@ pub fn sampling_interval_micros(index: i32, custom_hz: &str) -> Result<u64, &'st
 pub const CAPACITY: usize = 32768;
 pub const MAX_MEMORY_CHANNELS: usize = 64;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemorySource {
+    OpenOcd(SocketAddr),
+    DebugSession,
+}
+
+struct SessionMemoryReader {
+    commands: SyncSender<Command>,
+}
+impl LiveMemoryReader for SessionMemoryReader {
+    fn read_blocks(&mut self, blocks: &[nya_domain::waveform::ReadBlock]) -> Result<Vec<Vec<u8>>> {
+        let (response, receiver) = mpsc::sync_channel(1);
+        let deadline = Instant::now() + Duration::from_millis(1200);
+        self.commands
+            .try_send(Command::ReadLiveMemory(MemoryReadRequest {
+                blocks: blocks.to_vec(),
+                deadline,
+                response,
+            }))
+            .map_err(|_| Error("调试任务队列繁忙或已关闭".into()))?;
+        receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| Error("等待调试会话内存读取超时".into()))?
+    }
+}
+
 pub struct ChannelData {
     pub id: usize,
     pub memory: MemoryChannel,
@@ -42,7 +76,7 @@ pub struct ChannelData {
 
 pub struct State {
     pub channels: Vec<ChannelData>,
-    pub endpoint: Option<SocketAddr>,
+    pub endpoint: Option<MemorySource>,
     pub status: String,
     pub revision: u64,
     pub sequence: u64,
@@ -74,9 +108,14 @@ impl Default for State {
 pub struct Acquisition {
     pub state: Mutex<State>,
     changed: Condvar,
+    commands: Mutex<Option<SyncSender<Command>>>,
 }
 
 impl Acquisition {
+    pub fn set_command_sender(&self, sender: SyncSender<Command>) {
+        *self.commands.lock().expect("acquisition commands lock") = Some(sender);
+    }
+
     pub fn set_targets(&self, targets: Vec<(usize, MemoryChannel)>) {
         self.configure(
             targets
@@ -141,10 +180,19 @@ impl Acquisition {
         self.changed.notify_one();
     }
 
+    #[cfg(test)]
     pub fn start(&self, endpoint: SocketAddr) {
+        self.start_source(MemorySource::OpenOcd(endpoint));
+    }
+
+    pub fn start_source(&self, source: MemorySource) {
         let mut state = self.state.lock().expect("acquisition lock");
-        state.endpoint = Some(endpoint);
-        state.status = "正在连接 OpenOCD…".into();
+        state.endpoint = Some(source);
+        state.status = match source {
+            MemorySource::OpenOcd(_) => "正在连接 OpenOCD…",
+            MemorySource::DebugSession => "正在通过现有调试会话采集…",
+        }
+        .into();
         state.revision += 1;
         state.sequence += 1;
         state.epoch = Instant::now();
@@ -173,7 +221,7 @@ impl Acquisition {
     }
 
     pub fn run(&self) {
-        let mut reader: Option<OpenOcdMemoryReader> = None;
+        let mut reader: Option<Box<dyn LiveMemoryReader>> = None;
         let mut connection = None;
         loop {
             let (revision, endpoint, epoch, channels, wave_indices, monitor_interval) = {
@@ -215,7 +263,20 @@ impl Acquisition {
                 let all_indices: Vec<_> = (0..channels.len()).collect();
                 let mut next_monitor = Instant::now();
                 if reader.is_none() || connection != Some(endpoint) {
-                    reader = Some(OpenOcdMemoryReader::connect(endpoint)?);
+                    reader = Some(match endpoint {
+                        MemorySource::OpenOcd(endpoint) => {
+                            Box::new(OpenOcdMemoryReader::connect(endpoint)?)
+                                as Box<dyn LiveMemoryReader>
+                        }
+                        MemorySource::DebugSession => Box::new(SessionMemoryReader {
+                            commands: self
+                                .commands
+                                .lock()
+                                .expect("acquisition commands lock")
+                                .clone()
+                                .ok_or_else(|| Error("调试采集尚未初始化".into()))?,
+                        }),
+                    });
                     connection = Some(endpoint);
                 }
                 loop {

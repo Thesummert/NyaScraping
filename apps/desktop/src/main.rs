@@ -1,6 +1,8 @@
+mod acquisition;
 mod firmware_browser;
 mod presenter;
 mod watch_list;
+mod waveform_view;
 
 use nya_application::{Application, Command};
 use nya_debug_adapter::DebugAdapter;
@@ -35,6 +37,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (sender, receiver) = mpsc::sync_channel(8);
     let weak = ui.as_weak();
     let presenter = Arc::new(Mutex::new(presenter::Presenter::default()));
+    let acquisition = presenter
+        .lock()
+        .expect("presenter lock")
+        .acquisition
+        .clone();
+    let sampler = acquisition.clone();
+    let acquisition_worker = std::thread::spawn(move || sampler.run());
     let worker_presenter = presenter.clone();
     let worker = std::thread::spawn(move || {
         while let Ok(command) = receiver.recv() {
@@ -127,17 +136,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let weak = ui.as_weak();
+    let remove_presenter = presenter.clone();
     ui.on_remove_watch(move |index| {
         if let Some(ui) = weak.upgrade() {
-            presenter
+            remove_presenter
                 .lock()
                 .expect("presenter lock")
                 .remove_watch(&ui, index);
         }
     });
 
+    let weak = ui.as_weak();
+    let plot_presenter = presenter.clone();
+    ui.on_plot_variable(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            plot_presenter
+                .lock()
+                .expect("presenter lock")
+                .plot_variable(&ui, index);
+        }
+    });
+    let weak = ui.as_weak();
+    let plot_presenter = presenter.clone();
+    ui.on_toggle_waveform(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            plot_presenter
+                .lock()
+                .expect("presenter lock")
+                .toggle_waveform(&ui, index);
+        }
+    });
+    let weak = ui.as_weak();
+    let plot_presenter = presenter.clone();
+    ui.on_start_acquisition(move || {
+        if let Some(ui) = weak.upgrade() {
+            plot_presenter
+                .lock()
+                .expect("presenter lock")
+                .start_acquisition(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let plot_presenter = presenter.clone();
+    ui.on_stop_acquisition(move || {
+        if let Some(ui) = weak.upgrade() {
+            plot_presenter
+                .lock()
+                .expect("presenter lock")
+                .stop_acquisition(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let refresh_presenter = presenter.clone();
+    let waveform_timer = slint::Timer::default();
+    waveform_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(33),
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                refresh_presenter
+                    .lock()
+                    .expect("presenter lock")
+                    .refresh_acquisition(&ui);
+            }
+        },
+    );
+
     ui.invoke_refresh_tools();
     let result = ui.run();
+    waveform_timer.stop();
+    acquisition.shutdown();
+    acquisition_worker
+        .join()
+        .map_err(|_| std::io::Error::other("Acquisition worker panicked"))?;
     // Dropping the UI releases callback senders; closing the channel stops the worker.
     drop(ui);
     drop(sender);

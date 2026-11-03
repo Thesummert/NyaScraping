@@ -6,6 +6,8 @@ export struct FirmwareTreeRow {
     depth: int,
     branch: bool,
     expanded: bool,
+    variable: bool,
+    can-plot: bool,
 }
 
 export component FirmwarePage inherits VerticalLayout {
@@ -19,6 +21,7 @@ export component FirmwarePage inherits VerticalLayout {
     callback open();
     callback select-node(int);
     callback add-variable();
+    callback plot-variable(int);
     spacing: 10px;
     HorizontalLayout {
         Text { text: "文件树"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
@@ -51,7 +54,28 @@ export component FirmwarePage inherits VerticalLayout {
                     font-size: 12px;
                     overflow: elide;
                 }
-                area := TouchArea { clicked => { root.select-node(index); } }
+                menu := ContextMenuArea {
+                    Menu {
+                        MenuItem {
+                            title: "加入实时波形";
+                            enabled: row.can-plot && !root.busy;
+                            activated => { root.plot-variable(index); }
+                        }
+                        MenuItem {
+                            title: "加入监视";
+                            enabled: row.variable && !root.busy;
+                            activated => { root.select-node(index); root.add-variable(); }
+                        }
+                    }
+                }
+                area := TouchArea {
+                    clicked => { root.select-node(index); }
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                            menu.show({ x: self.mouse-x, y: self.mouse-y });
+                        }
+                    }
+                }
             }
         }
         if root.tree.length == 0: Text {

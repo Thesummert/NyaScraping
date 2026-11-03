@@ -3,9 +3,9 @@ import { Theme } from "theme.slint";
 import { SourcePage } from "pages/source.slint";
 import { ToolsPage } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
-import { WaveformsPage } from "pages/waveforms.slint";
+import { WaveformsPage, WaveformRow } from "pages/waveforms.slint";
 import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
-export { FirmwareTreeRow, WatchRow }
+export { FirmwareTreeRow, WatchRow, WaveformRow }
 
 export component AppWindow inherits Window {
     title: "NyaScraping · Embedded Debug Studio";
@@ -32,6 +32,12 @@ export component AppWindow inherits Window {
     in-out property <string> firmware-details: "选择文件树中的函数或变量，查看类型、声明位置及存储位置。";
     in-out property <bool> can-add-variable: false;
     in-out property <[WatchRow]> watches;
+    in-out property <[WaveformRow]> waveform-channels;
+    in-out property <bool> acquisition-active: false;
+    in-out property <string> acquisition-status: "采集未启动";
+    in-out property <string> acquisition-statistics: "每通道最多保留 32768 个样本；尚无采集数据";
+    in-out property <string> acquisition-endpoint: "127.0.0.1:6666";
+    in-out property <int> active-tab: 0;
     callback refresh-tools();
     callback open-source();
     callback open-firmware();
@@ -39,6 +45,10 @@ export component AppWindow inherits Window {
     callback add-selected-variable();
     callback add-expression(string);
     callback remove-watch(int);
+    callback plot-variable(int);
+    callback toggle-waveform(int);
+    callback start-acquisition();
+    callback stop-acquisition();
 
     VerticalLayout {
         spacing: 0px;
@@ -102,6 +112,7 @@ export component AppWindow inherits Window {
                     can-add-variable: root.can-add-variable;
                     select-node(index) => { root.select-firmware-node(index); }
                     add-variable => { root.add-selected-variable(); }
+                    plot-variable(index) => { root.plot-variable(index); }
                     open => { root.open-firmware(); }
                 }
             }
@@ -112,6 +123,7 @@ export component AppWindow inherits Window {
                     padding: 12px;
                     spacing: 10px;
                     TabWidget {
+                        current-index <=> root.active-tab;
                         Tab {
                             title: "源码";
                             SourcePage {
@@ -126,7 +138,17 @@ export component AppWindow inherits Window {
                         }
                         Tab {
                             title: "波形";
-                            WaveformsPage { padding-top: 12px; }
+                            WaveformsPage {
+                                padding-top: 12px;
+                                channels: root.waveform-channels;
+                                active: root.acquisition-active;
+                                status: root.acquisition-status;
+                                statistics: root.acquisition-statistics;
+                                endpoint <=> root.acquisition-endpoint;
+                                start => { root.start-acquisition(); }
+                                stop => { root.stop-acquisition(); }
+                                remove(index) => { root.toggle-waveform(index); }
+                            }
                         }
                         Tab {
                             title: "段 / 节 / 符号";
@@ -158,6 +180,7 @@ export component AppWindow inherits Window {
                     watches: root.watches;
                     add(expression) => { root.add-expression(expression); }
                     remove(index) => { root.remove-watch(index); }
+                    toggle-waveform(index) => { root.toggle-waveform(index); }
                 }
             }
         }

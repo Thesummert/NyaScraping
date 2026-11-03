@@ -196,6 +196,7 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
                 .unwrap_or_else(|| "<匿名变量>".into()),
             type_name: ty.as_ref().map(|t| t.0.clone()),
             byte_size: ty.and_then(|t| t.1),
+            scalar_type: ctx.scalar_type(node.key, &mut Vec::new())?,
             declaration: ctx.source_location(node.key)?,
             function: owner,
             kind: if node.tag == gimli::DW_TAG_formal_parameter {
@@ -353,6 +354,57 @@ impl Context {
         self.reference(owner, value)
             .map(|key| self.type_name(key, &mut Vec::new()))
             .transpose()
+    }
+
+    fn scalar_type(
+        &self,
+        key: Key,
+        visited: &mut Vec<Key>,
+    ) -> Result<Option<nya_domain::waveform::ScalarType>> {
+        use nya_domain::waveform::ScalarType;
+        if visited.len() >= 32 || visited.contains(&key) {
+            return Ok(None);
+        }
+        visited.push(key);
+        let tag = self.units[key.0].entry(key.1).map_err(error)?.tag();
+        let result = if tag == gimli::DW_TAG_base_type {
+            match self
+                .attr(key, gimli::DW_AT_encoding)?
+                .map(|(_, value)| value)
+            {
+                Some(Value::Encoding(gimli::DW_ATE_signed | gimli::DW_ATE_signed_char)) => {
+                    Some(ScalarType::Signed)
+                }
+                Some(Value::Encoding(gimli::DW_ATE_unsigned | gimli::DW_ATE_unsigned_char)) => {
+                    Some(ScalarType::Unsigned)
+                }
+                Some(Value::Encoding(gimli::DW_ATE_float)) => Some(ScalarType::Float),
+                Some(Value::Encoding(gimli::DW_ATE_boolean)) => Some(ScalarType::Boolean),
+                _ => None,
+            }
+        } else if matches!(
+            tag,
+            gimli::DW_TAG_variable
+                | gimli::DW_TAG_formal_parameter
+                | gimli::DW_TAG_constant
+                | gimli::DW_TAG_typedef
+                | gimli::DW_TAG_const_type
+                | gimli::DW_TAG_volatile_type
+                | gimli::DW_TAG_restrict_type
+                | gimli::DW_TAG_enumeration_type
+        ) {
+            match self.attr(key, gimli::DW_AT_type)? {
+                Some((owner, value)) => match self.reference(owner, value) {
+                    Some(next) => self.scalar_type(next, visited)?,
+                    None => None,
+                },
+                None => None,
+            }
+        } else {
+            None
+        };
+        visited.pop();
+        Ok(result)
     }
 
     fn type_name(&self, key: Key, visited: &mut Vec<Key>) -> Result<(String, Option<u64>)> {

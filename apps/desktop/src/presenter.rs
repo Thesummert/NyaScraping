@@ -1,15 +1,22 @@
 use crate::{
-    firmware_browser::FirmwareBrowser, watch_list::WatchList, AppWindow, FirmwareTreeRow, WatchRow,
+    acquisition::{Acquisition, CAPACITY},
+    firmware_browser::FirmwareBrowser,
+    watch_list::WatchList,
+    waveform_view::{self, COLORS, PLOT_WIDTH},
+    AppWindow, FirmwareTreeRow, WatchRow, WaveformRow,
 };
 use nya_application::Event;
 use nya_domain::{firmware::FirmwareImage, Document, ToolInstallation};
-use slint::{ModelRc, SharedString, VecModel};
-use std::rc::Rc;
+use slint::{Model, ModelRc, SharedString, VecModel};
+use std::{rc::Rc, sync::Arc, time::Duration};
 
 #[derive(Default)]
 pub struct Presenter {
     browser: Option<FirmwareBrowser>,
     watches: WatchList,
+    pub acquisition: Arc<Acquisition>,
+    last_sequence: Option<u64>,
+    last_plot_sequence: Option<u64>,
 }
 
 /// Plain Rust data prepared on the worker, before entering the Slint event loop.
@@ -53,7 +60,7 @@ impl From<Event> for PreparedEvent {
                     image.debug.files.len(), image.debug.functions.len(), image.debug.variables.len(),
                     if image.debug.warnings.is_empty() { "" } else { "（存在调试信息提示，见详情）" },
                 ),
-                browser: FirmwareBrowser::new(&image.debug),
+                browser: FirmwareBrowser::new(&image.debug, image.little_endian, image.kind == "Executable"),
             })),
         }
     }
@@ -104,6 +111,8 @@ impl Presenter {
                 ui.set_status("源码已通过 Rust 文本后端读取".into());
             }
             PreparedEvent::Firmware(view) => {
+                self.acquisition.stop();
+                self.acquisition.set_targets(Vec::new());
                 ui.set_firmware_title(view.title.into());
                 ui.set_firmware_meta(view.metadata.into());
                 ui.set_firmware_report(view.report.into());
@@ -111,6 +120,7 @@ impl Presenter {
                 self.browser = Some(view.browser);
                 self.watches.reset_firmware();
                 self.refresh_watches(ui);
+                self.sync_waveforms(ui);
                 ui.set_can_add_variable(false);
                 self.refresh_tree(ui);
                 ui.set_firmware_selected_node(-1);
@@ -158,10 +168,20 @@ impl Presenter {
     }
 
     pub fn add_expression(&mut self, ui: &AppWindow, expression: &str) {
-        let added = self.watches.add_expression(expression);
+        let variable = self
+            .browser
+            .as_ref()
+            .and_then(|browser| browser.resolve_variable(expression.trim()));
+        let resolved = variable.is_some();
+        let added = match variable {
+            Some(variable) => self.watches.add_variable(variable),
+            None => self.watches.add_expression(expression),
+        };
         self.refresh_watches(ui);
         ui.set_status(
-            if added {
+            if added && resolved {
+                "变量已添加到右侧监视列表"
+            } else if added {
                 "表达式已添加，等待调试会话求值"
             } else {
                 "表达式为空或已在监视列表中"
@@ -173,11 +193,216 @@ impl Presenter {
     pub fn remove_watch(&mut self, ui: &AppWindow, index: i32) {
         if usize::try_from(index).is_ok_and(|index| self.watches.remove(index)) {
             self.refresh_watches(ui);
+            self.sync_waveforms(ui);
             ui.set_status("已移除监视变量".into());
         }
     }
 
-    fn refresh_watches(&self, ui: &AppWindow) {
+    pub fn plot_variable(&mut self, ui: &AppWindow, row: i32) {
+        let variable = usize::try_from(row)
+            .ok()
+            .and_then(|row| self.browser.as_ref()?.variable_at(row));
+        if let Some(variable) = variable {
+            match self.watches.add_waveform(variable) {
+                Ok(()) => {
+                    self.refresh_watches(ui);
+                    self.sync_waveforms(ui);
+                    ui.set_active_tab(1);
+                    ui.set_status("已加入实时波形；在波形页连接 OpenOCD 后开始采集".into());
+                }
+                Err(error) => ui.set_status(error.into()),
+            }
+        }
+    }
+
+    pub fn toggle_waveform(&mut self, ui: &AppWindow, index: i32) {
+        let result = usize::try_from(index)
+            .map_err(|_| "监视变量不存在")
+            .and_then(|index| self.watches.toggle_waveform(index));
+        match result {
+            Ok(()) => {
+                let enabled = self.watches.entries[index as usize].waveform;
+                self.refresh_watches(ui);
+                self.sync_waveforms(ui);
+                if enabled {
+                    ui.set_active_tab(1);
+                }
+                ui.set_status(
+                    if enabled {
+                        "已加入实时波形"
+                    } else {
+                        "已从实时波形移除"
+                    }
+                    .into(),
+                );
+            }
+            Err(error) => {
+                self.refresh_watches(ui);
+                ui.set_status(error.into());
+            }
+        }
+    }
+
+    pub fn start_acquisition(&mut self, ui: &AppWindow) {
+        if !self.watches.entries.iter().any(|e| e.waveform) {
+            ui.set_acquisition_status("请先添加波形通道".into());
+            return;
+        }
+        match ui.get_acquisition_endpoint().trim().parse() {
+            Ok(endpoint) => self.acquisition.start(endpoint),
+            Err(_) => {
+                ui.set_acquisition_status(
+                    "请输入 OpenOCD Tcl 的 IP:端口，例如 127.0.0.1:6666".into(),
+                );
+                return;
+            }
+        }
+        self.refresh_acquisition(ui);
+    }
+
+    pub fn stop_acquisition(&mut self, ui: &AppWindow) {
+        self.acquisition.stop();
+        self.refresh_acquisition(ui);
+    }
+
+    fn sync_waveforms(&mut self, ui: &AppWindow) {
+        let targets = self
+            .watches
+            .entries
+            .iter()
+            .filter(|entry| entry.waveform)
+            .filter_map(|entry| Some((entry.channel_id()?, entry.memory.clone()?)))
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            self.acquisition.stop();
+        }
+        self.acquisition.set_targets(targets);
+        self.last_sequence = None;
+        self.last_plot_sequence = None;
+        self.refresh_acquisition(ui);
+    }
+
+    pub fn refresh_acquisition(&mut self, ui: &AppWindow) {
+        let state = self.acquisition.state.lock().expect("acquisition lock");
+        let sequence = state.sequence;
+        let update_values = self.last_sequence != Some(sequence);
+        let update_plot = self.last_plot_sequence != Some(sequence)
+            && (ui.get_active_tab() == 1 || self.last_plot_sequence.is_none());
+        if !update_values && !update_plot {
+            return;
+        }
+        let active = state.endpoint.is_some();
+        let status = state.status.clone();
+        let rate = if state.elapsed.is_zero() {
+            0.0
+        } else {
+            state.sweeps.saturating_sub(1) as f64 / state.elapsed.as_secs_f64()
+        };
+        let statistics = format!("实测平均 {rate:.0} 次/秒/通道 · 累计 {} 轮 · 每通道最多 {CAPACITY} 点 · 时间戳为主机读取时刻", state.sweeps);
+        let mut values = Vec::new();
+        let mut plots = Vec::new();
+        for (watch_index, entry) in self.watches.entries.iter().enumerate() {
+            let data = entry
+                .channel_id()
+                .and_then(|id| state.channels.iter().find(|c| c.id == id));
+            let latest = data
+                .and_then(|c| c.samples.latest())
+                .map(|sample| waveform_view::format_value(sample.value));
+            if update_values {
+                let value = match latest.as_ref() {
+                    Some(value) if !active => format!("{value}（已停止）"),
+                    Some(value) => value.clone(),
+                    None => if entry.waveform {
+                        "等待采集"
+                    } else {
+                        "未采集"
+                    }
+                    .into(),
+                };
+                values.push((watch_index, value));
+            }
+            if update_plot && entry.waveform {
+                let bins = data
+                    .map(|c| {
+                        c.samples
+                            .envelope(state.elapsed, Duration::from_secs(5), PLOT_WIDTH)
+                    })
+                    .unwrap_or_else(|| vec![None; PLOT_WIDTH]);
+                let count = data.map(|c| c.samples.len()).unwrap_or(0);
+                let evicted = data.map(|c| c.samples.evicted()).unwrap_or(0);
+                let invalid = data.map(|c| c.invalid).unwrap_or(0);
+                plots.push((
+                    watch_index,
+                    entry.expression.clone(),
+                    entry.scope.clone(),
+                    latest.unwrap_or_else(|| "—".into()),
+                    bins,
+                    count,
+                    invalid,
+                    evicted,
+                ));
+            }
+        }
+        // Release the sampler before rasterization or Slint model updates.
+        drop(state);
+        ui.set_acquisition_active(active);
+        ui.set_acquisition_status(status.into());
+        ui.set_acquisition_statistics(statistics.into());
+        if update_values {
+            let model = ui.get_watches();
+            if let Some(model) = model.as_any().downcast_ref::<VecModel<WatchRow>>() {
+                for (index, value) in values {
+                    if let Some(mut row) = model.row_data(index) {
+                        if row.value != value {
+                            row.value = value.into();
+                            model.set_row_data(index, row);
+                        }
+                    }
+                }
+            }
+            self.last_sequence = Some(sequence);
+        }
+        if update_plot {
+            let rows: Vec<_> = plots
+                .into_iter()
+                .enumerate()
+                .map(
+                    |(index, (watch_index, name, scope, value, bins, count, invalid, evicted))| {
+                        let color = COLORS[index % COLORS.len()];
+                        let (plot, minimum, maximum) = waveform_view::render(&bins, color);
+                        WaveformRow {
+                            watch_index: watch_index as i32,
+                            name: name.into(),
+                            scope: scope.into(),
+                            value: value.into(),
+                            minimum: minimum.into(),
+                            maximum: maximum.into(),
+                            statistics: format!("{count} 点 · 淘汰 {evicted} · 无效 {invalid}")
+                                .into(),
+                            tint: slint::Color::from_rgb_u8(color[0], color[1], color[2]),
+                            plot,
+                        }
+                    },
+                )
+                .collect();
+            let existing = ui.get_waveform_channels();
+            if let Some(model) = existing
+                .as_any()
+                .downcast_ref::<VecModel<WaveformRow>>()
+                .filter(|m| m.row_count() == rows.len())
+            {
+                for (index, row) in rows.into_iter().enumerate() {
+                    model.set_row_data(index, row);
+                }
+            } else {
+                ui.set_waveform_channels(ModelRc::from(Rc::new(VecModel::from(rows))));
+            }
+            self.last_plot_sequence = Some(sequence);
+        }
+    }
+
+    fn refresh_watches(&mut self, ui: &AppWindow) {
+        self.last_sequence = None;
         let rows: Vec<_> = self
             .watches
             .entries
@@ -186,6 +411,20 @@ impl Presenter {
                 expression: entry.expression.as_str().into(),
                 type_name: entry.type_name.as_str().into(),
                 scope: entry.scope.as_str().into(),
+                waveform: entry.waveform,
+                can_plot: entry.memory.is_some(),
+                value: if entry.waveform {
+                    "等待采集"
+                } else {
+                    "未采集"
+                }
+                .into(),
+                plot_hint: if entry.memory.is_some() {
+                    "运行中读取"
+                } else {
+                    "需固定地址的数值变量"
+                }
+                .into(),
             })
             .collect();
         ui.set_watches(ModelRc::from(Rc::new(VecModel::from(rows))));
@@ -203,6 +442,8 @@ impl Presenter {
                 depth: row.depth as i32,
                 branch: row.branch,
                 expanded: row.expanded,
+                variable: row.variable,
+                can_plot: row.can_plot,
             })
             .collect();
         ui.set_firmware_tree(ModelRc::from(Rc::new(VecModel::from(rows))));

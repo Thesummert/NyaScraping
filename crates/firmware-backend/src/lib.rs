@@ -148,6 +148,7 @@ impl NativeFirmwareBackend {
                 fallback_count += 1;
             } else if fallback_variables && matches!(symbol.kind.as_str(), "Data" | "Tls") {
                 debug.variables.push(DebugVariable {
+                    scalar_type: None,
                     name: symbol.name.clone(),
                     type_name: None,
                     byte_size: Some(symbol.size),

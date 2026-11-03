@@ -1,24 +1,75 @@
+import { Button, LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
-import { Panel } from "../components/panel.slint";
+
+export struct WaveformRow {
+    watch-index: int,
+    name: string,
+    scope: string,
+    value: string,
+    minimum: string,
+    maximum: string,
+    statistics: string,
+    tint: color,
+    plot: image,
+}
 
 export component WaveformsPage inherits VerticalLayout {
-    spacing: 16px;
-    Text { text: "实时波形"; color: Theme.text; font-size: 22px; font-weight: 700; }
-    Text { text: "通道管理  ·  时基  ·  触发  ·  游标  ·  数据导出"; color: Theme.muted; }
-    Panel {
-        vertical-stretch: 1;
-        Rectangle {
-            vertical-stretch: 1;
-            background: Theme.background;
-            border-radius: 8px;
-            for index in 7: Rectangle {
-                y: (index + 1) * parent.height / 8;
-                width: parent.width;
-                height: 1px;
-                background: Theme.border;
-            }
-            Text { text: "等待采集数据"; color: Theme.muted; horizontal-alignment: center; vertical-alignment: center; }
-        }
-        Text { text: "采集接口待实现；有限容量的样本缓冲已就绪。"; color: Theme.muted; wrap: word-wrap; }
+    in property <[WaveformRow]> channels;
+    in property <bool> active;
+    in property <string> status;
+    in property <string> statistics;
+    in-out property <string> endpoint;
+    callback start();
+    callback stop();
+    callback remove(int);
+    spacing: 12px;
+    HorizontalLayout {
+        Text { text: "实时波形"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
+        Text { text: root.channels.length + " / 16 通道"; color: Theme.accent; vertical-alignment: center; }
     }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "OpenOCD Tcl"; color: Theme.muted; vertical-alignment: center; }
+        LineEdit { text <=> root.endpoint; placeholder-text: "127.0.0.1:6666"; enabled: !root.active; horizontal-stretch: 1; }
+        Button { text: "开始采集"; enabled: !root.active && root.channels.length > 0; clicked => { root.start(); } }
+        Button { text: "停止"; enabled: root.active; clicked => { root.stop(); } }
+    }
+    Text { text: root.status; color: Theme.accent; overflow: elide; }
+    Text { text: root.statistics; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+    Rectangle {
+        vertical-stretch: 1;
+        background: Theme.background;
+        ListView {
+            for channel in root.channels: Rectangle {
+                height: 192px;
+                background: Theme.panel;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: 6px;
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 4px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "● " + channel.name; color: channel.tint; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                        Text { text: channel.value; color: Theme.text; font-family: "monospace"; }
+                        Button { text: "移除"; clicked => { root.remove(channel.watch-index); } }
+                    }
+                    Text { text: channel.scope; color: Theme.muted; font-size: 10px; overflow: elide; }
+                    Image { source: channel.plot; height: 100px; image-fit: fill; }
+                    HorizontalLayout {
+                        Text { text: "Y " + channel.minimum + " … " + channel.maximum; color: Theme.muted; font-size: 10px; horizontal-stretch: 1; }
+                        Text { text: channel.statistics; color: Theme.muted; font-size: 10px; }
+                    }
+                }
+            }
+        }
+        if root.channels.length == 0: Text {
+            text: "右键左侧变量 → 加入实时波形\n或打开右侧监视变量的「波形」开关";
+            color: Theme.muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    Text { text: "运行中读内存 · 不暂停 CPU · 无目标端采样代码\n5 秒滚动时窗 / 各通道自动纵轴；采集全速运行，显示约 30 帧/秒。实际速度与总线影响取决于芯片和探针。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
 }

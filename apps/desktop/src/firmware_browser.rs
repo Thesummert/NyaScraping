@@ -1,5 +1,6 @@
 //! A stable tree independent of Slint; visible rows are rebuilt when a branch toggles.
 use nya_domain::firmware::*;
+use nya_domain::waveform::MemoryChannel;
 use std::{collections::HashMap, fmt::Write};
 
 struct Node {
@@ -16,6 +17,7 @@ pub struct BrowserVariable {
     pub name: String,
     pub type_name: String,
     pub scope: String,
+    pub memory: Option<MemoryChannel>,
 }
 
 pub struct BrowserRow {
@@ -23,6 +25,8 @@ pub struct BrowserRow {
     pub depth: usize,
     pub branch: bool,
     pub expanded: bool,
+    pub variable: bool,
+    pub can_plot: bool,
 }
 
 pub struct FirmwareBrowser {
@@ -33,7 +37,7 @@ pub struct FirmwareBrowser {
 }
 
 impl FirmwareBrowser {
-    pub fn new(info: &FirmwareDebugInfo) -> Self {
+    pub fn new(info: &FirmwareDebugInfo, little_endian: bool, absolute_addresses: bool) -> Self {
         let mut tree = Self {
             nodes: Vec::new(),
             roots: Vec::new(),
@@ -208,6 +212,22 @@ impl FirmwareBrowser {
                         .unwrap_or(kind),
                     source_position(info, variable.declaration.as_ref()),
                 ),
+                memory: match (&variable.location, variable.byte_size, variable.scalar_type) {
+                    (VariableLocation::Address(address), Some(size), Some(scalar_type))
+                        if absolute_addresses =>
+                    {
+                        usize::try_from(size).ok().and_then(|byte_size| {
+                            let channel = MemoryChannel {
+                                address: *address,
+                                byte_size,
+                                scalar_type,
+                                little_endian,
+                            };
+                            channel.validate().ok().map(|_| channel)
+                        })
+                    }
+                    _ => None,
+                },
             });
         }
         let mut counts = vec![(0, 0); files.len()];
@@ -276,6 +296,8 @@ impl FirmwareBrowser {
                 depth,
                 branch: !node.children.is_empty(),
                 expanded: node.expanded,
+                variable: node.variable.is_some(),
+                can_plot: node.variable.as_ref().is_some_and(|v| v.memory.is_some()),
             });
             if node.expanded {
                 stack.extend(node.children.iter().rev().map(|id| (*id, depth + 1)));
@@ -302,6 +324,20 @@ impl FirmwareBrowser {
 
     pub fn selected_variable(&self) -> Option<BrowserVariable> {
         self.nodes.get(self.selected?)?.variable.clone()
+    }
+
+    pub fn variable_at(&self, row: usize) -> Option<BrowserVariable> {
+        self.nodes.get(*self.visible.get(row)?)?.variable.clone()
+    }
+
+    pub fn resolve_variable(&self, name: &str) -> Option<BrowserVariable> {
+        let mut matches = self
+            .nodes
+            .iter()
+            .filter_map(|n| n.variable.as_ref())
+            .filter(|v| v.name == name);
+        let variable = matches.next()?.clone();
+        matches.next().is_none().then_some(variable)
     }
 }
 
@@ -335,7 +371,7 @@ mod tests {
                 include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf4.axf"),
             )
             .unwrap();
-        let mut browser = FirmwareBrowser::new(&image.debug);
+        let mut browser = FirmwareBrowser::new(&image.debug, image.little_endian, true);
         let rows = browser.rows();
         assert!(!rows.iter().any(|r| r.label == "ƒ compute"));
         let file = rows.iter().position(|r| r.label == "main.c").unwrap();
@@ -390,7 +426,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let mut browser = FirmwareBrowser::new(&info);
+        let mut browser = FirmwareBrowser::new(&info, true, true);
         let rows = browser.rows();
         let files: Vec<_> = rows
             .iter()

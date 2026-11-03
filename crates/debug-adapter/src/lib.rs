@@ -1,4 +1,5 @@
 //! All NyaScrapingCore-specific types stay inside this adapter.
+pub mod live_memory;
 use nya_domain::{
     DebugBackend, Error, Result, TargetProfile, ToolInstallation, ToolKind, ToolRegistry,
 };

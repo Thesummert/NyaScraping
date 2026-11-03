@@ -5,12 +5,16 @@ use slint::platform::{Platform, PlatformError, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, Model, Rgb8Pixel};
 use std::{rc::Rc, time::Instant};
 
+#[path = "../src/acquisition.rs"]
+mod acquisition;
 #[path = "../src/firmware_browser.rs"]
 mod firmware_browser;
 #[path = "../src/presenter.rs"]
 mod presenter;
 #[path = "../src/watch_list.rs"]
 mod watch_list;
+#[path = "../src/waveform_view.rs"]
+mod waveform_view;
 slint::include_modules!();
 
 struct BenchPlatform(Rc<MinimalSoftwareWindow>);
@@ -92,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 name: format!("variable_{id:05}"),
                 type_name: Some("int".into()),
                 byte_size: Some(4),
+                scalar_type: Some(nya_domain::waveform::ScalarType::Signed),
                 declaration: None,
                 function: None,
                 kind: VariableKind::Global,
@@ -118,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     presenter.apply(
         &ui,
-        nya_application::Event::FirmwareOpened(Box::new(image)).into(),
+        nya_application::Event::FirmwareOpened(Box::new(image.clone())).into(),
     );
     presenter.select_firmware(&ui, 0);
     assert_eq!(ui.get_firmware_tree().row_count(), 20001);
@@ -149,5 +154,97 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     presenter.add_selected_variable(&ui);
     presenter.add_expression(&ui, "counter");
     presenter.remove_watch(&ui, 0);
+    // The context-menu row must win over the previously selected variable.
+    presenter.select_firmware(&ui, 1);
+    presenter.plot_variable(&ui, 2);
+    assert_eq!(ui.get_waveform_channels().row_count(), 1);
+    assert_eq!(
+        ui.get_waveform_channels().row_data(0).unwrap().name,
+        "variable_00001"
+    );
+    assert!(ui.get_watches().row_data(1).unwrap().waveform);
+    presenter.plot_variable(&ui, 2);
+    assert_eq!(ui.get_waveform_channels().row_count(), 1);
+    presenter.toggle_waveform(&ui, 1);
+    assert_eq!(ui.get_waveform_channels().row_count(), 0);
+    presenter.toggle_waveform(&ui, 1);
+    ui.set_acquisition_endpoint("invalid".into());
+    presenter.start_acquisition(&ui);
+    assert!(!ui.get_acquisition_active());
+    let acquisition = presenter.acquisition.clone();
+    let sampler = acquisition.clone();
+    let worker = std::thread::spawn(move || sampler.run());
+    // No hardware request: exercise startup and shutdown against a local RPC fixture.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    ui.set_acquisition_endpoint(listener.local_addr()?.to_string().into());
+    let fake_openocd = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Write};
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut stream = BufReader::new(stream);
+        loop {
+            let mut request = Vec::new();
+            match stream.read_until(0x1a, &mut request) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    assert_eq!(
+                        String::from_utf8(request).unwrap(),
+                        "join [list [join [read_memory 0x4 32 1] ,]] |\x1a"
+                    );
+                    if stream.get_mut().write_all(b"42\x1a").is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    presenter.start_acquisition(&ui);
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while acquisition.state.lock().unwrap().sweeps < 10 {
+        assert!(
+            Instant::now() < deadline,
+            "sampler did not receive RPC data"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    presenter.refresh_acquisition(&ui);
+    assert_eq!(ui.get_waveform_channels().row_data(0).unwrap().value, "42");
+    assert_eq!(ui.get_watches().row_data(1).unwrap().value, "42");
+    redraw(&window, &mut pixels, 2960);
+    if let Some(path) = std::env::var_os("NYA_UI_PREVIEW").or_else(|| std::env::args_os().nth(1)) {
+        use std::io::Write;
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(b"P6\n2960 1800\n255\n")?;
+        let rgb: Vec<u8> = pixels
+            .iter()
+            .flat_map(|pixel| [pixel.r, pixel.g, pixel.b])
+            .collect();
+        file.write_all(&rgb)?;
+    }
+    presenter.stop_acquisition(&ui);
+    assert!(!ui.get_acquisition_active());
+    assert_eq!(ui.get_waveform_channels().row_count(), 1);
+    assert!(ui
+        .get_watches()
+        .row_data(1)
+        .unwrap()
+        .value
+        .contains("已停止"));
+    presenter.remove_watch(&ui, 1);
+    assert_eq!(ui.get_waveform_channels().row_count(), 0);
+    acquisition.shutdown();
+    worker.join().unwrap();
+    fake_openocd.join().unwrap();
+    presenter.apply(
+        &ui,
+        nya_application::Event::FirmwareOpened(Box::new(image)).into(),
+    );
+    assert_eq!(ui.get_waveform_channels().row_count(), 0);
+    assert_eq!(ui.get_watches().row_count(), 1);
+    assert_eq!(ui.get_watches().row_data(0).unwrap().expression, "counter");
+    assert!(!ui.get_acquisition_active());
+    println!("Waveform selection, toggles, live RPC, redraw and shutdown: passed");
     Ok(())
 }

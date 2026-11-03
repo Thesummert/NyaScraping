@@ -1,4 +1,5 @@
 use nya_domain::firmware::{VariableKind, VariableLocation};
+use nya_domain::waveform::ScalarType;
 use nya_firmware_backend::NativeFirmwareBackend;
 use std::path::Path;
 
@@ -46,6 +47,9 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     declarations
         .get_mut(int)
         .set(gimli::DW_AT_byte_size, A::Udata(4));
+    declarations
+        .get_mut(int)
+        .set(gimli::DW_AT_encoding, A::Encoding(gimli::DW_ATE_signed));
     let function = declarations.add(root, gimli::DW_TAG_subprogram);
     for (attribute, value) in [
         (gimli::DW_AT_name, A::String(b"calculate".to_vec())),
@@ -104,6 +108,51 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     definitions
         .get_mut(global)
         .set(gimli::DW_AT_location, A::Exprloc(address));
+    for (index, (name, encoding, size)) in [
+        ("voltage", gimli::DW_ATE_float, 4),
+        ("flags", gimli::DW_ATE_unsigned, 8),
+        ("ready", gimli::DW_ATE_boolean, 1),
+        ("character", gimli::DW_ATE_signed_char, 1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let base = definitions.add(definitions.root(), gimli::DW_TAG_base_type);
+        definitions.get_mut(base).set(
+            gimli::DW_AT_name,
+            A::String(format!("base_{name}").into_bytes()),
+        );
+        definitions
+            .get_mut(base)
+            .set(gimli::DW_AT_byte_size, A::Udata(size));
+        definitions
+            .get_mut(base)
+            .set(gimli::DW_AT_encoding, A::Encoding(encoding));
+        let alias = definitions.add(definitions.root(), gimli::DW_TAG_typedef);
+        definitions.get_mut(alias).set(
+            gimli::DW_AT_name,
+            A::String(format!("Alias_{name}").into_bytes()),
+        );
+        definitions
+            .get_mut(alias)
+            .set(gimli::DW_AT_type, A::UnitRef(base));
+        let qualified = definitions.add(definitions.root(), gimli::DW_TAG_volatile_type);
+        definitions
+            .get_mut(qualified)
+            .set(gimli::DW_AT_type, A::UnitRef(alias));
+        let variable = definitions.add(definitions.root(), gimli::DW_TAG_variable);
+        definitions
+            .get_mut(variable)
+            .set(gimli::DW_AT_name, A::String(name.as_bytes().to_vec()));
+        definitions
+            .get_mut(variable)
+            .set(gimli::DW_AT_type, A::UnitRef(qualified));
+        let mut location = write::Expression::new();
+        location.op_addr(write::Address::Constant(0x20000200 + index as u64 * 8));
+        definitions
+            .get_mut(variable)
+            .set(gimli::DW_AT_location, A::Exprloc(location));
+    }
     let cycle = definitions.add(definitions.root(), gimli::DW_TAG_const_type);
     definitions
         .get_mut(cycle)
@@ -183,6 +232,7 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
         let parameter = info.variables.iter().find(|v| v.name == "input").unwrap();
         assert_eq!(parameter.constant.as_deref(), Some("-7"));
         assert_eq!(parameter.type_name.as_deref(), Some("int"));
+        assert_eq!(parameter.scalar_type, Some(ScalarType::Signed));
         assert!(parameter.function.is_some());
         assert!(matches!(parameter.location, VariableLocation::Unavailable));
         let global = info
@@ -192,6 +242,21 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
             .unwrap();
         assert_eq!(global.type_name.as_deref(), Some("int *"));
         assert_eq!(global.byte_size, Some(8));
+        assert_eq!(global.scalar_type, None);
+        for (name, scalar_type, size) in [
+            ("voltage", ScalarType::Float, 4),
+            ("flags", ScalarType::Unsigned, 8),
+            ("ready", ScalarType::Boolean, 1),
+            ("character", ScalarType::Signed, 1),
+        ] {
+            let variable = info.variables.iter().find(|v| v.name == name).unwrap();
+            assert_eq!(variable.scalar_type, Some(scalar_type));
+            assert_eq!(variable.byte_size, Some(size));
+            assert_eq!(
+                variable.type_name.as_ref().unwrap(),
+                &format!("volatile Alias_{name}")
+            );
+        }
         assert!(matches!(
             global.location,
             VariableLocation::Address(0x20000100)
@@ -266,10 +331,12 @@ fn clang_arm_dwarf4_files_functions_types_and_lexical_variables() {
         .unwrap();
     assert_eq!(global.kind, VariableKind::Global);
     assert_eq!(global.type_name.as_deref(), Some("volatile int"));
+    assert_eq!(global.scalar_type, Some(ScalarType::Signed));
     assert!(matches!(global.location, VariableLocation::Address(_)));
     let samples = info.variables.iter().find(|v| v.name == "samples").unwrap();
     assert_eq!(samples.type_name.as_deref(), Some("int[4]"));
     assert_eq!(samples.byte_size, Some(16));
+    assert_eq!(samples.scalar_type, None);
     let header = info
         .variables
         .iter()
@@ -281,6 +348,7 @@ fn clang_arm_dwarf4_files_functions_types_and_lexical_variables() {
     let sensor = info.variables.iter().find(|v| v.name == "sensor").unwrap();
     assert_eq!(sensor.type_name.as_deref(), Some("Sensor"));
     assert_eq!(sensor.byte_size, Some(8));
+    assert_eq!(sensor.scalar_type, None);
 }
 
 #[test]

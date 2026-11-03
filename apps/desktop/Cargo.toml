@@ -6,7 +6,8 @@ publish.workspace = true
 build = "build.rs"
 
 [dependencies]
-slint.workspace = true
+slint = { workspace = true, features = ["raw-window-handle-06"] }
+rfd = "0.15.4"
 nya-domain.workspace = true
 nya-application.workspace = true
 nya-debug-adapter.workspace = true

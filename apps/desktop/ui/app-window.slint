@@ -1,11 +1,12 @@
 import { Button, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SourcePage } from "pages/source.slint";
-import { ToolsPage } from "pages/tools.slint";
+import { ToolsPage, ToolRow } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
 import { WaveformsPage, WaveformRow } from "pages/waveforms.slint";
 import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
-export { FirmwareTreeRow, WatchRow, WaveformRow }
+import { DebugPage, FrameRow, BreakpointRow, TargetRow, PackRow } from "pages/debug.slint";
+export { FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
 
 export component AppWindow inherits Window {
     title: "NyaScraping · Embedded Debug Studio";
@@ -17,8 +18,45 @@ export component AppWindow inherits Window {
     default-font-size: 14px;
 
     in-out property <bool> busy: false;
+    in-out property <bool> file-dialog-open: false;
+    private property <bool> interaction-busy: root.busy || root.file-dialog-open;
+    in-out property <bool> debug-connected: false;
+    in-out property <bool> debug-halted: false;
+    in-out property <bool> debug-running: false;
+    in-out property <string> debug-state: "未连接";
+    in-out property <string> gdb-path: "arm-none-eabi-gdb";
+    in-out property <string> debug-target;
+    in-out property <int> backend-kind: -1;
+    in-out property <[TargetRow]> targets;
+    in-out property <[PackRow]> packs;
+    in-out property <string> target-message: "请先选择调试后端";
+    in-out property <string> target-search;
+    callback refresh-targets();
+    callback search-targets(string);
+    callback add-pack();
+    callback remove-pack(string);
+    callback install-pack(string);
+    in-out property <string> debug-interface;
+    in-out property <[TargetRow]> probes;
+    in-out property <string> probe-message;
+    in-out property <string> probe-search;
+    callback search-probes(string);
+    callback browse-probe();
+    in-out property <string> debug-port: "3333";
+    in-out property <bool> external-server: false;
+    in-out property <[FrameRow]> stack-frames;
+    in-out property <[BreakpointRow]> breakpoints;
+    in-out property <string> debug-log;
+    in-out property <string> execution-location;
+    callback debug-action(int);
+    callback add-breakpoint(string);
+    callback remove-breakpoint(string);
+    callback select-frame(int);
+    in-out property <int> current-tab: 0;
     in-out property <string> status: "就绪";
-    in-out property <[string]> tools;
+    in-out property <[ToolRow]> tools;
+    in-out property <string> backend-summary: "尚未选择调试后端";
+    in-out property <string> tool-message: "扫描 PATH 工具与已安装版本。";
     in-out property <string> source-path;
     in-out property <string> source-title: "尚未打开文件";
     in-out property <string> source-meta: "";
@@ -30,25 +68,40 @@ export component AppWindow inherits Window {
     in-out property <[FirmwareTreeRow]> firmware-tree;
     in-out property <int> firmware-selected-node: -1;
     in-out property <string> firmware-details: "选择文件树中的函数或变量，查看类型、声明位置及存储位置。";
-    in-out property <bool> can-add-variable: false;
+    in-out property <bool> functions-visible: false;
     in-out property <[WatchRow]> watches;
     in-out property <[WaveformRow]> waveform-channels;
     in-out property <bool> acquisition-active: false;
     in-out property <string> acquisition-status: "采集未启动";
     in-out property <string> acquisition-statistics: "每通道最多保留 32768 个样本；尚无采集数据";
     in-out property <string> acquisition-endpoint: "127.0.0.1:6666";
-    in-out property <int> active-tab: 0;
     callback refresh-tools();
+    callback install-tool(int, string);
+    callback select-tool(int, string);
+    callback uninstall-tool(int, string);
     callback open-source();
     callback open-firmware();
+    callback browse-source();
+    callback browse-firmware();
     callback select-firmware-node(int);
-    callback add-selected-variable();
     callback add-expression(string);
     callback remove-watch(int);
     callback plot-variable(int);
     callback toggle-waveform(int);
     callback start-acquisition();
     callback stop-acquisition();
+    callback toggle-watch(int, int);
+    callback show-functions(bool);
+    in-out property <string> firmware-search;
+    callback search-firmware(string);
+    in-out property <bool> live-enabled: false;
+    in-out property <int> live-interval-index: 5;
+    in-out property <string> live-custom-hz: "10";
+    in-out property <string> live-frequency-error;
+    in-out property <string> watch-sample-status: "实时刷新已关闭";
+    callback live-refresh();
+    in-out property <int> watch-revision;
+    callback write-watch(int, int, string);
 
     VerticalLayout {
         spacing: 0px;
@@ -72,25 +125,26 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         alignment: center;
                         spacing: 6px;
-                        Button { text: "▶ 继续"; enabled: false; }
-                        Button { text: "Ⅱ 暂停"; enabled: false; }
-                        Button { text: "■ 停止"; enabled: false; }
+                        Button { text: "▶ 继续"; enabled: root.debug-halted && !root.interaction-busy; clicked => { root.debug-action(2); } }
+                        Button { text: "Ⅱ 暂停"; enabled: root.debug-running && !root.interaction-busy; clicked => { root.debug-action(3); } }
+                        Button { text: "■ 停止"; enabled: root.debug-connected && !root.interaction-busy; clicked => { root.debug-action(1); } }
                         Rectangle { width: 1px; background: Theme.border; }
-                        Button { text: "↷ 步过"; enabled: false; }
-                        Button { text: "↓ 步入"; enabled: false; }
-                        Button { text: "↑ 步出"; enabled: false; }
-                        Button { text: "↻ 复位"; enabled: false; }
+                        Button { text: "↷ 步过"; enabled: root.debug-halted && !root.interaction-busy; clicked => { root.debug-action(4); } }
+                        Button { text: "↓ 步入"; enabled: root.debug-halted && !root.interaction-busy; clicked => { root.debug-action(5); } }
+                        Button { text: "↑ 步出"; enabled: root.debug-halted && !root.interaction-busy; clicked => { root.debug-action(6); } }
+                        Button { text: "↻ 复位"; enabled: root.debug-halted && !root.interaction-busy; clicked => { root.debug-action(7); } }
                     }
                 }
                 VerticalLayout {
                     width: 264px;
                     alignment: center;
+                    Text { text: root.backend-summary; color: Theme.accent; font-size: 11px; overflow: elide; horizontal-alignment: right; }
                     HorizontalLayout {
                         alignment: end;
                         spacing: 8px;
-                        Text { text: "● 未连接"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
-                        Button { text: "连接"; enabled: false; }
-                        Button { text: "下载"; enabled: false; }
+                        Text { text: "● " + root.debug-state; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                        Button { text: root.debug-connected ? "断开" : "连接"; enabled: !root.interaction-busy; clicked => { if root.debug-connected { root.debug-action(1); } else { root.current-tab = 4; } } }
+                        Button { text: "下载"; enabled: root.debug-halted && !root.interaction-busy; clicked => { root.debug-action(8); } }
                     }
                 }
             }
@@ -103,17 +157,20 @@ export component AppWindow inherits Window {
                 background: Theme.sidebar;
                 FirmwarePage {
                     padding: 12px;
-                    busy: root.busy;
+                    busy: root.interaction-busy || root.debug-connected;
                     path <=> root.firmware-path;
                     title: root.firmware-title;
                     tree: root.firmware-tree;
                     details: root.firmware-details;
                     selected-node: root.firmware-selected-node;
-                    can-add-variable: root.can-add-variable;
+                    functions-visible <=> root.functions-visible;
+                    search-query <=> root.firmware-search;
+                    search(query) => { root.search-firmware(query); }
                     select-node(index) => { root.select-firmware-node(index); }
-                    add-variable => { root.add-selected-variable(); }
                     plot-variable(index) => { root.plot-variable(index); }
+                    show-functions(show) => { root.show-functions(show); }
                     open => { root.open-firmware(); }
+                    browse => { root.browse-firmware(); }
                 }
             }
             Rectangle {
@@ -123,17 +180,18 @@ export component AppWindow inherits Window {
                     padding: 12px;
                     spacing: 10px;
                     TabWidget {
-                        current-index <=> root.active-tab;
+                        current-index <=> root.current-tab;
                         Tab {
                             title: "源码";
                             SourcePage {
                                 padding-top: 12px;
-                                busy: root.busy;
+                                busy: root.interaction-busy;
                                 path <=> root.source-path;
                                 source-title: root.source-title;
-                                metadata: root.source-meta;
+                                metadata: root.source-meta + (root.execution-location != "" ? " · " + root.execution-location : "");
                                 source-text: root.source-text;
                                 open => { root.open-source(); }
+                                browse => { root.browse-source(); }
                             }
                         }
                         Tab {
@@ -164,23 +222,80 @@ export component AppWindow inherits Window {
                             title: "调试工具";
                             ToolsPage {
                                 padding-top: 12px;
-                                busy: root.busy;
+                                busy: root.interaction-busy;
                                 tools: root.tools;
+                                connected: root.debug-connected;
+                                backend-summary: root.backend-summary;
+                                message: root.tool-message;
                                 refresh => { root.refresh-tools(); }
+                                install(kind, version) => { root.install-tool(kind, version); }
+                                select-tool(kind, version) => { root.select-tool(kind, version); }
+                                uninstall(kind, version) => { root.uninstall-tool(kind, version); }
+                            }
+                        }
+                        Tab {
+                            title: "调试";
+                            DebugPage {
+                                busy: root.interaction-busy;
+                                connected: root.debug-connected;
+                                halted: root.debug-halted;
+                                state-label: root.debug-state;
+                                backend: root.backend-summary;
+                                gdb-path <=> root.gdb-path;
+                                target <=> root.debug-target;
+                                backend-kind: root.backend-kind;
+                                targets: root.targets;
+                                packs: root.packs;
+                                target-message: root.target-message;
+                                target-search <=> root.target-search;
+                                refresh-targets => { root.refresh-targets(); }
+                                search-targets(query) => { root.search-targets(query); }
+                                add-pack => { root.add-pack(); }
+                                remove-pack(path) => { root.remove-pack(path); }
+                                install-pack(part) => { root.install-pack(part); }
+                                interface <=> root.debug-interface;
+                                probes: root.probes;
+                                probe-message: root.probe-message;
+                                probe-search <=> root.probe-search;
+                                search-probes(query) => { root.search-probes(query); }
+                                browse-probe => { root.browse-probe(); }
+                                port <=> root.debug-port;
+                                firmware <=> root.firmware-path;
+                                external-server <=> root.external-server;
+                                frames: root.stack-frames;
+                                breakpoints: root.breakpoints;
+                                log: root.debug-log;
+                                action(kind) => { root.debug-action(kind); }
+                                browse-firmware => { root.browse-firmware(); }
+                                add-breakpoint(location) => { root.add-breakpoint(location); }
+                                remove-breakpoint(id) => { root.remove-breakpoint(id); }
+                                select-frame(level) => { root.select-frame(level); }
                             }
                         }
                     }
                 }
             }
             Rectangle {
-                width: 300px;
+                width: 360px;
                 background: Theme.sidebar;
                 VariablesPage {
                     padding: 12px;
                     watches: root.watches;
+                    acquisition-active: root.acquisition-active;
+                    memory-endpoint <=> root.acquisition-endpoint;
+                    live-enabled <=> root.live-enabled;
+                    live-interval-index <=> root.live-interval-index;
+                    live-custom-hz <=> root.live-custom-hz;
+                    frequency-error: root.live-frequency-error;
+                    sample-status: root.watch-sample-status;
+                    live-refresh => { root.live-refresh(); }
+                    revision: root.watch-revision;
+                    can-write: root.debug-connected && !root.interaction-busy;
+                    write(entry, node, value) => { root.write-watch(entry, node, value); }
                     add(expression) => { root.add-expression(expression); }
                     remove(index) => { root.remove-watch(index); }
                     toggle-waveform(index) => { root.toggle-waveform(index); }
+                    toggle(entry, node) => { root.toggle-watch(entry, node); }
                 }
             }
         }
@@ -193,7 +308,7 @@ export component AppWindow inherits Window {
                 padding-right: 16px;
                 spacing: 16px;
                 Text { text: root.status; color: Theme.muted; overflow: elide; horizontal-stretch: 1; }
-                Text { text: root.busy ? "处理中" : "调试会话未接入"; color: Theme.accent; font-size: 12px; }
+                Text { text: root.busy ? "处理中" : root.debug-state; color: Theme.accent; font-size: 12px; }
             }
         }
     }

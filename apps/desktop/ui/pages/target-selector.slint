@@ -1,0 +1,61 @@
+import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { ConfigSelector, TargetRow } from "config-selector.slint";
+export { TargetRow }
+
+export struct PackRow { path: string, name: string }
+
+export component TargetSelector inherits VerticalLayout {
+    in property <bool> busy;
+    in property <int> backend-kind: -1;
+    in-out property <string> target;
+    in-out property <string> query;
+    in property <[TargetRow]> targets;
+    in property <[PackRow]> packs;
+    in property <string> message;
+    private property <string> pack-part;
+    callback refresh();
+    callback search(string);
+    callback add-pack();
+    callback remove-pack(string);
+    callback install-pack(string);
+    spacing: 8px;
+
+    ConfigSelector {
+        busy: root.busy;
+        available: root.backend-kind >= 0;
+        title: "目标";
+        placeholder: root.backend-kind == 0 ? "OpenOCD target/*.cfg" : "芯片型号";
+        search-placeholder: "搜索芯片型号、厂商或配置文件…";
+        empty-message: "暂无匹配目标，可刷新列表或手动填写";
+        message: root.message;
+        value <=> root.target;
+        query <=> root.query;
+        entries: root.targets;
+        refresh => { root.refresh(); }
+        search(query) => { root.search(query); }
+    }
+    if root.backend-kind == 1: VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "芯片包"; color: Theme.text; horizontal-stretch: 1; vertical-alignment: center; }
+            Button { text: "添加本地 .pack…"; enabled: !root.busy; clicked => { root.add-pack(); } }
+        }
+        if root.packs.length > 0: ListView {
+            height: min(96px, root.packs.length * 32px);
+            for pack in root.packs: HorizontalLayout {
+                height: 32px;
+                spacing: 8px;
+                Text { text: pack.name; color: Theme.muted; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                Button { text: "移除引用"; enabled: !root.busy; clicked => { root.remove-pack(pack.path); } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            LineEdit { text <=> root.pack-part; placeholder-text: "芯片型号，如 STM32H743ZITx"; enabled: !root.busy; horizontal-stretch: 1; }
+            Button { text: "在线安装芯片包"; enabled: !root.busy && root.pack-part != ""; clicked => { root.install-pack(root.pack-part); } }
+        }
+        Text { text: "本地包保留原文件位置，连接时自动加载；在线安装需要网络，完成后刷新目标列表。"; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+    }
+}

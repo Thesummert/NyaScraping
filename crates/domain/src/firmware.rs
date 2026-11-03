@@ -112,6 +112,7 @@ pub struct DebugVariable {
     pub byte_size: Option<u64>,
     /// Numeric representation from DWARF, including typedef/qualifier resolution.
     pub scalar_type: Option<crate::waveform::ScalarType>,
+    pub members: Vec<DebugMember>,
     pub declaration: Option<SourceLocation>,
     /// Index in FirmwareDebugInfo::functions; lexical blocks retain their owner.
     pub function: Option<usize>,
@@ -133,4 +134,12 @@ pub enum VariableLocation {
 pub struct VariableLocationRange {
     pub range: AddressRange,
     pub expression: String,
+}
+
+/// Members in declaration order; nested aggregates retain their hierarchy.
+#[derive(Clone, Debug)]
+pub struct DebugMember {
+    pub name: String,
+    pub type_name: String,
+    pub members: Vec<DebugMember>,
 }

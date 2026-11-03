@@ -39,7 +39,7 @@ impl LiveMemoryReader for OpenOcdMemoryReader {
         if blocks.is_empty() {
             return Ok(Vec::new());
         }
-        if blocks.len() > 16
+        if blocks.len() > 64
             || blocks.iter().any(|b| {
                 b.byte_size == 0
                     || b.byte_size > 1024

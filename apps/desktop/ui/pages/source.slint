@@ -8,10 +8,12 @@ export component SourcePage inherits VerticalLayout {
     in property <string> metadata;
     in property <string> source-text;
     callback open();
+    callback browse();
     spacing: 12px;
     HorizontalLayout {
         spacing: 8px;
-        LineEdit { text <=> root.path; placeholder-text: "输入源码文件路径…"; enabled: !root.busy; }
+        LineEdit { text <=> root.path; placeholder-text: "输入源码文件路径…"; enabled: !root.busy; horizontal-stretch: 1; accepted => { root.open(); } }
+        Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
         Button { text: "打开源码"; enabled: !root.busy; clicked => { root.open(); } }
     }
     Text { text: root.source-title; color: Theme.text; overflow: elide; }

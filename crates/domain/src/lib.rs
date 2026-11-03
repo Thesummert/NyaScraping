@@ -55,11 +55,51 @@ pub struct ToolInstallation {
     pub selected: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ToolState {
+    pub installations: Vec<ToolInstallation>,
+    /// Persisted backend family; its selected version is recorded on the installation.
+    pub backend: Option<ToolKind>,
+    pub targets: TargetCatalog,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DebugTarget {
+    pub name: String,
+    pub vendor: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TargetCatalog {
+    pub targets: Vec<DebugTarget>,
+    /// OpenOCD interface configuration files for debug probes.
+    pub probes: Vec<DebugTarget>,
+    pub probe_message: String,
+    pub packs: Vec<PathBuf>,
+    pub message: String,
+}
+
 pub trait ToolRegistry: Send {
     fn discover(&self) -> Result<Vec<ToolInstallation>>;
     fn install(&mut self, tool: ToolKind, version: &str) -> Result<()>;
+    fn install_latest(&mut self, tool: ToolKind) -> Result<()>;
+    fn active_backend(&self) -> Result<Option<ToolKind>>;
+    /// Select a version and persist this tool as the active desktop backend.
     fn select(&mut self, tool: ToolKind, version: &str) -> Result<()>;
     fn uninstall(&mut self, tool: ToolKind, version: &str) -> Result<()>;
+    fn target_catalog(&self) -> Result<TargetCatalog> {
+        Ok(TargetCatalog::default())
+    }
+    fn add_pack(&mut self, _path: &std::path::Path) -> Result<()> {
+        Err(Error("当前后端不支持添加芯片包".into()))
+    }
+    fn remove_pack(&mut self, _path: &std::path::Path) -> Result<()> {
+        Err(Error("当前后端不支持移除芯片包".into()))
+    }
+    fn install_pack(&mut self, _part: &str) -> Result<()> {
+        Err(Error("当前后端不支持在线安装芯片包".into()))
+    }
 }
 
 /// Server readiness is distinct from an attached and halted GDB session.
@@ -90,17 +130,79 @@ pub struct WatchValue {
     pub error: Option<String>,
 }
 
-/// Future GDB/MI implementation; unsupported operations must return errors.
-/// No adapter currently implements this interface.
+#[derive(Clone, Debug)]
+pub enum DebugAction {
+    Connect {
+        profile: TargetProfile,
+        external_server: bool,
+    },
+    Disconnect,
+    Continue,
+    Pause,
+    StepInto,
+    StepOver,
+    StepOut,
+    Reset,
+    Download,
+    AddBreakpoint(String),
+    RemoveBreakpoint(String),
+    SelectFrame(u32),
+    Refresh,
+    WriteWatch {
+        watch: WatchRequest,
+        value: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct WatchRequest {
+    pub id: String,
+    pub expression: String,
+    pub function: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EvaluatedWatch {
+    pub id: String,
+    pub value: WatchValue,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StackFrame {
+    pub level: u32,
+    pub function: String,
+    pub file: String,
+    pub line: u32,
+    pub address: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Breakpoint {
+    pub id: String,
+    pub location: String,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DebugSnapshot {
+    pub watch_sample: bool,
+    pub watch_sample_error: Option<String>,
+    pub source: Option<Document>,
+    pub state: SessionState,
+    pub message: String,
+    pub frames: Vec<StackFrame>,
+    pub selected_frame: u32,
+    pub breakpoints: Vec<Breakpoint>,
+    pub values: Vec<EvaluatedWatch>,
+    pub log: String,
+}
+
 pub trait DebugSession: Send {
-    fn state(&self) -> SessionState;
-    fn attach(&mut self, profile: &TargetProfile) -> Result<()>;
-    fn resume(&mut self) -> Result<()>;
-    fn halt(&mut self) -> Result<()>;
-    fn step(&mut self) -> Result<()>;
-    fn evaluate(&mut self, expression: &str) -> Result<WatchValue>;
-    fn set_breakpoint(&mut self, file: &str, line: u32) -> Result<()>;
-    fn detach(&mut self) -> Result<()>;
+    fn execute_debug(&mut self, action: DebugAction) -> Result<()>;
+    fn poll_debug(&mut self) -> Result<bool>;
+    fn debug_snapshot(&mut self, watches: &[WatchRequest]) -> DebugSnapshot;
+    /// Refresh watches without interrupting or resuming a running target.
+    fn sample_watches(&mut self, watches: &[WatchRequest]) -> DebugSnapshot;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

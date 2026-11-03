@@ -50,6 +50,57 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     declarations
         .get_mut(int)
         .set(gimli::DW_AT_encoding, A::Encoding(gimli::DW_ATE_signed));
+    let point = declarations.add(root, gimli::DW_TAG_structure_type);
+    declarations
+        .get_mut(point)
+        .set(gimli::DW_AT_name, A::String(b"Point".to_vec()));
+    let x = declarations.add(point, gimli::DW_TAG_member);
+    declarations
+        .get_mut(x)
+        .set(gimli::DW_AT_name, A::String(b"x".to_vec()));
+    declarations
+        .get_mut(x)
+        .set(gimli::DW_AT_type, A::UnitRef(int));
+    let state = declarations.add(root, gimli::DW_TAG_structure_type);
+    declarations
+        .get_mut(state)
+        .set(gimli::DW_AT_name, A::String(b"State".to_vec()));
+    let position = declarations.add(state, gimli::DW_TAG_member);
+    declarations
+        .get_mut(position)
+        .set(gimli::DW_AT_name, A::String(b"position".to_vec()));
+    declarations
+        .get_mut(position)
+        .set(gimli::DW_AT_type, A::UnitRef(point));
+    let state_ptr = declarations.add(root, gimli::DW_TAG_pointer_type);
+    declarations
+        .get_mut(state_ptr)
+        .set(gimli::DW_AT_type, A::UnitRef(state));
+    let next = declarations.add(state, gimli::DW_TAG_member);
+    declarations
+        .get_mut(next)
+        .set(gimli::DW_AT_name, A::String(b"next".to_vec()));
+    declarations
+        .get_mut(next)
+        .set(gimli::DW_AT_type, A::UnitRef(state_ptr));
+    let alias = declarations.add(root, gimli::DW_TAG_typedef);
+    declarations
+        .get_mut(alias)
+        .set(gimli::DW_AT_name, A::String(b"StateAlias".to_vec()));
+    declarations
+        .get_mut(alias)
+        .set(gimli::DW_AT_type, A::UnitRef(state));
+    let qualified = declarations.add(root, gimli::DW_TAG_const_type);
+    declarations
+        .get_mut(qualified)
+        .set(gimli::DW_AT_type, A::UnitRef(alias));
+    let state_var = declarations.add(root, gimli::DW_TAG_variable);
+    declarations
+        .get_mut(state_var)
+        .set(gimli::DW_AT_name, A::String(b"state".to_vec()));
+    declarations
+        .get_mut(state_var)
+        .set(gimli::DW_AT_type, A::UnitRef(qualified));
     let function = declarations.add(root, gimli::DW_TAG_subprogram);
     for (attribute, value) in [
         (gimli::DW_AT_name, A::String(b"calculate".to_vec())),
@@ -235,6 +286,16 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
         assert_eq!(parameter.scalar_type, Some(ScalarType::Signed));
         assert!(parameter.function.is_some());
         assert!(matches!(parameter.location, VariableLocation::Unavailable));
+        let state = info.variables.iter().find(|v| v.name == "state").unwrap();
+        assert_eq!(state.type_name.as_deref(), Some("const StateAlias"));
+        assert_eq!(state.members.len(), 2);
+        assert_eq!(state.members[0].name, "position");
+        assert_eq!(state.members[0].type_name, "Point");
+        assert_eq!(state.members[0].members[0].name, "x");
+        assert_eq!(state.members[0].members[0].type_name, "int");
+        assert_eq!(state.members[1].name, "next");
+        assert_eq!(state.members[1].type_name, "State *");
+        assert!(state.members[1].members.is_empty());
         let global = info
             .variables
             .iter()
@@ -349,6 +410,12 @@ fn clang_arm_dwarf4_files_functions_types_and_lexical_variables() {
     assert_eq!(sensor.type_name.as_deref(), Some("Sensor"));
     assert_eq!(sensor.byte_size, Some(8));
     assert_eq!(sensor.scalar_type, None);
+    assert_eq!(sensor.members.len(), 2);
+    assert_eq!(sensor.members[0].name, "value");
+    assert_eq!(sensor.members[0].type_name, "int");
+    assert_eq!(sensor.members[1].name, "label");
+    assert_eq!(sensor.members[1].type_name, "const char *");
+    assert!(sensor.members[1].members.is_empty());
 }
 
 #[test]

@@ -1,8 +1,9 @@
-import { Button, LineEdit, TextEdit, ListView } from "std-widgets.slint";
+import { Button, CheckBox, LineEdit, TextEdit, ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct FirmwareTreeRow {
     label: string,
+    type-name: string,
     depth: int,
     branch: bool,
     expanded: bool,
@@ -17,14 +18,18 @@ export component FirmwarePage inherits VerticalLayout {
     in property <[FirmwareTreeRow]> tree;
     in property <string> details;
     in property <int> selected-node;
-    in property <bool> can-add-variable;
+    in-out property <bool> functions-visible;
+    in-out property <string> search-query;
+    callback search(string);
     callback open();
+    callback browse();
     callback select-node(int);
-    callback add-variable();
     callback plot-variable(int);
+    callback show-functions(bool);
     spacing: 10px;
     HorizontalLayout {
         Text { text: "文件树"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
         Button { text: "解析文件"; enabled: !root.busy; clicked => { root.open(); } }
     }
     LineEdit {
@@ -34,6 +39,21 @@ export component FirmwarePage inherits VerticalLayout {
         accepted => { root.open(); }
     }
     Text { text: root.title; color: Theme.muted; font-size: 12px; overflow: elide; }
+    HorizontalLayout {
+        spacing: 4px;
+        LineEdit {
+            text <=> root.search-query;
+            placeholder-text: "搜索文件 / 函数名…";
+            horizontal-stretch: 1;
+            edited => { root.search(self.text); }
+        }
+        Button { text: "×"; enabled: root.search-query != ""; clicked => { root.search-query = ""; root.search(""); } }
+    }
+    CheckBox {
+        text: "显示函数";
+        checked <=> root.functions-visible;
+        toggled => { root.show-functions(self.checked); }
+    }
     Rectangle {
         min-height: 140px;
         vertical-stretch: 3;
@@ -46,7 +66,7 @@ export component FirmwarePage inherits VerticalLayout {
                 background: index == root.selected-node ? Theme.selection : (area.has-hover ? Theme.panel : transparent);
                 Text {
                     x: 8px + row.depth * 14px;
-                    width: max(0px, parent.width - self.x - 8px);
+                    width: max(0px, parent.width - self.x - (row.type-name != "" ? 100px : 8px));
                     height: parent.height;
                     vertical-alignment: center;
                     text: (row.branch ? (row.expanded ? "▾ " : "▸ ") : "  ") + row.label;
@@ -54,17 +74,27 @@ export component FirmwarePage inherits VerticalLayout {
                     font-size: 12px;
                     overflow: elide;
                 }
+                if row.type-name != "": Text {
+                    x: max(0px, parent.width - 94px);
+                    width: 86px;
+                    height: parent.height;
+                    text: row.type-name;
+                    color: Theme.accent;
+                    font-size: 12px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
                 menu := ContextMenuArea {
                     Menu {
                         MenuItem {
                             title: "加入实时波形";
-                            enabled: row.can-plot && !root.busy;
+                            enabled: row.can-plot;
                             activated => { root.plot-variable(index); }
                         }
                         MenuItem {
                             title: "加入监视";
-                            enabled: row.variable && !root.busy;
-                            activated => { root.select-node(index); root.add-variable(); }
+                            enabled: row.variable;
+                            activated => { root.select-node(index); }
                         }
                     }
                 }
@@ -79,7 +109,7 @@ export component FirmwarePage inherits VerticalLayout {
             }
         }
         if root.tree.length == 0: Text {
-            text: "尚无文件条目\n\n解析编译产物以浏览\n源文件、函数与变量";
+            text: root.search-query != "" ? "没有匹配的文件或函数" : "尚无文件条目\n\n解析编译产物以浏览\n源文件、函数与变量";
             color: Theme.muted;
             font-size: 12px;
             horizontal-alignment: center;
@@ -87,14 +117,7 @@ export component FirmwarePage inherits VerticalLayout {
         }
     }
     Rectangle { height: 1px; background: Theme.border; }
-    HorizontalLayout {
-        Text { text: "变量解析"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
-        Button {
-            text: "+ 监视";
-            enabled: root.can-add-variable && !root.busy;
-            clicked => { root.add-variable(); }
-        }
-    }
+    Text { text: "变量解析"; color: Theme.text; font-size: 15px; font-weight: 700; }
     TextEdit {
         text: root.details;
         read-only: true;

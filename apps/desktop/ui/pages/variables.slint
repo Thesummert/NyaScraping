@@ -1,45 +1,98 @@
-import { Button, LineEdit, ListView, Switch } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct WatchRow {
     expression: string,
     type-name: string,
+    value: string,
+    error: string,
     scope: string,
+    entry-index: int,
+    node-index: int,
+    depth: int,
+    branch: bool,
+    expanded: bool,
     waveform: bool,
     can-plot: bool,
-    value: string,
     plot-hint: string,
 }
 
 export component VariablesPage inherits VerticalLayout {
     in property <[WatchRow]> watches;
+    in property <bool> can-write;
+    in property <bool> acquisition-active;
+    in-out property <string> memory-endpoint;
+    in property <int> revision;
+    in-out property <bool> live-enabled;
+    in-out property <int> live-interval-index: 5;
+    in-out property <string> live-custom-hz: "10";
+    in property <string> frequency-error;
+    in property <string> sample-status;
+    callback live-refresh();
+    private property <int> edit-revision: -1;
+    private property <int> edit-entry: -1;
+    private property <int> edit-node: -1;
+    private property <string> edit-name;
+    callback write(int, int, string);
     callback add(string);
     callback remove(int);
     callback toggle-waveform(int);
-    spacing: 10px;
+    callback toggle(int, int);
+    spacing: 8px;
+    Text { text: "变量监视"; color: Theme.text; font-size: 15px; font-weight: 700; }
     HorizontalLayout {
-        Text { text: "监视变量"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
-        Text { text: root.watches.length; color: Theme.accent; }
+        spacing: 6px;
+        Text { text: "OpenOCD Tcl"; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+        LineEdit { text <=> root.memory-endpoint; placeholder-text: "127.0.0.1:6666"; enabled: !root.acquisition-active; horizontal-stretch: 1; }
     }
-    Text { text: "从左侧添加变量，或输入表达式"; color: Theme.muted; font-size: 12px; }
+    HorizontalLayout {
+        spacing: 6px;
+        CheckBox { text: "实时刷新"; checked <=> root.live-enabled; toggled => { root.live-refresh(); } }
+        ComboBox {
+            model: ["100 Hz · 10 ms", "50 Hz · 20 ms", "20 Hz · 50 ms", "10 Hz · 100 ms", "5 Hz · 200 ms", "2 Hz · 500 ms", "1 Hz · 1 s", "0.5 Hz · 2 s", "0.2 Hz · 5 s", "0.1 Hz · 10 s", "自定义…"];
+            current-index <=> root.live-interval-index;
+            selected => { root.live-refresh(); }
+        }
+    }
+    if root.live-interval-index == 10: HorizontalLayout {
+        spacing: 6px;
+        LineEdit {
+            text <=> root.live-custom-hz;
+            placeholder-text: "0.1–1000 Hz";
+            horizontal-stretch: 1;
+            accepted => { root.live-refresh(); }
+        }
+        Text { text: "Hz"; color: Theme.muted; vertical-alignment: center; }
+        Button { text: "应用"; clicked => { root.live-refresh(); } }
+    }
+    if root.frequency-error != "": Text {
+        text: root.frequency-error;
+        color: #f08a80;
+        font-size: 11px;
+        wrap: word-wrap;
+    }
+    Text { text: root.sample-status; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
     HorizontalLayout {
         spacing: 6px;
         expression := LineEdit {
             placeholder-text: "变量名 / 表达式…";
             horizontal-stretch: 1;
-            accepted => {
-                root.add(self.text);
-                self.text = "";
-            }
+            accepted => { root.add(self.text); self.text = ""; }
         }
         Button {
             text: "+";
             enabled: expression.text != "";
-            clicked => {
-                root.add(expression.text);
-                expression.text = "";
-            }
+            clicked => { root.add(expression.text); expression.text = ""; }
         }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: "名称"; color: Theme.muted; horizontal-stretch: 1; }
+        Text { text: "类型"; color: Theme.muted; width: 76px; }
+        Text { text: "值"; color: Theme.muted; width: 68px; }
+        Text { text: "波形"; color: Theme.muted; width: 40px; }
+        Rectangle { width: 24px; background: transparent; }
+        Rectangle { width: 28px; background: transparent; }
     }
     Rectangle { height: 1px; background: Theme.border; }
     Rectangle {
@@ -47,41 +100,86 @@ export component VariablesPage inherits VerticalLayout {
         background: transparent;
         ListView {
             for watch[index] in root.watches: Rectangle {
-                height: 158px;
-                background: Theme.panel;
-                border-color: Theme.border;
-                border-width: 1px;
-                border-radius: 6px;
-                VerticalLayout {
-                    padding: 10px;
+                height: watch.error == "" ? 32px : 50px;
+                background: area.has-hover ? Theme.panel : transparent;
+                area := TouchArea { clicked => { root.toggle(watch.entry-index, watch.node-index); } }
+                if watch.error != "": Text { y: 32px; height: 18px; width: parent.width; text: watch.error; color: #f08a80; font-size: 10px; overflow: elide; }
+
+                HorizontalLayout {
+                    height: 32px;
                     spacing: 6px;
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text { text: watch.expression; color: Theme.text; font-family: "monospace"; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
-                        Button { text: "移除"; clicked => { root.remove(index); } }
+                    padding-left: watch.depth * 12px;
+                    Text {
+                        text: (watch.branch ? (watch.expanded ? "▾ " : "▸ ") : "  ") + watch.expression;
+                        color: Theme.text;
+                        font-family: "monospace";
+                        font-size: 12px;
+                        overflow: elide;
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
                     }
-                    Text { text: watch.type-name; color: Theme.accent; font-size: 12px; overflow: elide; }
-                    Text { text: watch.scope; color: Theme.muted; font-size: 11px; overflow: elide; }
-                    Text { text: "当前值：" + watch.value; color: Theme.muted; font-size: 12px; overflow: elide; }
-                    HorizontalLayout {
-                        Text { text: watch.plot-hint; color: Theme.muted; font-size: 10px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
-                        Switch {
-                            text: "波形";
+                    Text { text: watch.type-name; color: Theme.accent; font-size: 12px; width: 76px; overflow: elide; vertical-alignment: center; }
+                    Text { text: watch.value; color: watch.error != "" ? #f08a80 : Theme.text; width: 68px; overflow: elide; vertical-alignment: center; }
+                    Rectangle {
+                        width: 40px;
+                        if watch.depth == 0: Switch {
                             checked: watch.waveform;
                             enabled: watch.can-plot;
-                            toggled => { root.toggle-waveform(index); }
+                            toggled => { root.toggle-waveform(watch.entry-index); }
+                        }
+                    }
+                    Button {
+                        width: 24px;
+                        text: "✎";
+                        enabled: root.can-write && !watch.branch;
+                        clicked => {
+                            root.edit-revision = root.revision;
+                            root.edit-entry = watch.entry-index;
+                            root.edit-node = watch.node-index;
+                            root.edit-name = watch.expression;
+                            new-value.text = "";
+                            new-value.focus();
+                        }
+                    }
+                    Rectangle {
+                        width: 28px;
+                        Text { text: watch.depth == 0 ? "×" : ""; color: remove-area.has-hover ? Theme.accent : Theme.muted; horizontal-alignment: center; vertical-alignment: center; }
+                        remove-area := TouchArea {
+                            enabled: watch.depth == 0;
+                            clicked => { root.edit-entry = -1; root.remove(watch.entry-index); }
                         }
                     }
                 }
             }
         }
         if root.watches.length == 0: Text {
-            text: "尚未添加监视变量\n\n在文件树中选择变量\n点击「+ 监视」添加到此处";
+            text: "点击左侧变量即可添加监视";
             color: Theme.muted;
             font-size: 12px;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
     }
-    Text { text: "打开小开关加入实时波形；固定地址的数值变量支持运行中采集。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+    if (root.edit-entry >= 0 && root.edit-revision == root.revision): Text { text: "修改：" + root.edit-name; color: Theme.accent; overflow: elide; }
+    HorizontalLayout {
+        spacing: 6px;
+        new-value := LineEdit {
+            placeholder-text: "新值，如 1.5 / 0x10";
+            enabled: root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision);
+            horizontal-stretch: 1;
+            accepted => {
+                if root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision) && self.text != "" {
+                    root.write(root.edit-entry, root.edit-node, self.text);
+                    root.edit-entry = -1;
+                }
+            }
+        }
+        Button {
+            text: "写入";
+            enabled: root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision) && new-value.text != "";
+            clicked => { root.write(root.edit-entry, root.edit-node, new-value.text); root.edit-entry = -1; }
+        }
+    }
+    Text { text: "监视刷新与波形共用无暂停采集；局部变量需暂停求值，手动写入会短暂暂停"; wrap: word-wrap; color: Theme.muted; font-size: 11px; }
 }

@@ -1,27 +1,78 @@
-import { Button, ScrollView } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Panel } from "../components/panel.slint";
 
+export struct ToolRow {
+    kind: int,
+    name: string,
+    version: string,
+    path: string,
+    selected: bool,
+    active: bool,
+    managed: bool,
+    selectable: bool,
+}
+
 export component ToolsPage inherits VerticalLayout {
     in property <bool> busy;
-    in property <[string]> tools;
+    in property <bool> connected;
+    in property <[ToolRow]> tools;
+    in property <string> backend-summary;
+    in property <string> message;
     callback refresh();
-    spacing: 16px;
+    callback install(int, string);
+    callback select-tool(int, string);
+    callback uninstall(int, string);
+    spacing: 12px;
     HorizontalLayout {
-        Text { text: "调试工具"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
-        Button { text: "刷新工具"; enabled: !root.busy; clicked => { root.refresh(); } }
+        Text { text: "调试后端"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: "刷新"; enabled: !root.busy; clicked => { root.refresh(); } }
     }
-    Text { text: "OpenOCD  /  pyOCD  /  probe-rs"; color: Theme.accent; }
-    Text { text: "显示 PATH 工具与 NyaScrapingCore 管理的版本。安装、切换与卸载界面将在后续接入。"; color: Theme.muted; wrap: word-wrap; }
-    if root.tools.length == 0: Panel {
-        Text { text: "尚未发现可用工具，可安装工具后刷新。"; color: Theme.muted; wrap: word-wrap; }
+    Text { text: "当前后端：" + root.backend-summary; color: Theme.accent; wrap: word-wrap; }
+    Panel {
+        VerticalLayout {
+            spacing: 8px;
+            Text { text: "安装后端"; color: Theme.text; font-weight: 600; }
+            HorizontalLayout {
+                spacing: 8px;
+                backend := ComboBox { model: ["OpenOCD", "pyOCD", "probe-rs"]; enabled: !root.busy; }
+                version := LineEdit { placeholder-text: "版本号（留空为最新稳定版）"; horizontal-stretch: 1; enabled: !root.busy; }
+                Button {
+                    text: version.text == "" ? "安装最新版" : "安装";
+                    enabled: !root.busy;
+                    clicked => { root.install(backend.current-index, version.text); }
+                }
+            }
+            Text { text: "安装需要网络；pyOCD 需要 Python，probe-rs 需要 Rust，OpenOCD 需要 curl 和 tar。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+        }
+    }
+    Text { text: root.message; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+    if root.busy: Text { text: "正在处理，请稍候。安装详细日志可在启动终端查看。"; color: Theme.accent; font-size: 12px; wrap: word-wrap; }
+    if root.tools.length == 0: Text {
+        text: "尚未发现可用后端。可在上方安装，或将已有工具加入 PATH 后刷新。";
+        color: Theme.muted;
+        wrap: word-wrap;
     }
     ScrollView {
         vertical-stretch: 1;
         VerticalLayout {
-            spacing: 10px;
+            spacing: 8px;
             for tool in root.tools: Panel {
-                Text { text: tool; color: Theme.text; wrap: word-wrap; }
+                VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: tool.name + " · " + tool.version; color: Theme.text; font-weight: 600; horizontal-stretch: 1; overflow: elide; }
+                        Text { text: tool.active ? "当前后端" : (tool.selected ? "默认版本" : ""); color: Theme.accent; font-size: 12px; }
+                        Button { text: "使用"; enabled: !root.busy && !root.connected && !tool.active && tool.selectable; clicked => { root.select-tool(tool.kind, tool.version); } }
+                        Button { text: "卸载"; enabled: !root.busy && !root.connected && tool.managed; clicked => { root.uninstall(tool.kind, tool.version); } }
+                    }
+                    Text { text: tool.path; color: Theme.muted; font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
+                    if !tool.managed: Text {
+                        text: tool.selectable ? "系统 PATH 工具，仅切换使用，不由此处卸载。" : "PATH 中的备用路径；优先使用同类工具的首个路径。";
+                        color: Theme.muted; font-size: 11px; wrap: word-wrap;
+                    }
+                }
             }
             Rectangle { vertical-stretch: 1; }
         }

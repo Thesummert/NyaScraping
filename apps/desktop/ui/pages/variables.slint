@@ -39,7 +39,7 @@ export component VariablesPage inherits VerticalLayout {
     callback write(int, int, string);
     callback add(string);
     callback remove(int);
-    callback toggle-waveform(int);
+    callback toggle-waveform(int, int);
     callback toggle(int, int);
     spacing: 8px;
     Text { text: "变量监视"; color: Theme.text; font-size: 15px; font-weight: 700; }
@@ -128,10 +128,10 @@ export component VariablesPage inherits VerticalLayout {
                     Text { text: watch.value; color: watch.error != "" ? #f08a80 : Theme.text; width: 68px; overflow: elide; vertical-alignment: center; }
                     Rectangle {
                         width: 40px;
-                        if watch.depth == 0: Switch {
+                        Switch {
                             checked: watch.waveform;
                             enabled: watch.can-plot;
-                            toggled => { root.toggle-waveform(watch.entry-index); }
+                            toggled => { root.toggle-waveform(watch.entry-index, watch.node-index); }
                         }
                     }
                     Button {

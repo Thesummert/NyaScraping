@@ -169,6 +169,21 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
         ) {
             continue;
         }
+        // A declaration describes a variable but does not identify its storage.
+        // Definitions may refer back to it with DW_AT_specification, so check
+        // the DIE itself rather than following inherited attributes here.
+        if node.tag == gimli::DW_TAG_variable
+            && matches!(
+                ctx.units[node.key.0]
+                    .entry(node.key.1)
+                    .map_err(error)?
+                    .attr_value(gimli::DW_AT_declaration)
+                    .map_err(error)?,
+                Some(Value::Flag(true))
+            )
+        {
+            continue;
+        }
         // Type declarations also contain parameter DIEs; only expose actual function parameters.
         let owner = owners.get(&node.key).copied().flatten();
         if node.tag == gimli::DW_TAG_formal_parameter && owner.is_none() {
@@ -386,6 +401,7 @@ impl Context {
         } else if matches!(
             tag,
             gimli::DW_TAG_variable
+                | gimli::DW_TAG_member
                 | gimli::DW_TAG_formal_parameter
                 | gimli::DW_TAG_constant
                 | gimli::DW_TAG_typedef
@@ -455,14 +471,29 @@ impl Context {
                     }
                     *budget -= 1;
                     let member = (key.0, child.entry().offset());
+                    let bit_field = self.attr(member, gimli::DW_AT_bit_size)?.is_some()
+                        || self.attr(member, gimli::DW_AT_bit_offset)?.is_some()
+                        || self.attr(member, gimli::DW_AT_data_bit_offset)?.is_some();
+                    let member_type = self.referenced_type(member)?;
                     members.push(DebugMember {
                         name: self
                             .string(member, gimli::DW_AT_name)?
                             .unwrap_or_else(|| "<匿名成员>".into()),
-                        type_name: self
-                            .referenced_type(member)?
-                            .map(|t| t.0)
+                        type_name: member_type
+                            .as_ref()
+                            .map(|t| t.0.clone())
                             .unwrap_or_else(|| "类型未记录".into()),
+                        offset: if bit_field {
+                            None
+                        } else {
+                            self.number(member, gimli::DW_AT_data_member_location)?
+                        },
+                        byte_size: member_type.and_then(|t| t.1),
+                        scalar_type: if bit_field {
+                            None
+                        } else {
+                            self.scalar_type(member, &mut Vec::new())?
+                        },
                         members: self.variable_members(member, visited, budget)?,
                     });
                 }

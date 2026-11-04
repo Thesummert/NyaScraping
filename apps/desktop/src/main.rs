@@ -884,10 +884,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let weak = ui.as_weak();
     let plot_presenter = presenter.clone();
     let callback_updates = watch_updates.clone();
-    ui.on_toggle_waveform(move |index| {
+    ui.on_toggle_waveform(move |index, node| {
         if let Some(ui) = weak.upgrade() {
             let mut presenter = plot_presenter.lock().expect("presenter lock");
-            presenter.toggle_waveform(&ui, index);
+            presenter.toggle_waveform(&ui, index, node);
             sync_watches(&callback_updates, &presenter);
         }
     });

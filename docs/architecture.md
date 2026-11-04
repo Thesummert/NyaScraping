@@ -94,7 +94,7 @@ pyOCD / probe-rs 数据源通过 `Command::ReadLiveMemory` 将合并后的读取
 
 pyOCD 通过其原生 QNonStop 支持读取；创建自有服务时禁用内存缓存。probe-rs 的 GDB stub 能在运行时处理内存包，但未声明 QNonStop，因此 `non_stop::NonStopBridge` 在单条后端 RSP 连接上转译握手、ACK、运行命令结果、停止通知与 vStopped 确认。桥接支持分片报文、校验和、有限重传、大小/队列上限，关闭时回收读线程。线程缺失的信号/单步回复补充当前线程；同组多核已停止时为 GDB 补齐停止通知。只有用户显式暂停请求转成 Ctrl-C，采样不会生成控制包。GDB 用 `maintenance set target-non-stop on` 开启底层 non-stop 协议，保持上层 all-stop 调试语义；内存读期间到达的断点/异常仍通过异步事件处理。桥接行为参考 [GDB 维护命令](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Maintenance-Commands.html) 以及 [probe-rs GDB stub](https://github.com/probe-rs/probe-rs/tree/master/probe-rs-tools/src/bin/probe-rs/cmd/gdb_server)。
 
-GDB `sample_watches` 只在目标已暂停时求值；运行中返回空值且不发送 interrupt/continue，应用层抑制这种空周期事件。固定地址数值变量通过采集快照填入监视列表；栈变量、成员或未解析表达式在运行时显示需暂停求值。用户主动写参数、暂停、断开等调试操作仍遵循原有会话语义。
+GDB `sample_watches` 只在目标已暂停时求值；运行中返回空值且不发送 interrupt/continue，应用层抑制这种空周期事件。固定地址数值变量通过采集快照填入监视列表；固定地址结构体的已展开数值成员按 DWARF 偏移采集；栈变量、位域、数组、指针或未解析表达式在运行时显示需暂停求值。用户主动写参数、暂停、断开等调试操作仍遵循原有会话语义。
 
 ## Rust 原生文本后端
 

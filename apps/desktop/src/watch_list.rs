@@ -30,14 +30,40 @@ pub struct SavedWatch {
     pub scope: Option<String>,
     pub function: Option<String>,
     pub waveform: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waveform_members: Vec<String>,
 }
 
 impl WatchEntry {
-    pub fn channel_id(&self) -> Option<usize> {
+    pub fn channel_id(&self, node: usize) -> Option<usize> {
         match self.key {
-            WatchKey::Variable(id) => Some(id),
+            WatchKey::Variable(id) if node <= 4096 => id.checked_mul(4097)?.checked_add(node),
+            WatchKey::Variable(_) => None,
             WatchKey::Expression(_) => None,
         }
+    }
+
+    pub fn node_memory(&self, node: usize) -> Option<&MemoryChannel> {
+        if node == 0 {
+            self.memory.as_ref()
+        } else {
+            self.nodes.get(node)?.memory.as_ref()
+        }
+    }
+
+    pub fn node_waveform(&self, node: usize) -> bool {
+        if node == 0 {
+            self.waveform
+        } else {
+            self.nodes.get(node).is_some_and(|n| n.waveform)
+        }
+    }
+
+    pub fn waveform_nodes(&self) -> impl Iterator<Item = (usize, &str, &MemoryChannel)> {
+        self.nodes.iter().enumerate().filter_map(|(index, node)| {
+            self.node_waveform(index)
+                .then_some((index, node.path.as_str(), node.memory.as_ref()?))
+        })
     }
 }
 
@@ -48,6 +74,9 @@ struct WatchNode {
     depth: usize,
     branch: bool,
     expanded: bool,
+    memory: Option<MemoryChannel>,
+    waveform: bool,
+    path: String,
 }
 
 pub struct DisplayRow {
@@ -68,12 +97,35 @@ fn append_members(
     members: Vec<DebugMember>,
     depth: usize,
     parent: &str,
+    parent_path: &str,
+    base: Option<u64>,
+    little_endian: bool,
 ) {
     for member in members {
+        let address = base
+            .zip(member.offset)
+            .and_then(|(base, offset)| base.checked_add(offset));
+        let memory = address
+            .zip(member.byte_size)
+            .zip(member.scalar_type)
+            .and_then(|((address, size), scalar_type)| {
+                let channel = MemoryChannel {
+                    address,
+                    byte_size: usize::try_from(size).ok()?,
+                    scalar_type,
+                    little_endian,
+                };
+                channel.validate().ok().map(|_| channel)
+            });
         let expression = if member.name.starts_with('<') {
             parent.to_owned()
         } else {
             format!("({parent}).{}", member.name)
+        };
+        let path = if member.name.starts_with('<') {
+            parent_path.to_owned()
+        } else {
+            format!("{parent_path}.{}", member.name)
         };
         nodes.push(WatchNode {
             name: member.name,
@@ -82,8 +134,19 @@ fn append_members(
             depth,
             branch: !member.members.is_empty(),
             expanded: false,
+            memory,
+            waveform: false,
+            path: path.clone(),
         });
-        append_members(nodes, member.members, depth + 1, &expression);
+        append_members(
+            nodes,
+            member.members,
+            depth + 1,
+            &expression,
+            &path,
+            address,
+            little_endian,
+        );
     }
 }
 
@@ -104,6 +167,12 @@ impl WatchList {
                 },
                 function: entry.function.clone(),
                 waveform: entry.waveform,
+                waveform_members: entry
+                    .nodes
+                    .iter()
+                    .filter(|node| node.waveform)
+                    .map(|node| node.path.clone())
+                    .collect(),
             })
             .collect()
     }
@@ -120,12 +189,34 @@ impl WatchList {
                 if let Some(variable) = browser
                     .and_then(|b| b.resolve_saved_variable(&item.expression, scope, &item.function))
                 {
+                    let variable_id = variable.id;
                     if item.waveform {
                         if self.add_waveform(variable).is_err() {
                             missing += 1;
                         }
                     } else {
                         self.add_variable(variable);
+                    }
+                    let Some(index) = self
+                        .entries
+                        .iter()
+                        .position(|entry| entry.key == WatchKey::Variable(variable_id))
+                    else {
+                        continue;
+                    };
+                    for path in &item.waveform_members {
+                        let node = self.entries.get(index).and_then(|entry| {
+                            let mut matches = entry
+                                .nodes
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, node)| &node.path == path);
+                            let found = matches.next()?.0;
+                            matches.next().is_none().then_some(found)
+                        });
+                        if node.is_none_or(|node| self.toggle_waveform(index, node).is_err()) {
+                            missing += 1;
+                        }
                     }
                 } else {
                     missing += 1;
@@ -161,6 +252,9 @@ impl WatchList {
             variable.members,
             1,
             &variable.evaluation_expression,
+            &variable.name,
+            variable.base_address,
+            variable.little_endian,
         );
         nodes.insert(
             0,
@@ -171,6 +265,9 @@ impl WatchList {
                 depth: 0,
                 branch: !nodes.is_empty(),
                 expanded: true,
+                memory: variable.memory.clone(),
+                waveform: false,
+                path: variable.name.clone(),
             },
         );
         self.insert(WatchEntry {
@@ -194,8 +291,7 @@ impl WatchList {
             .entries
             .iter()
             .position(|entry| entry.key == WatchKey::Variable(variable.id));
-        if self.entries.iter().filter(|entry| entry.waveform).count() >= MAX_CHANNELS
-            && !index.is_some_and(|i| self.entries[i].waveform)
+        if self.waveform_count() >= MAX_CHANNELS && !index.is_some_and(|i| self.entries[i].waveform)
         {
             return Err("最多同时采集 16 个通道");
         }
@@ -207,17 +303,29 @@ impl WatchList {
         Ok(())
     }
 
-    pub fn toggle_waveform(&mut self, index: usize) -> Result<(), &'static str> {
+    fn waveform_count(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|entry| {
+                usize::from(entry.waveform)
+                    + entry.nodes.iter().filter(|node| node.waveform).count()
+            })
+            .sum()
+    }
+
+    pub fn toggle_waveform(&mut self, index: usize, node: usize) -> Result<(), &'static str> {
         let entry = self.entries.get(index).ok_or("监视变量不存在")?;
-        if entry.memory.is_none() {
+        if entry.node_memory(node).is_none() || entry.channel_id(node).is_none() {
             return Err(UNAVAILABLE);
         }
-        if !entry.waveform
-            && self.entries.iter().filter(|entry| entry.waveform).count() >= MAX_CHANNELS
-        {
+        if !entry.node_waveform(node) && self.waveform_count() >= MAX_CHANNELS {
             return Err("最多同时采集 16 个通道");
         }
-        self.entries[index].waveform = !self.entries[index].waveform;
+        if node == 0 {
+            self.entries[index].waveform = !self.entries[index].waveform;
+        } else {
+            self.entries[index].nodes[node].waveform = !self.entries[index].nodes[node].waveform;
+        }
         Ok(())
     }
 
@@ -320,6 +428,8 @@ mod tests {
                 scalar_type: nya_domain::waveform::ScalarType::Signed,
                 little_endian: true,
             }),
+            base_address: Some(0x20000000 + id as u64 * 4),
+            little_endian: true,
             members: Vec::new(),
             evaluation_expression: "counter".into(),
             function: None,
@@ -339,6 +449,55 @@ mod tests {
     }
 
     #[test]
+    fn member_waveforms_restore_and_share_channel_limit() {
+        use nya_domain::firmware::{
+            DebugVariable, FirmwareDebugInfo, VariableKind, VariableLocation,
+        };
+        let info = FirmwareDebugInfo {
+            variables: vec![DebugVariable {
+                name: "device".into(),
+                type_name: Some("Device".into()),
+                byte_size: Some(80),
+                scalar_type: None,
+                declaration: None,
+                function: None,
+                kind: VariableKind::Global,
+                location: VariableLocation::Address(0x20000000),
+                constant: None,
+                members: (0..17)
+                    .map(|i| DebugMember {
+                        name: format!("value{i}"),
+                        type_name: "int".into(),
+                        offset: Some(i * 4),
+                        byte_size: Some(4),
+                        scalar_type: Some(nya_domain::waveform::ScalarType::Signed),
+                        members: vec![],
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        };
+        let browser = crate::firmware_browser::FirmwareBrowser::new(&info, true, true);
+        let mut watches = WatchList::default();
+        assert!(watches.add_variable(browser.resolve_variable("device").unwrap()));
+        for node in 1..=MAX_CHANNELS {
+            watches.toggle_waveform(0, node).unwrap();
+        }
+        assert!(watches.toggle_waveform(0, 17).is_err());
+        let saved = watches.saved();
+        let mut restored = WatchList::default();
+        assert_eq!(restored.restore(&saved, Some(&browser)), 0);
+        assert_eq!(restored.entries[0].waveform_nodes().count(), MAX_CHANNELS);
+        assert_eq!(
+            restored.saved()[0].waveform_members,
+            saved[0].waveform_members
+        );
+        restored.toggle_waveform(0, 1).unwrap();
+        restored.toggle_waveform(0, 17).unwrap();
+        assert!(restored.entries[0].node_waveform(17));
+    }
+
+    #[test]
     fn nested_members_keep_order_types_and_independent_expansion() {
         let mut variable = variable(0);
         variable.name = "sensor".into();
@@ -348,15 +507,24 @@ mod tests {
             DebugMember {
                 name: "position".into(),
                 type_name: "Point".into(),
+                offset: Some(4),
+                byte_size: None,
+                scalar_type: None,
                 members: vec![DebugMember {
                     name: "x".into(),
                     type_name: "float".into(),
+                    offset: Some(8),
+                    byte_size: Some(4),
+                    scalar_type: Some(nya_domain::waveform::ScalarType::Float),
                     members: vec![],
                 }],
             },
             DebugMember {
                 name: "enabled".into(),
                 type_name: "bool".into(),
+                offset: Some(0),
+                byte_size: Some(1),
+                scalar_type: Some(nya_domain::waveform::ScalarType::Boolean),
                 members: vec![],
             },
         ];
@@ -374,10 +542,30 @@ mod tests {
         assert_eq!(rows[2].depth, 2);
         assert_eq!(rows[2].expression, "((sensor).position).x");
         assert_eq!(rows[2].type_name, "float");
+        assert_eq!(
+            watches.entries[0]
+                .node_memory(rows[2].node)
+                .unwrap()
+                .address,
+            0x2000000c
+        );
+        assert_ne!(
+            watches.entries[0].channel_id(0),
+            watches.entries[0].channel_id(rows[2].node)
+        );
+        let member = rows[2].node;
+        watches.toggle_waveform(0, member).unwrap();
+        assert_eq!(watches.saved()[0].waveform_members, ["sensor.position.x"]);
         watches.toggle(0, 0);
         assert_eq!(watches.rows().len(), 1);
+        let plots: Vec<_> = watches.entries[0].waveform_nodes().collect();
+        assert_eq!(plots.len(), 1);
+        assert_eq!(plots[0].1, "sensor.position.x");
+        assert_eq!(plots[0].2.address, 0x2000000c);
         watches.toggle(0, 0);
         assert_eq!(watches.rows().len(), 4);
+        watches.toggle_waveform(0, member).unwrap();
+        assert_eq!(watches.entries[0].waveform_nodes().count(), 0);
         assert!(watches.remove(0));
         assert!(watches.rows().is_empty());
     }
@@ -404,7 +592,7 @@ mod tests {
         watches.add_waveform(variable(0)).unwrap();
         assert_eq!(watches.entries.len(), 1);
         assert!(watches.entries[0].waveform);
-        watches.toggle_waveform(0).unwrap();
+        watches.toggle_waveform(0, 0).unwrap();
         assert!(!watches.entries[0].waveform);
         for id in 0..MAX_CHANNELS {
             watches.add_waveform(variable(id)).unwrap();
@@ -412,19 +600,19 @@ mod tests {
         assert!(watches.add_waveform(variable(MAX_CHANNELS)).is_err());
         assert_eq!(watches.entries.len(), MAX_CHANNELS);
         watches.add_waveform(variable(0)).unwrap();
-        watches.toggle_waveform(0).unwrap();
+        watches.toggle_waveform(0, 0).unwrap();
         watches.add_waveform(variable(MAX_CHANNELS)).unwrap();
-        assert!(watches.toggle_waveform(0).is_err());
+        assert!(watches.toggle_waveform(0, 0).is_err());
         assert!(!watches.entries[0].waveform);
         assert!(watches.add_expression("counter + 1"));
         assert_eq!(
-            watches.toggle_waveform(watches.entries.len() - 1),
+            watches.toggle_waveform(watches.entries.len() - 1, 0),
             Err(UNAVAILABLE)
         );
         let mut local = variable(99);
         local.memory = None;
         assert_eq!(watches.add_waveform(local), Err(UNAVAILABLE));
-        assert!(watches.toggle_waveform(usize::MAX).is_err());
+        assert!(watches.toggle_waveform(usize::MAX, 0).is_err());
         watches.reset_firmware();
         assert_eq!(watches.entries.len(), 1);
         assert!(!watches.entries[0].waveform);

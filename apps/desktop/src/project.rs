@@ -104,6 +104,7 @@ mod tests {
                 scope: Some("main.c:1".into()),
                 function: None,
                 waveform: true,
+                waveform_members: vec![],
             }],
         };
         project.write(&path).unwrap();

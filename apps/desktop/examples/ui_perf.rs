@@ -181,9 +181,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     presenter.plot_variable(&ui, 2);
     assert_eq!(ui.get_waveform_channels().row_count(), 1);
-    presenter.toggle_waveform(&ui, watch_index);
+    presenter.toggle_waveform(&ui, watch_index, 0);
     assert_eq!(ui.get_waveform_channels().row_count(), 0);
-    presenter.toggle_waveform(&ui, watch_index);
+    presenter.toggle_waveform(&ui, watch_index, 0);
     ui.set_acquisition_endpoint("invalid".into());
     presenter.start_acquisition(&ui);
     assert!(!ui.get_acquisition_active());

@@ -23,6 +23,8 @@ pub struct BrowserVariable {
     pub type_name: String,
     pub scope: String,
     pub memory: Option<MemoryChannel>,
+    pub base_address: Option<u64>,
+    pub little_endian: bool,
     pub members: Vec<DebugMember>,
     pub evaluation_expression: String,
     pub function: Option<String>,
@@ -258,6 +260,11 @@ impl FirmwareBrowser {
                         .unwrap_or(kind),
                     source_position(info, variable.declaration.as_ref()),
                 ),
+                base_address: match &variable.location {
+                    VariableLocation::Address(address) if absolute_addresses => Some(*address),
+                    _ => None,
+                },
+                little_endian,
                 memory: match (&variable.location, variable.byte_size, variable.scalar_type) {
                     (VariableLocation::Address(address), Some(size), Some(scalar_type))
                         if absolute_addresses =>

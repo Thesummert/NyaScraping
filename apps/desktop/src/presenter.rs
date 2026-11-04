@@ -560,13 +560,15 @@ impl Presenter {
         }
     }
 
-    pub fn toggle_waveform(&mut self, ui: &AppWindow, index: i32) {
+    pub fn toggle_waveform(&mut self, ui: &AppWindow, index: i32, node: i32) {
         let result = usize::try_from(index)
-            .map_err(|_| "监视变量不存在")
-            .and_then(|index| self.watches.toggle_waveform(index));
+            .ok()
+            .zip(usize::try_from(node).ok())
+            .ok_or("监视变量不存在")
+            .and_then(|(index, node)| self.watches.toggle_waveform(index, node));
         match result {
             Ok(()) => {
-                let enabled = self.watches.entries[index as usize].waveform;
+                let enabled = self.watches.entries[index as usize].node_waveform(node as usize);
                 self.invalidate_watches(ui);
                 self.sync_waveforms(ui);
                 if enabled {
@@ -643,16 +645,28 @@ impl Presenter {
             .watches
             .entries
             .iter()
-            .filter(|e| e.waveform)
-            .filter_map(|e| Some((e.channel_id()?, e.memory.clone()?, true)))
+            .flat_map(|entry| {
+                entry.waveform_nodes().filter_map(move |(node, _, memory)| {
+                    Some((entry.channel_id(node)?, memory.clone(), true))
+                })
+            })
             .collect::<Vec<_>>();
         if live {
             targets.extend(
                 self.watches
-                    .entries
-                    .iter()
-                    .filter(|e| !e.waveform)
-                    .filter_map(|e| Some((e.channel_id()?, e.memory.clone()?, false)))
+                    .rows()
+                    .into_iter()
+                    .filter_map(|row| {
+                        let entry = &self.watches.entries[row.entry];
+                        if entry.node_waveform(row.node) {
+                            return None;
+                        }
+                        Some((
+                            entry.channel_id(row.node)?,
+                            entry.node_memory(row.node)?.clone(),
+                            false,
+                        ))
+                    })
                     .take(MAX_MEMORY_CHANNELS - targets.len()),
             );
         }
@@ -706,7 +720,7 @@ impl Presenter {
         let mut plots = Vec::new();
         for (watch_index, entry) in self.watches.entries.iter().enumerate() {
             let data = entry
-                .channel_id()
+                .channel_id(0)
                 .and_then(|id| state.channels.iter().find(|c| c.id == id));
             let latest = data
                 .and_then(|c| c.samples.latest())
@@ -724,28 +738,62 @@ impl Presenter {
                     }
                     .into(),
                 };
-                values.push((watch_index, value));
+                values.push((watch_index, 0, value));
             }
-            if update_plot && entry.waveform {
-                let bins = data
-                    .map(|c| {
-                        c.samples
-                            .envelope(state.elapsed, Duration::from_secs(5), PLOT_WIDTH)
+            if update_plot {
+                for (node, name, _) in entry.waveform_nodes() {
+                    let data = entry
+                        .channel_id(node)
+                        .and_then(|id| state.channels.iter().find(|c| c.id == id));
+                    let latest = data
+                        .and_then(|c| c.samples.latest())
+                        .map(|sample| waveform_view::format_value(sample.value));
+                    let bins = data
+                        .map(|c| {
+                            c.samples
+                                .envelope(state.elapsed, Duration::from_secs(5), PLOT_WIDTH)
+                        })
+                        .unwrap_or_else(|| vec![None; PLOT_WIDTH]);
+                    let count = data.map(|c| c.samples.len()).unwrap_or(0);
+                    let evicted = data.map(|c| c.samples.evicted()).unwrap_or(0);
+                    let invalid = data.map(|c| c.invalid).unwrap_or(0);
+                    plots.push((
+                        watch_index,
+                        node,
+                        name.to_owned(),
+                        entry.scope.clone(),
+                        latest.unwrap_or_else(|| "—".into()),
+                        bins,
+                        count,
+                        invalid,
+                        evicted,
+                    ));
+                }
+            }
+        }
+        if update_values {
+            for row in self.watches.rows().into_iter().filter(|row| row.node != 0) {
+                let entry = &self.watches.entries[row.entry];
+                if entry.node_memory(row.node).is_none()
+                    || (!ui.get_live_enabled() && !entry.node_waveform(row.node))
+                {
+                    continue;
+                }
+                let data = entry
+                    .channel_id(row.node)
+                    .and_then(|id| state.channels.iter().find(|channel| channel.id == id));
+                let value = data
+                    .and_then(|channel| channel.samples.latest())
+                    .map(|sample| waveform_view::format_value(sample.value))
+                    .map(|value| {
+                        if active {
+                            value.clone()
+                        } else {
+                            format!("{value}（已停止）")
+                        }
                     })
-                    .unwrap_or_else(|| vec![None; PLOT_WIDTH]);
-                let count = data.map(|c| c.samples.len()).unwrap_or(0);
-                let evicted = data.map(|c| c.samples.evicted()).unwrap_or(0);
-                let invalid = data.map(|c| c.invalid).unwrap_or(0);
-                plots.push((
-                    watch_index,
-                    entry.expression.clone(),
-                    entry.scope.clone(),
-                    latest.unwrap_or_else(|| "—".into()),
-                    bins,
-                    count,
-                    invalid,
-                    evicted,
-                ));
+                    .unwrap_or_else(|| "未采集".into());
+                values.push((row.entry, row.node, value));
             }
         }
         // Release the sampler before rasterization or Slint model updates.
@@ -773,13 +821,9 @@ impl Presenter {
             if let Some(model) = model.as_any().downcast_ref::<VecModel<WatchRow>>() {
                 for index in 0..model.row_count() {
                     if let Some(mut row) = model.row_data(index) {
-                        if row.node_index != 0 {
-                            continue;
-                        }
-                        if let Some((_, value)) = values
-                            .iter()
-                            .find(|(entry, _)| *entry as i32 == row.entry_index)
-                        {
+                        if let Some((_, _, value)) = values.iter().find(|(entry, node, _)| {
+                            *entry as i32 == row.entry_index && *node as i32 == row.node_index
+                        }) {
                             if row.value.as_str() != value {
                                 row.value = value.as_str().into();
                                 model.set_row_data(index, row);
@@ -795,11 +839,15 @@ impl Presenter {
                 .into_iter()
                 .enumerate()
                 .map(
-                    |(index, (watch_index, name, scope, value, bins, count, invalid, evicted))| {
+                    |(
+                        index,
+                        (watch_index, node, name, scope, value, bins, count, invalid, evicted),
+                    )| {
                         let color = COLORS[index % COLORS.len()];
                         let (plot, minimum, maximum) = waveform_view::render(&bins, color);
                         WaveformRow {
                             watch_index: watch_index as i32,
+                            node_index: node as i32,
                             name: name.into(),
                             scope: scope.into(),
                             value: value.into(),
@@ -844,7 +892,7 @@ impl Presenter {
         self.watches
             .rows()
             .into_iter()
-            .filter(|row| !self.watches.entries[row.entry].waveform)
+            .filter(|row| !self.watches.entries[row.entry].node_waveform(row.node))
             .map(|row| WatchRequest {
                 id: format!("{}:{}:{}", self.watch_revision, row.entry, row.node),
                 expression: row.expression,
@@ -863,12 +911,11 @@ impl Presenter {
                 let id = format!("{}:{}:{}", self.watch_revision, entry.entry, entry.node);
                 let runtime = self.values.get(&id).map(|v| &v.value);
                 let watch = &self.watches.entries[entry.entry];
-                let waveform = watch.waveform && entry.node == 0;
-                let waveform_value = if waveform
-                    || (ui.get_live_enabled() && watch.memory.is_some() && entry.node == 0)
-                {
+                let memory = watch.node_memory(entry.node);
+                let waveform = watch.node_waveform(entry.node);
+                let waveform_value = if waveform || (ui.get_live_enabled() && memory.is_some()) {
                     watch
-                        .channel_id()
+                        .channel_id(entry.node)
                         .and_then(|id| acquisition.channels.iter().find(|c| c.id == id))
                         .and_then(|c| c.samples.latest())
                         .map(|sample| {
@@ -885,8 +932,8 @@ impl Presenter {
                 };
                 WatchRow {
                     waveform,
-                    can_plot: watch.memory.is_some() && entry.node == 0,
-                    plot_hint: if watch.memory.is_some() {
+                    can_plot: memory.is_some(),
+                    plot_hint: if memory.is_some() {
                         "运行中读取"
                     } else {
                         "需固定地址的数值变量"
@@ -909,18 +956,19 @@ impl Presenter {
                         .or_else(|| runtime.map(|v| v.display_value.as_str()))
                         .unwrap_or("—")
                         .into(),
-                    error: if ui.get_live_enabled()
-                        && !ui.get_debug_halted()
-                        && (watch.memory.is_none() || entry.node != 0)
-                    {
-                        "运行中无固定数值地址；暂停后求值".into()
+                    error: if ui.get_live_enabled() && !ui.get_debug_halted() && memory.is_none() {
+                        if entry.branch {
+                            "展开结构体以监视数值成员"
+                        } else {
+                            "无法确定固定数值地址；暂停后求值"
+                        }
+                        .into()
                     } else if ui.get_live_enabled()
-                        && watch.memory.is_some()
-                        && entry.node == 0
+                        && memory.is_some()
                         && !acquisition
                             .channels
                             .iter()
-                            .any(|channel| Some(channel.id) == watch.channel_id())
+                            .any(|channel| Some(channel.id) == watch.channel_id(entry.node))
                     {
                         "无暂停采集最多 64 项，请减少监视变量".into()
                     } else {

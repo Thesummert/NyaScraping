@@ -50,6 +50,16 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     declarations
         .get_mut(int)
         .set(gimli::DW_AT_encoding, A::Encoding(gimli::DW_ATE_signed));
+    let extern_var = declarations.add(root, gimli::DW_TAG_variable);
+    declarations
+        .get_mut(extern_var)
+        .set(gimli::DW_AT_name, A::String(b"extern_counter".to_vec()));
+    declarations
+        .get_mut(extern_var)
+        .set(gimli::DW_AT_type, A::UnitRef(int));
+    declarations
+        .get_mut(extern_var)
+        .set(gimli::DW_AT_declaration, A::Flag(true));
     let point = declarations.add(root, gimli::DW_TAG_structure_type);
     declarations
         .get_mut(point)
@@ -61,6 +71,22 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     declarations
         .get_mut(x)
         .set(gimli::DW_AT_type, A::UnitRef(int));
+    declarations
+        .get_mut(x)
+        .set(gimli::DW_AT_data_member_location, A::Udata(8));
+    let bits = declarations.add(point, gimli::DW_TAG_member);
+    declarations
+        .get_mut(bits)
+        .set(gimli::DW_AT_name, A::String(b"bits".to_vec()));
+    declarations
+        .get_mut(bits)
+        .set(gimli::DW_AT_type, A::UnitRef(int));
+    declarations
+        .get_mut(bits)
+        .set(gimli::DW_AT_data_member_location, A::Udata(0));
+    declarations
+        .get_mut(bits)
+        .set(gimli::DW_AT_bit_size, A::Udata(1));
     let state = declarations.add(root, gimli::DW_TAG_structure_type);
     declarations
         .get_mut(state)
@@ -72,6 +98,9 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     declarations
         .get_mut(position)
         .set(gimli::DW_AT_type, A::UnitRef(point));
+    declarations
+        .get_mut(position)
+        .set(gimli::DW_AT_data_member_location, A::Udata(4));
     let state_ptr = declarations.add(root, gimli::DW_TAG_pointer_type);
     declarations
         .get_mut(state_ptr)
@@ -119,6 +148,16 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     let mut dwarf = write::Dwarf::new();
     let unit_id = dwarf.units.add(declarations);
     let mut definitions = write::Unit::new(encoding, write::LineProgram::none());
+    let extern_definition = definitions.add(definitions.root(), gimli::DW_TAG_variable);
+    definitions.get_mut(extern_definition).set(
+        gimli::DW_AT_specification,
+        A::DebugInfoRef(write::Reference::Entry(unit_id, extern_var)),
+    );
+    let mut extern_address = write::Expression::new();
+    extern_address.op_addr(write::Address::Constant(0x20000300));
+    definitions
+        .get_mut(extern_definition)
+        .set(gimli::DW_AT_location, A::Exprloc(extern_address));
     let concrete = definitions.add(definitions.root(), gimli::DW_TAG_subprogram);
     definitions.get_mut(concrete).set(
         gimli::DW_AT_specification,
@@ -286,6 +325,18 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
         assert_eq!(parameter.scalar_type, Some(ScalarType::Signed));
         assert!(parameter.function.is_some());
         assert!(matches!(parameter.location, VariableLocation::Unavailable));
+        let counters: Vec<_> = info
+            .variables
+            .iter()
+            .filter(|v| v.name == "extern_counter")
+            .collect();
+        assert_eq!(counters.len(), 1);
+        assert!(matches!(
+            counters[0].location,
+            VariableLocation::Address(0x20000300)
+        ));
+        assert_eq!(counters[0].scalar_type, Some(ScalarType::Signed));
+        assert_eq!(counters[0].byte_size, Some(4));
         let state = info.variables.iter().find(|v| v.name == "state").unwrap();
         assert_eq!(state.type_name.as_deref(), Some("const StateAlias"));
         assert_eq!(state.members.len(), 2);
@@ -293,6 +344,15 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
         assert_eq!(state.members[0].type_name, "Point");
         assert_eq!(state.members[0].members[0].name, "x");
         assert_eq!(state.members[0].members[0].type_name, "int");
+        assert_eq!(state.members[0].offset, Some(4));
+        assert_eq!(state.members[0].members[0].offset, Some(8));
+        assert_eq!(
+            state.members[0].members[0].scalar_type,
+            Some(ScalarType::Signed)
+        );
+        assert_eq!(state.members[0].members[0].byte_size, Some(4));
+        assert_eq!(state.members[0].members[1].offset, None);
+        assert_eq!(state.members[0].members[1].scalar_type, None);
         assert_eq!(state.members[1].name, "next");
         assert_eq!(state.members[1].type_name, "State *");
         assert!(state.members[1].members.is_empty());

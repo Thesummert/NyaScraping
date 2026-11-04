@@ -107,7 +107,7 @@ export component AppWindow inherits Window {
     callback add-expression(string);
     callback remove-watch(int);
     callback plot-variable(int);
-    callback toggle-waveform(int);
+    callback toggle-waveform(int, int);
     callback start-acquisition();
     callback stop-acquisition();
     callback toggle-watch(int, int);
@@ -250,7 +250,7 @@ export component AppWindow inherits Window {
                                 session-ready: root.debug-connected;
                                 start => { root.start-acquisition(); }
                                 stop => { root.stop-acquisition(); }
-                                remove(index) => { root.toggle-waveform(index); }
+                                remove(index, node) => { root.toggle-waveform(index, node); }
                             }
                         }
                         Tab {
@@ -305,7 +305,7 @@ export component AppWindow inherits Window {
                     write(entry, node, value) => { root.write-watch(entry, node, value); }
                     add(expression) => { root.add-expression(expression); }
                     remove(index) => { root.remove-watch(index); }
-                    toggle-waveform(index) => { root.toggle-waveform(index); }
+                    toggle-waveform(index, node) => { root.toggle-waveform(index, node); }
                     toggle(entry, node) => { root.toggle-watch(entry, node); }
                 }
             }

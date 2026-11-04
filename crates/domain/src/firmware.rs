@@ -141,5 +141,8 @@ pub struct VariableLocationRange {
 pub struct DebugMember {
     pub name: String,
     pub type_name: String,
+    pub offset: Option<u64>,
+    pub byte_size: Option<u64>,
+    pub scalar_type: Option<crate::waveform::ScalarType>,
     pub members: Vec<DebugMember>,
 }

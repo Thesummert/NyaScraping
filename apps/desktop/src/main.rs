@@ -87,6 +87,20 @@ fn target_profile(ui: &AppWindow) -> Result<TargetProfile, String> {
         return Err("请选择 ELF/AXF 调试文件".into());
     }
     let interface = ui.get_debug_interface().trim().to_owned();
+    if ui.get_gdb_path().trim().is_empty() {
+        return Err("请填写 GDB 路径".into());
+    }
+    if !ui.get_external_server() {
+        if tool_kind(ui.get_backend_kind()).is_none() {
+            return Err("请先在后端设置中选择调试后端".into());
+        }
+        if ui.get_debug_target().trim().is_empty() {
+            return Err("请选择调试目标".into());
+        }
+        if ui.get_backend_kind() == 0 && interface.is_empty() {
+            return Err("请选择 OpenOCD Probe 配置".into());
+        }
+    }
     Ok(TargetProfile {
         name: "桌面调试目标".into(),
         tool: tool_kind(ui.get_backend_kind()).unwrap_or(ToolKind::OpenOcd),
@@ -156,6 +170,9 @@ fn open_project(
     ui.set_acquisition_endpoint(project.acquisition_endpoint.into());
     ui.set_live_interval_index(project.live_interval_index);
     ui.set_live_custom_hz(project.live_custom_hz.into());
+    if firmware.is_none() {
+        presenter.clear_firmware(ui);
+    }
     if let Some(firmware) = firmware {
         presenter.apply(
             ui,
@@ -171,6 +188,9 @@ fn open_project(
     } else {
         String::new()
     };
+    ui.set_source_title("尚未打开文件".into());
+    ui.set_source_meta("".into());
+    ui.set_source_text("打开一个源码文件以开始浏览。".into());
     if !project.source.is_empty() {
         match NativeTextBackend.load(std::path::Path::new(&project.source)) {
             Ok(document) => presenter.apply(
@@ -245,6 +265,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_updates = watch_updates.clone();
     ui.on_open_project(move |path| {
         if let Some(ui) = weak.upgrade() {
+            if ui.get_debug_connected() || ui.get_busy() {
+                return;
+            }
             let mut presenter = project_presenter.lock().expect("presenter lock");
             match open_project(
                 &ui,
@@ -262,6 +285,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        if ui.get_busy() || ui.get_file_dialog_open() || ui.get_debug_connected() {
+            return;
+        }
         ui.set_file_dialog_open(true);
         let weak = ui.as_weak();
         if let Err(error) = slint::spawn_local(async move {
@@ -522,7 +548,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         external_server: ui.get_external_server(),
                     },
                     Err(error) => {
-                        ui.set_status(error.into());
+                        ui.set_status(error.as_str().into());
+                        ui.set_settings_message(error.into());
+                        ui.set_settings_tab(1);
+                        ui.set_settings_open(true);
                         return;
                     }
                 },

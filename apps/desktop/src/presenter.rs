@@ -84,6 +84,22 @@ impl From<Event> for PreparedEvent {
 }
 
 impl Presenter {
+    pub fn clear_firmware(&mut self, ui: &AppWindow) {
+        ui.set_live_enabled(false);
+        self.acquisition.stop();
+        self.acquisition.set_targets(Vec::new());
+        self.browser = None;
+        self.watches.reset_firmware();
+        self.sync_waveforms(ui);
+        self.invalidate_watches(ui);
+        self.refresh_tree(ui);
+        ui.set_firmware_selected_node(-1);
+        ui.set_firmware_title("尚未打开编译产物".into());
+        ui.set_firmware_meta("".into());
+        ui.set_firmware_report("解析编译产物后，在这里查看段、节与符号表。".into());
+        ui.set_firmware_details("选择文件树中的函数或变量，查看类型、声明位置及存储位置。".into());
+    }
+
     pub fn saved_watches(&self) -> Vec<crate::watch_list::SavedWatch> {
         self.watches.saved()
     }

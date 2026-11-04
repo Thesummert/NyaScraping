@@ -5,7 +5,9 @@ import { ToolsPage, ToolRow } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
 import { WaveformsPage, WaveformRow } from "pages/waveforms.slint";
 import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
-import { DebugPage, FrameRow, BreakpointRow, TargetRow, PackRow } from "pages/debug.slint";
+import { DebugPage, FrameRow, BreakpointRow } from "pages/debug.slint";
+import { DebugSettings } from "pages/debug-settings.slint";
+import { TargetRow, PackRow } from "pages/target-selector.slint";
 export { FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
 
 export component AppWindow inherits Window {
@@ -26,7 +28,10 @@ export component AppWindow inherits Window {
     callback open-project(string);
     callback browse-project();
     callback save-project();
-    private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open;
+    in-out property <bool> settings-open: false;
+    in-out property <int> settings-tab: 0;
+    in-out property <string> settings-message;
+    private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
     in-out property <bool> debug-connected: false;
     in-out property <bool> debug-halted: false;
     in-out property <bool> debug-running: false;
@@ -116,6 +121,21 @@ export component AppWindow inherits Window {
     in-out property <int> watch-revision;
     callback write-watch(int, int, string);
 
+    MenuBar {
+        Menu {
+            title: "文件";
+            MenuItem { title: "打开项目…"; enabled: !root.interaction-busy && !root.debug-connected; activated => { root.browse-project(); } }
+            MenuItem { title: "打开源码…"; enabled: !root.interaction-busy; activated => { root.current-tab = 0; root.browse-source(); } }
+            MenuItem { title: "打开固件…"; enabled: !root.interaction-busy && !root.debug-connected; activated => { root.browse-firmware(); } }
+            MenuSeparator { }
+            MenuItem { title: "保存项目"; enabled: !root.interaction-busy; activated => { root.save-project(); } }
+        }
+        Menu {
+            title: "设置";
+            MenuItem { title: "后端设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 0; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }
+        }
+    }
     VerticalLayout {
         spacing: 0px;
         Rectangle {
@@ -131,7 +151,6 @@ export component AppWindow inherits Window {
                     spacing: 4px;
                     Text { text: "NYA /"; font-weight: 800; font-size: 22px; color: Theme.accent; }
                     Text { text: "Embedded Debug Studio"; font-size: 11px; color: Theme.muted; }
-                    Button { text: "保存项目"; enabled: !root.interaction-busy; clicked => { root.save-project(); } }
                 }
                 VerticalLayout {
                     horizontal-stretch: 1;
@@ -237,58 +256,16 @@ export component AppWindow inherits Window {
                             }
                         }
                         Tab {
-                            title: "调试工具";
-                            ToolsPage {
-                                padding-top: 12px;
-                                busy: root.interaction-busy;
-                                tools: root.tools;
-                                connected: root.debug-connected;
-                                backend-summary: root.backend-summary;
-                                message: root.tool-message;
-                                local-directory <=> root.local-tool-directory;
-                                refresh => { root.refresh-tools(); }
-                                install(kind, version) => { root.install-tool(kind, version); }
-                                select-tool(kind, version) => { root.select-tool(kind, version); }
-                                uninstall(kind, version) => { root.uninstall-tool(kind, version); }
-                                add-local(kind, name, directory) => { root.add-local-tool(kind, name, directory); }
-                                remove-local(kind, version) => { root.remove-local-tool(kind, version); }
-                                browse-local => { root.browse-local-tool(); }
-                            }
-                        }
-                        Tab {
                             title: "调试";
                             DebugPage {
                                 busy: root.interaction-busy;
                                 connected: root.debug-connected;
                                 halted: root.debug-halted;
                                 state-label: root.debug-state;
-                                backend: root.backend-summary;
-                                gdb-path <=> root.gdb-path;
-                                target <=> root.debug-target;
-                                backend-kind: root.backend-kind;
-                                targets: root.targets;
-                                packs: root.packs;
-                                target-message: root.target-message;
-                                target-search <=> root.target-search;
-                                refresh-targets => { root.refresh-targets(); }
-                                search-targets(query) => { root.search-targets(query); }
-                                add-pack => { root.add-pack(); }
-                                remove-pack(path) => { root.remove-pack(path); }
-                                install-pack(part) => { root.install-pack(part); }
-                                interface <=> root.debug-interface;
-                                probes: root.probes;
-                                probe-message: root.probe-message;
-                                probe-search <=> root.probe-search;
-                                search-probes(query) => { root.search-probes(query); }
-                                browse-probe => { root.browse-probe(); }
-                                port <=> root.debug-port;
-                                firmware <=> root.firmware-path;
-                                external-server <=> root.external-server;
                                 frames: root.stack-frames;
                                 breakpoints: root.breakpoints;
                                 log: root.debug-log;
                                 action(kind) => { root.debug-action(kind); }
-                                browse-firmware => { root.browse-firmware(); }
                                 add-breakpoint(location) => { root.add-breakpoint(location); }
                                 remove-breakpoint(id) => { root.remove-breakpoint(id); }
                                 select-frame(level) => { root.select-frame(level); }
@@ -334,6 +311,76 @@ export component AppWindow inherits Window {
                 spacing: 16px;
                 Text { text: root.status; color: Theme.muted; overflow: elide; horizontal-stretch: 1; }
                 Text { text: root.busy ? "处理中" : root.debug-state; color: Theme.accent; font-size: 12px; }
+            }
+        }
+    }
+    if root.settings-open: Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height;
+        background: #000a;
+        TouchArea { }
+        Rectangle {
+            width: min(900px, root.width - 48px); height: min(680px, root.height - 48px);
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Theme.sidebar; border-radius: 20px;
+            VerticalLayout {
+                padding: 24px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: "设置"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
+                    Button { text: "关闭"; enabled: !root.busy && !root.file-dialog-open; clicked => { root.settings-open = false; } }
+                }
+                if root.settings-message != "": Text { text: root.settings-message; color: Theme.accent; wrap: word-wrap; }
+                TabWidget {
+                    current-index <=> root.settings-tab;
+                    Tab {
+                        title: "后端设置";
+                        ToolsPage {
+                            padding-top: 12px;
+                            busy: root.busy || root.file-dialog-open;
+                            tools: root.tools;
+                            connected: root.debug-connected;
+                            backend-summary: root.backend-summary;
+                            message: root.tool-message;
+                            local-directory <=> root.local-tool-directory;
+                            refresh => { root.refresh-tools(); }
+                            install(kind, version) => { root.install-tool(kind, version); }
+                            select-tool(kind, version) => { root.select-tool(kind, version); }
+                            uninstall(kind, version) => { root.uninstall-tool(kind, version); }
+                            add-local(kind, name, directory) => { root.add-local-tool(kind, name, directory); }
+                            remove-local(kind, version) => { root.remove-local-tool(kind, version); }
+                            browse-local => { root.browse-local-tool(); }
+                        }
+                    }
+                    Tab {
+                        title: "调试器设置";
+                        DebugSettings {
+                            busy: root.busy || root.file-dialog-open;
+                            connected: root.debug-connected;
+                            backend: root.backend-summary;
+                            gdb-path <=> root.gdb-path;
+                            target <=> root.debug-target;
+                            backend-kind: root.backend-kind;
+                            targets: root.targets;
+                            packs: root.packs;
+                            target-message: root.target-message;
+                            target-search <=> root.target-search;
+                            refresh-targets => { root.refresh-targets(); }
+                            search-targets(query) => { root.search-targets(query); }
+                            add-pack => { root.add-pack(); }
+                            remove-pack(path) => { root.remove-pack(path); }
+                            install-pack(part) => { root.install-pack(part); }
+                            interface <=> root.debug-interface;
+                            probes: root.probes;
+                            probe-message: root.probe-message;
+                            probe-search <=> root.probe-search;
+                            search-probes(query) => { root.search-probes(query); }
+                            browse-probe => { root.browse-probe(); }
+                            port <=> root.debug-port;
+                            firmware <=> root.firmware-path;
+                            external-server <=> root.external-server;
+                            browse-firmware => { root.browse-firmware(); }
+                        }
+                    }
+                }
             }
         }
     }

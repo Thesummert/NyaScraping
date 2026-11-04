@@ -1,4 +1,4 @@
-import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ListView, Switch } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct WaveformRow {
@@ -11,11 +11,15 @@ export struct WaveformRow {
     maximum: string,
     statistics: string,
     tint: color,
-    plot: image,
+    chart-index: int,
 }
 
 export component WaveformsPage inherits VerticalLayout {
     in property <[WaveformRow]> channels;
+    in property <[string]> charts;
+    in property <int> selected-chart;
+    in property <image> plot;
+    in property <bool> detached;
     in property <bool> active;
     in property <string> status;
     in property <string> statistics;
@@ -23,12 +27,17 @@ export component WaveformsPage inherits VerticalLayout {
     in property <string> source-label;
     in property <bool> use-session;
     in property <bool> session-ready;
+    callback toggle-detached(bool);
+    callback add-chart();
+    callback select-chart(int);
+    callback move-channel(int, int, int);
     callback start();
     callback stop();
     callback remove(int, int);
     spacing: 12px;
     HorizontalLayout {
         Text { text: "实时波形"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
+        Switch { text: "独立窗口"; checked: root.detached; toggled => { root.toggle-detached(self.checked); } }
         Text { text: root.channels.length + " / 16 通道"; color: Theme.accent; vertical-alignment: center; }
     }
     HorizontalLayout {
@@ -41,12 +50,19 @@ export component WaveformsPage inherits VerticalLayout {
     }
     Text { text: root.status; color: Theme.accent; overflow: elide; }
     Text { text: root.statistics; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "图表"; color: Theme.text; vertical-alignment: center; }
+        chart-selector := ComboBox { model: root.charts; current-index: root.selected-chart; selected => { root.select-chart(chart-selector.current-index); } }
+        Button { text: "新建图表"; clicked => { root.add-chart(); } }
+    }
+    Image { source: root.plot; min-height: 150px; vertical-stretch: 1; image-fit: fill; }
     Rectangle {
-        vertical-stretch: 1;
+        height: 140px;
         background: Theme.background;
         ListView {
             for channel in root.channels: Rectangle {
-                height: 192px;
+                height: 100px;
                 background: Theme.panel;
                 border-radius: 16px;
                 VerticalLayout {
@@ -56,10 +72,10 @@ export component WaveformsPage inherits VerticalLayout {
                         spacing: 8px;
                         Text { text: "● " + channel.name; color: channel.tint; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
                         Text { text: channel.value; color: Theme.text; font-family: "monospace"; }
+                        channel-chart := ComboBox { model: root.charts; current-index: channel.chart-index; selected => { root.move-channel(channel.watch-index, channel.node-index, channel-chart.current-index); } }
                         Button { text: "移除"; clicked => { root.remove(channel.watch-index, channel.node-index); } }
                     }
                     Text { text: channel.scope; color: Theme.muted; font-size: 10px; overflow: elide; }
-                    Image { source: channel.plot; height: 100px; image-fit: fill; }
                     HorizontalLayout {
                         Text { text: "Y " + channel.minimum + " … " + channel.maximum; color: Theme.muted; font-size: 10px; horizontal-stretch: 1; }
                         Text { text: channel.statistics; color: Theme.muted; font-size: 10px; }

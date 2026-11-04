@@ -25,6 +25,7 @@ pub struct Presenter {
     last_plot_sequence: Option<u64>,
     watch_revision: u64,
     sample_count: u64,
+    chart_assignments: HashMap<usize, usize>,
     values: HashMap<String, EvaluatedWatch>,
     targets: Vec<DebugTarget>,
     probes: Vec<DebugTarget>,
@@ -635,6 +636,45 @@ impl Presenter {
         self.refresh_watches(ui);
     }
 
+    pub fn add_waveform_chart(&mut self, ui: &AppWindow) {
+        let mut charts: Vec<slint::SharedString> = ui.get_waveform_charts().iter().collect();
+        charts.push(format!("图表 {}", charts.len() + 1).into());
+        ui.set_waveform_selected_chart((charts.len() - 1) as i32);
+        ui.set_waveform_charts(ModelRc::from(Rc::new(VecModel::from(charts))));
+        self.refresh_chart(ui);
+    }
+
+    pub fn select_waveform_chart(&mut self, ui: &AppWindow, index: i32) {
+        if index >= 0 && (index as usize) < ui.get_waveform_charts().row_count() {
+            ui.set_waveform_selected_chart(index);
+            self.refresh_chart(ui);
+        }
+    }
+
+    pub fn move_waveform_channel(&mut self, ui: &AppWindow, watch: i32, node: i32, chart: i32) {
+        if watch < 0
+            || node < 0
+            || chart < 0
+            || chart as usize >= ui.get_waveform_charts().row_count()
+        {
+            return;
+        }
+        if let Some(id) = self
+            .watches
+            .entries
+            .get(watch as usize)
+            .and_then(|entry| entry.channel_id(node as usize))
+        {
+            self.chart_assignments.insert(id, chart as usize);
+            self.refresh_chart(ui);
+        }
+    }
+
+    fn refresh_chart(&mut self, ui: &AppWindow) {
+        self.last_plot_sequence = None;
+        self.refresh_acquisition(ui);
+    }
+
     fn sync_waveforms(&mut self, ui: &AppWindow) {
         let live = ui.get_live_enabled();
         let interval =
@@ -651,6 +691,8 @@ impl Presenter {
                 })
             })
             .collect::<Vec<_>>();
+        self.chart_assignments
+            .retain(|id, _| targets.iter().any(|(target, _, _)| target == id));
         if live {
             targets.extend(
                 self.watches
@@ -704,7 +746,9 @@ impl Presenter {
         let sequence = state.sequence;
         let update_values = self.last_sequence != Some(sequence);
         let update_plot = self.last_plot_sequence != Some(sequence)
-            && (ui.get_current_tab() == 1 || self.last_plot_sequence.is_none());
+            && (ui.get_current_tab() == 1
+                || ui.get_waveform_detached()
+                || self.last_plot_sequence.is_none());
         if !update_values && !update_plot {
             return;
         }
@@ -835,6 +879,17 @@ impl Presenter {
             self.last_sequence = Some(sequence);
         }
         if update_plot {
+            let mut traces = Vec::new();
+            for (index, (watch, node, _, _, _, bins, _, _, _)) in plots.iter().enumerate() {
+                let id = self.watches.entries[*watch].channel_id(*node);
+                let chart = id
+                    .and_then(|id| self.chart_assignments.get(&id).copied())
+                    .unwrap_or(0);
+                if chart == ui.get_waveform_selected_chart() as usize {
+                    traces.push((bins.as_slice(), COLORS[index % COLORS.len()]));
+                }
+            }
+            ui.set_waveform_plot(waveform_view::render(&traces));
             let rows: Vec<_> = plots
                 .into_iter()
                 .enumerate()
@@ -844,7 +899,24 @@ impl Presenter {
                         (watch_index, node, name, scope, value, bins, count, invalid, evicted),
                     )| {
                         let color = COLORS[index % COLORS.len()];
-                        let (plot, minimum, maximum) = waveform_view::render(&bins, color);
+                        let range = bins.iter().flatten().fold(None, |range, &(low, high)| {
+                            Some(match range {
+                                Some((min, max)) => (f64::min(min, low), f64::max(max, high)),
+                                None => (low, high),
+                            })
+                        });
+                        let (minimum, maximum) = range
+                            .map(|(min, max)| {
+                                (
+                                    waveform_view::format_value(min),
+                                    waveform_view::format_value(max),
+                                )
+                            })
+                            .unwrap_or_else(|| ("—".into(), "—".into()));
+                        let chart_index = self.watches.entries[watch_index]
+                            .channel_id(node)
+                            .and_then(|id| self.chart_assignments.get(&id).copied())
+                            .unwrap_or(0);
                         WaveformRow {
                             watch_index: watch_index as i32,
                             node_index: node as i32,
@@ -856,7 +928,7 @@ impl Presenter {
                             statistics: format!("{count} 点 · 淘汰 {evicted} · 无效 {invalid}")
                                 .into(),
                             tint: slint::Color::from_rgb_u8(color[0], color[1], color[2]),
-                            plot,
+                            chart_index: chart_index as i32,
                         }
                     },
                 )

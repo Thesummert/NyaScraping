@@ -236,13 +236,32 @@ fn set_application_icon() {
         let data = NSData::with_bytes(include_bytes!("../assets/icon.png"));
         if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
             // AppKit retains the image and this runs on the main thread.
-            unsafe { NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image)) };
+            unsafe {
+                NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image))
+            };
         }
     }
 }
 
+fn sync_waveform_window(ui: &AppWindow, window: &WaveformWindow) {
+    window.set_channels(ui.get_waveform_channels());
+    window.set_charts(ui.get_waveform_charts());
+    window.set_selected_chart(ui.get_waveform_selected_chart());
+    window.set_plot(ui.get_waveform_plot());
+    window.set_active(ui.get_acquisition_active());
+    window.set_status(ui.get_acquisition_status());
+    window.set_statistics(ui.get_acquisition_statistics());
+    if window.get_endpoint() != ui.get_acquisition_endpoint() {
+        window.set_endpoint(ui.get_acquisition_endpoint());
+    }
+    window.set_source_label(ui.get_acquisition_source_label());
+    window.set_use_session(ui.get_acquisition_uses_session());
+    window.set_session_ready(ui.get_debug_connected());
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = AppWindow::new()?;
+    let waveform_window = WaveformWindow::new()?;
     #[cfg(target_os = "macos")]
     set_application_icon();
     let mut application = Application::new(
@@ -892,6 +911,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let weak = ui.as_weak();
+    let chart_presenter = presenter.clone();
+    ui.on_add_waveform_chart(move || {
+        if let Some(ui) = weak.upgrade() {
+            chart_presenter
+                .lock()
+                .expect("presenter lock")
+                .add_waveform_chart(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let chart_presenter = presenter.clone();
+    ui.on_select_waveform_chart(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            chart_presenter
+                .lock()
+                .expect("presenter lock")
+                .select_waveform_chart(&ui, index);
+        }
+    });
+    let weak = ui.as_weak();
+    let chart_presenter = presenter.clone();
+    ui.on_move_waveform_channel(move |watch, node, chart| {
+        if let Some(ui) = weak.upgrade() {
+            chart_presenter
+                .lock()
+                .expect("presenter lock")
+                .move_waveform_channel(&ui, watch, node, chart);
+        }
+    });
+    let weak = ui.as_weak();
     let plot_presenter = presenter.clone();
     ui.on_start_acquisition(move || {
         if let Some(ui) = weak.upgrade() {
@@ -914,8 +963,91 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .stop_acquisition(&ui);
         }
     });
+    let weak_ui = ui.as_weak();
+    let weak_window = waveform_window.as_weak();
+    ui.on_toggle_waveform_window(move |detached| {
+        if let (Some(ui), Some(window)) = (weak_ui.upgrade(), weak_window.upgrade()) {
+            if detached {
+                sync_waveform_window(&ui, &window);
+                match window.show() {
+                    Ok(()) => ui.set_waveform_detached(true),
+                    Err(error) => {
+                        ui.set_acquisition_status(format!("无法打开波形窗口：{error}").into())
+                    }
+                }
+            } else {
+                ui.set_waveform_detached(false);
+                let _ = window.hide();
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.window().on_close_requested(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_waveform_detached(false);
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+    let weak_window = waveform_window.as_weak();
+    ui.window().on_close_requested(move || {
+        if let Some(window) = weak_window.upgrade() {
+            let _ = window.hide();
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_toggle_detached(move |value| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_toggle_waveform_window(value);
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_add_chart(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_add_waveform_chart();
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_select_chart(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_select_waveform_chart(index);
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_move_channel(move |watch, node, chart| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_move_waveform_channel(watch, node, chart);
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_start(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_start_acquisition();
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_stop(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_stop_acquisition();
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_remove(move |watch, node| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_toggle_waveform(watch, node);
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_endpoint_edited(move |endpoint| {
+        if let Some(ui) = weak.upgrade() {
+            if ui.get_acquisition_endpoint() != endpoint {
+                ui.set_acquisition_endpoint(endpoint);
+            }
+        }
+    });
     let weak = ui.as_weak();
     let refresh_presenter = presenter.clone();
+    let weak_window = waveform_window.as_weak();
     let waveform_timer = slint::Timer::default();
     waveform_timer.start(
         slint::TimerMode::Repeated,
@@ -926,6 +1058,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .lock()
                     .expect("presenter lock")
                     .refresh_acquisition(&ui);
+                if ui.get_waveform_detached() {
+                    if let Some(window) = weak_window.upgrade() {
+                        sync_waveform_window(&ui, &window);
+                    }
+                }
             }
         },
     );

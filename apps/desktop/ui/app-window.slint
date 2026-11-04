@@ -84,6 +84,14 @@ export component AppWindow inherits Window {
     in-out property <bool> functions-visible: false;
     in-out property <[WatchRow]> watches;
     in-out property <[WaveformRow]> waveform-channels;
+    in-out property <[string]> waveform-charts: ["图表 1"];
+    in-out property <int> waveform-selected-chart: 0;
+    in-out property <image> waveform-plot;
+    in-out property <bool> waveform-detached: false;
+    callback toggle-waveform-window(bool);
+    callback add-waveform-chart();
+    callback select-waveform-chart(int);
+    callback move-waveform-channel(int, int, int);
     in-out property <bool> acquisition-active: false;
     in-out property <string> acquisition-status: "采集未启动";
     in-out property <string> acquisition-statistics: "每通道最多保留 32768 个样本；尚无采集数据";
@@ -240,7 +248,15 @@ export component AppWindow inherits Window {
                             title: "波形";
                             WaveformsPage {
                                 padding-top: 12px;
+                                detached: root.waveform-detached;
+                                toggle-detached(detached) => { root.toggle-waveform-window(detached); }
                                 channels: root.waveform-channels;
+                                charts: root.waveform-charts;
+                                selected-chart: root.waveform-selected-chart;
+                                plot: root.waveform-plot;
+                                add-chart => { root.add-waveform-chart(); }
+                                select-chart(index) => { root.select-waveform-chart(index); }
+                                move-channel(watch, node, chart) => { root.move-waveform-channel(watch, node, chart); }
                                 active: root.acquisition-active;
                                 status: root.acquisition-status;
                                 statistics: root.acquisition-statistics;
@@ -437,5 +453,57 @@ export component AppWindow inherits Window {
                 Text { text: root.status; color: Theme.muted; wrap: word-wrap; }
             }
         }
+    }
+}
+
+
+export component WaveformWindow inherits Window {
+    title: "实时波形";
+    preferred-width: 1100px;
+    preferred-height: 760px;
+    min-width: 600px;
+    min-height: 480px;
+    background: Theme.background;
+    in property <[WaveformRow]> channels;
+    in property <[string]> charts;
+    in property <int> selected-chart;
+    in property <image> plot;
+    in property <bool> active;
+    in property <string> status;
+    in property <string> statistics;
+    in-out property <string> endpoint;
+    in property <string> source-label;
+    in property <bool> use-session;
+    in property <bool> session-ready;
+    callback toggle-detached(bool);
+    callback add-chart();
+    callback select-chart(int);
+    callback move-channel(int, int, int);
+    callback start();
+    callback stop();
+    callback remove(int, int);
+    callback endpoint-edited(string);
+    changed endpoint => { root.endpoint-edited(root.endpoint); }
+    WaveformsPage {
+        padding: 12px;
+        detached: true;
+        channels: root.channels;
+        charts: root.charts;
+        selected-chart: root.selected-chart;
+        plot: root.plot;
+        active: root.active;
+        status: root.status;
+        statistics: root.statistics;
+        endpoint <=> root.endpoint;
+        source-label: root.source-label;
+        use-session: root.use-session;
+        session-ready: root.session-ready;
+        toggle-detached(value) => { root.toggle-detached(value); }
+        add-chart => { root.add-chart(); }
+        select-chart(index) => { root.select-chart(index); }
+        move-channel(watch, node, chart) => { root.move-channel(watch, node, chart); }
+        start => { root.start(); }
+        stop => { root.stop(); }
+        remove(watch, node) => { root.remove(watch, node); }
     }
 }

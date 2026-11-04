@@ -119,7 +119,7 @@ export component AppWindow inherits Window {
     VerticalLayout {
         spacing: 0px;
         Rectangle {
-            height: 76px;
+            height: 82px;
             background: Theme.sidebar;
             HorizontalLayout {
                 padding-left: 16px;
@@ -163,14 +163,15 @@ export component AppWindow inherits Window {
                 }
             }
         }
-        Rectangle { height: 1px; background: Theme.border; }
         HorizontalLayout {
-            spacing: 1px;
+            padding: 10px;
+            spacing: 10px;
             Rectangle {
                 width: 300px;
                 background: Theme.sidebar;
+                border-radius: 16px;
                 FirmwarePage {
-                    padding: 12px;
+                    padding: 16px;
                     busy: root.interaction-busy || root.debug-connected;
                     path <=> root.firmware-path;
                     title: root.firmware-title;
@@ -299,8 +300,9 @@ export component AppWindow inherits Window {
             Rectangle {
                 width: 360px;
                 background: Theme.sidebar;
+                border-radius: 16px;
                 VariablesPage {
-                    padding: 12px;
+                    padding: 16px;
                     watches: root.watches;
                     acquisition-active: root.acquisition-active;
                     memory-endpoint <=> root.acquisition-endpoint;
@@ -323,7 +325,6 @@ export component AppWindow inherits Window {
                 }
             }
         }
-        Rectangle { height: 1px; background: Theme.border; }
         Rectangle {
             height: 34px;
             background: Theme.sidebar;
@@ -343,9 +344,9 @@ export component AppWindow inherits Window {
         Rectangle {
             width: 700px; height: 460px;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-            background: Theme.sidebar; border-color: Theme.border; border-width: 1px;
+            background: Theme.sidebar; border-radius: 20px;
             VerticalLayout {
-                padding: 24px; spacing: 14px;
+                padding: 28px; spacing: 16px;
                 Text { text: "打开项目"; color: Theme.text; font-size: 22px; font-weight: 700; }
                 Text { text: "新建项目，或从历史记录中继续。"; color: Theme.muted; }
                 Text { text: "历史项目"; color: Theme.text; font-weight: 600; }

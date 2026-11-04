@@ -58,11 +58,12 @@ export component FirmwarePage inherits VerticalLayout {
         min-height: 140px;
         vertical-stretch: 3;
         background: Theme.background;
-        border-color: Theme.border;
-        border-width: 1px;
+        border-radius: 12px;
+        clip: true;
         ListView {
             for row[index] in root.tree: Rectangle {
-                height: 30px;
+                height: 32px;
+                border-radius: 8px;
                 background: index == root.selected-node ? Theme.selection : (area.has-hover ? Theme.panel : transparent);
                 Text {
                     x: 8px + row.depth * 14px;

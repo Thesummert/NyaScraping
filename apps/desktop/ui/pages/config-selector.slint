@@ -41,11 +41,12 @@ export component ConfigSelector inherits VerticalLayout {
         Rectangle {
             height: 180px;
             background: Theme.background;
-            border-color: Theme.border;
-            border-width: 1px;
+            border-radius: 12px;
+            clip: true;
             ListView {
                 for row in root.entries: Rectangle {
                     height: 44px;
+                    border-radius: 8px;
                     background: root.value == row.name ? Theme.selection : (area.has-hover ? Theme.panel : transparent);
                     VerticalLayout {
                         padding-left: 8px;

@@ -112,6 +112,7 @@ export component DebugPage inherits ScrollView {
                     for frame in root.frames: Rectangle {
                         height: 28px;
                         background: frame.selected ? Theme.selection : transparent;
+                        border-radius: 8px;
                         Text { text: frame.label; color: Theme.text; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-alignment: left; }
                         TouchArea { enabled: root.halted && !root.busy; clicked => { root.select-frame(frame.level); } }
                     }

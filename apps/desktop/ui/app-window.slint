@@ -12,6 +12,7 @@ export { FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow,
 
 export component AppWindow inherits Window {
     title: "NyaScraping · Embedded Debug Studio";
+    icon: @image-url("../assets/icon.png");
     preferred-width: 1480px;
     preferred-height: 900px;
     min-width: 1180px;
@@ -145,12 +146,16 @@ export component AppWindow inherits Window {
                 padding-left: 16px;
                 padding-right: 16px;
                 spacing: 12px;
-                VerticalLayout {
+                HorizontalLayout {
                     width: 264px;
-                    alignment: center;
-                    spacing: 4px;
-                    Text { text: "NYA /"; font-weight: 800; font-size: 22px; color: Theme.accent; }
-                    Text { text: "Embedded Debug Studio"; font-size: 11px; color: Theme.muted; }
+                    spacing: 12px;
+                    Image { source: @image-url("../assets/logo.svg"); width: 42px; height: 42px; image-fit: contain; }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        Text { text: "NYA /"; font-weight: 800; font-size: 22px; color: Theme.accent; }
+                        Text { text: "Embedded Debug Studio"; font-size: 11px; color: Theme.muted; }
+                    }
                 }
                 VerticalLayout {
                     horizontal-stretch: 1;

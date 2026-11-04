@@ -226,8 +226,25 @@ fn save_project(ui: &AppWindow, path: &std::path::Path, presenter: &presenter::P
 
 use acquisition::sampling_interval_micros;
 
+#[cfg(target_os = "macos")]
+fn set_application_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    if let Some(main_thread) = MainThreadMarker::new() {
+        let data = NSData::with_bytes(include_bytes!("../assets/icon.png"));
+        if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+            // AppKit retains the image and this runs on the main thread.
+            unsafe { NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image)) };
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = AppWindow::new()?;
+    #[cfg(target_os = "macos")]
+    set_application_icon();
     let mut application = Application::new(
         DebugAdapter::new()?,
         NativeTextBackend,

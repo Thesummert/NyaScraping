@@ -24,6 +24,7 @@ export component FirmwarePage inherits VerticalLayout {
     callback open();
     callback browse();
     callback select-node(int);
+    callback add-variable(int);
     callback plot-variable(int);
     callback show-functions(bool);
     spacing: 10px;
@@ -95,12 +96,13 @@ export component FirmwarePage inherits VerticalLayout {
                         MenuItem {
                             title: "加入监视";
                             enabled: row.variable;
-                            activated => { root.select-node(index); }
+                            activated => { root.add-variable(index); }
                         }
                     }
                 }
                 area := TouchArea {
                     clicked => { root.select-node(index); }
+                    double-clicked => { if row.variable { root.add-variable(index); } }
                     pointer-event(event) => {
                         if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                             menu.show({ x: self.mouse-x, y: self.mouse-y });

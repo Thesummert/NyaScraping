@@ -152,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         start.elapsed().as_secs_f64() * 50.
     );
     // Exercise the remaining presenter paths without a GUI event loop.
-    presenter.add_selected_variable(&ui);
+    presenter.add_firmware_variable(&ui, 20);
     presenter.add_expression(&ui, "counter");
     presenter.remove_watch(&ui, 0);
 
@@ -164,6 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     presenter.add_expression(&ui, "counter");
     presenter.select_firmware(&ui, 0);
     presenter.select_firmware(&ui, 1);
+    presenter.add_firmware_variable(&ui, 1);
     presenter.plot_variable(&ui, 2);
     assert_eq!(ui.get_waveform_channels().row_count(), 1);
     assert_eq!(
@@ -408,7 +409,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "pyOCD / probe-rs source selection, session reads, waveform display and disconnect: passed"
     );
 
-    // Verify click-to-watch and aggregate expansion through the real UI models.
+    // Verify selection and adding watches and aggregate expansion through the real UI models.
     let image = nya_firmware_backend::NativeFirmwareBackend.parse(
         std::path::Path::new("fixture.axf"),
         include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf4.axf"),
@@ -454,6 +455,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .position(|row| row.label == "sensor")
         .unwrap();
     presenter.select_firmware(&ui, sensor as i32);
+    assert_eq!(ui.get_watches().row_count(), 0);
+    presenter.add_firmware_variable(&ui, sensor as i32);
     assert_eq!(ui.get_watches().row_count(), 3);
     assert_eq!(ui.get_watches().row_data(0).unwrap().type_name, "Sensor");
     assert_eq!(ui.get_watches().row_data(1).unwrap().expression, "value");
@@ -470,7 +473,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     redraw(&window, &mut pixels, 2960);
     presenter.remove_watch(&ui, 0);
     assert_eq!(ui.get_watches().row_count(), 0);
-    println!("Click-to-watch, function visibility and aggregate UI checks passed");
+    println!("Watch addition, function visibility and aggregate UI checks passed");
     use nya_domain::{ToolInstallation, ToolKind, ToolState};
     let installations = vec![
         ToolInstallation {

@@ -1,7 +1,7 @@
 import { Button, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SourcePage } from "pages/source.slint";
-import { ToolsPage, ToolRow } from "pages/tools.slint";
+import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
 import { WaveformsPage, WaveformRow } from "pages/waveforms.slint";
 import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
@@ -103,6 +103,7 @@ export component AppWindow inherits Window {
     callback browse-source();
     callback browse-firmware();
     callback select-firmware-node(int);
+    callback add-firmware-variable(int);
     callback add-expression(string);
     callback remove-watch(int);
     callback plot-variable(int);
@@ -133,8 +134,9 @@ export component AppWindow inherits Window {
         }
         Menu {
             title: "设置";
-            MenuItem { title: "后端设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 0; root.settings-message = ""; root.settings-open = true; } }
-            MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "选择后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 0; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "安装后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
         }
     }
     VerticalLayout {
@@ -206,6 +208,7 @@ export component AppWindow inherits Window {
                     search-query <=> root.firmware-search;
                     search(query) => { root.search-firmware(query); }
                     select-node(index) => { root.select-firmware-node(index); }
+                    add-variable(index) => { root.add-firmware-variable(index); }
                     plot-variable(index) => { root.plot-variable(index); }
                     show-functions(show) => { root.show-functions(show); }
                     open => { root.open-firmware(); }
@@ -337,18 +340,29 @@ export component AppWindow inherits Window {
                 TabWidget {
                     current-index <=> root.settings-tab;
                     Tab {
-                        title: "后端设置";
-                        ToolsPage {
+                        title: "选择后端";
+                        SelectToolsPage {
                             padding-top: 12px;
                             busy: root.busy || root.file-dialog-open;
                             tools: root.tools;
                             connected: root.debug-connected;
                             backend-summary: root.backend-summary;
                             message: root.tool-message;
+                            refresh => { root.refresh-tools(); }
+                            select-tool(kind, version) => { root.select-tool(kind, version); }
+                        }
+                    }
+                    Tab {
+                        title: "安装后端";
+                        InstallToolsPage {
+                            padding-top: 12px;
+                            busy: root.busy || root.file-dialog-open;
+                            tools: root.tools;
+                            connected: root.debug-connected;
+                            message: root.tool-message;
                             local-directory <=> root.local-tool-directory;
                             refresh => { root.refresh-tools(); }
                             install(kind, version) => { root.install-tool(kind, version); }
-                            select-tool(kind, version) => { root.select-tool(kind, version); }
                             uninstall(kind, version) => { root.uninstall-tool(kind, version); }
                             add-local(kind, name, directory) => { root.add-local-tool(kind, name, directory); }
                             remove-local(kind, version) => { root.remove-local-tool(kind, version); }

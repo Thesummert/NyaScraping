@@ -14,23 +14,21 @@ export struct ToolRow {
     selectable: bool,
 }
 
-export component ToolsPage inherits VerticalLayout {
+export component InstallToolsPage inherits VerticalLayout {
     in property <bool> busy;
     in property <bool> connected;
     in property <[ToolRow]> tools;
-    in property <string> backend-summary;
     in property <string> message;
     in-out property <string> local-directory;
     callback refresh();
     callback install(int, string);
-    callback select-tool(int, string);
     callback uninstall(int, string);
     callback add-local(int, string, string);
     callback remove-local(int, string);
     callback browse-local();
     spacing: 12px;
     HorizontalLayout {
-        Text { text: "调试后端"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
+        Text { text: "安装与管理后端"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
         Button { text: "刷新"; enabled: !root.busy; clicked => { root.refresh(); } }
     }
     Panel {
@@ -51,7 +49,6 @@ export component ToolsPage inherits VerticalLayout {
             Text { text: "仅记录路径，不复制或删除原文件。"; color: Theme.muted; font-size: 11px; }
         }
     }
-    Text { text: "当前后端：" + root.backend-summary; color: Theme.accent; wrap: word-wrap; }
     Panel {
         VerticalLayout {
             spacing: 8px;
@@ -72,7 +69,53 @@ export component ToolsPage inherits VerticalLayout {
     Text { text: root.message; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
     if root.busy: Text { text: "正在处理，请稍候。安装详细日志可在启动终端查看。"; color: Theme.accent; font-size: 12px; wrap: word-wrap; }
     if root.tools.length == 0: Text {
-        text: "尚未发现可用后端。可在上方安装，或将已有工具加入 PATH 后刷新。";
+        text: "尚未发现可用后端。可在上方安装或添加本地后端。";
+        color: Theme.muted;
+        wrap: word-wrap;
+    }
+    ScrollView {
+        vertical-stretch: 1;
+        VerticalLayout {
+            spacing: 8px;
+            for tool in root.tools: Panel {
+                VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: tool.name + " · " + tool.version; color: Theme.text; font-weight: 600; horizontal-stretch: 1; overflow: elide; }
+                        Text { text: tool.active ? "当前后端" : (tool.selected ? "默认版本" : ""); color: Theme.accent; font-size: 12px; }
+                        if tool.managed: Button { text: "卸载"; enabled: !root.busy && !root.connected; clicked => { root.uninstall(tool.kind, tool.version); } }
+                        if tool.local: Button { text: "移除引用"; enabled: !root.busy && !root.connected; clicked => { root.remove-local(tool.kind, tool.version); } }
+                    }
+                    Text { text: tool.path; color: Theme.muted; font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
+                    if !tool.managed && !tool.local: Text {
+                        text: "系统 PATH 工具，不由此处卸载。";
+                        color: Theme.muted; font-size: 11px; wrap: word-wrap;
+                    }
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+export component SelectToolsPage inherits VerticalLayout {
+    in property <bool> busy;
+    in property <bool> connected;
+    in property <[ToolRow]> tools;
+    in property <string> backend-summary;
+    in property <string> message;
+    callback refresh();
+    callback select-tool(int, string);
+    spacing: 12px;
+    HorizontalLayout {
+        Text { text: "选择调试后端"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: "刷新"; enabled: !root.busy; clicked => { root.refresh(); } }
+    }
+    Text { text: "当前后端：" + root.backend-summary; color: Theme.accent; wrap: word-wrap; }
+    Text { text: root.message; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+    if root.tools.length == 0: Text {
+        text: "尚未发现可用后端。请在安装后端页面安装或添加本地后端。";
         color: Theme.muted;
         wrap: word-wrap;
     }
@@ -88,14 +131,9 @@ export component ToolsPage inherits VerticalLayout {
                         Text { text: tool.name + " · " + tool.version; color: Theme.text; font-weight: 600; horizontal-stretch: 1; overflow: elide; }
                         Text { text: tool.active ? "当前后端" : (tool.selected ? "默认版本" : ""); color: Theme.accent; font-size: 12px; }
                         Button { text: "使用"; enabled: !root.busy && !root.connected && !tool.active && tool.selectable; clicked => { root.select-tool(tool.kind, tool.version); } }
-                        if tool.managed: Button { text: "卸载"; enabled: !root.busy && !root.connected; clicked => { root.uninstall(tool.kind, tool.version); } }
-                        if tool.local: Button { text: "移除引用"; enabled: !root.busy && !root.connected; clicked => { root.remove-local(tool.kind, tool.version); } }
                     }
                     Text { text: tool.path; color: Theme.muted; font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
-                    if !tool.managed && !tool.local: Text {
-                        text: tool.selectable ? "系统 PATH 工具，仅切换使用，不由此处卸载。" : "PATH 中的备用路径；优先使用同类工具的首个路径。";
-                        color: Theme.muted; font-size: 11px; wrap: word-wrap;
-                    }
+                    if !tool.selectable: Text { text: "PATH 中的备用路径；优先使用同类工具的首个路径。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
                 }
             }
             Rectangle { vertical-stretch: 1; }

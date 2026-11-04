@@ -92,7 +92,7 @@ fn target_profile(ui: &AppWindow) -> Result<TargetProfile, String> {
     }
     if !ui.get_external_server() {
         if tool_kind(ui.get_backend_kind()).is_none() {
-            return Err("请先在后端设置中选择调试后端".into());
+            return Err("请先在选择后端页面选择调试后端".into());
         }
         if ui.get_debug_target().trim().is_empty() {
             return Err("请选择调试目标".into());
@@ -567,7 +567,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(error) => {
                         ui.set_status(error.as_str().into());
                         ui.set_settings_message(error.into());
-                        ui.set_settings_tab(1);
+                        ui.set_settings_tab(2);
                         ui.set_settings_open(true);
                         return;
                     }
@@ -745,6 +745,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = weak.upgrade() {
             let mut presenter = tree_presenter.lock().expect("presenter lock");
             presenter.select_firmware(&ui, index);
+            sync_watches(&callback_updates, &presenter);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let tree_presenter = presenter.clone();
+    let callback_updates = watch_updates.clone();
+    ui.on_add_firmware_variable(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            let mut presenter = tree_presenter.lock().expect("presenter lock");
+            presenter.add_firmware_variable(&ui, index);
             sync_watches(&callback_updates, &presenter);
         }
     });

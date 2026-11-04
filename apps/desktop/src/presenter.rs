@@ -69,7 +69,7 @@ impl From<Event> for PreparedEvent {
                 ),
                 report: firmware_report(&image),
                 details: format!(
-                    "{} 个源文件，{} 个函数条目，{} 个变量/参数。\n\n点击目录或文件可展开；点击变量直接添加监视。函数默认隐藏，可通过开关显示。\n\n{}",
+                    "{} 个源文件，{} 个函数条目，{} 个变量/参数。\n\n点击目录或文件可展开；双击变量添加监视。函数默认隐藏，可通过开关显示。\n\n{}",
                     image.debug.files.len(), image.debug.functions.len(), image.debug.variables.len(), image.debug.warnings.join("\n"),
                 ),
                 status: format!(
@@ -442,7 +442,6 @@ impl Presenter {
             if structure_changed {
                 self.refresh_tree(ui);
             }
-            self.add_selected_variable(ui);
         }
     }
 
@@ -494,8 +493,11 @@ impl Presenter {
         }
     }
 
-    pub fn add_selected_variable(&mut self, ui: &AppWindow) {
-        if let Some(variable) = self.browser.as_ref().and_then(|b| b.selected_variable()) {
+    pub fn add_firmware_variable(&mut self, ui: &AppWindow, row: i32) {
+        let variable = usize::try_from(row)
+            .ok()
+            .and_then(|row| self.browser.as_ref()?.variable_at(row));
+        if let Some(variable) = variable {
             let added = self.watches.add_variable(variable);
             if added {
                 self.invalidate_watches(ui);

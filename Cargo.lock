@@ -2830,8 +2830,11 @@ dependencies = [
  "nya-firmware-backend",
  "nya-text-backend",
  "rfd",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
+ "tempfile",
 ]
 
 [[package]]

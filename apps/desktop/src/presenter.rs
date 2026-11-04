@@ -84,6 +84,20 @@ impl From<Event> for PreparedEvent {
 }
 
 impl Presenter {
+    pub fn saved_watches(&self) -> Vec<crate::watch_list::SavedWatch> {
+        self.watches.saved()
+    }
+
+    pub fn restore_watches(
+        &mut self,
+        ui: &AppWindow,
+        saved: &[crate::watch_list::SavedWatch],
+    ) -> usize {
+        let missing = self.watches.restore(saved, self.browser.as_ref());
+        self.sync_waveforms(ui);
+        self.invalidate_watches(ui);
+        missing
+    }
     pub fn apply(&mut self, ui: &AppWindow, event: PreparedEvent) {
         if matches!(&event, PreparedEvent::Internal) {
             return;

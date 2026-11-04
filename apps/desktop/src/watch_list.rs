@@ -1,6 +1,7 @@
 use crate::firmware_browser::BrowserVariable;
 use nya_domain::firmware::DebugMember;
 use nya_domain::waveform::MemoryChannel;
+use serde::{Deserialize, Serialize};
 pub const MAX_CHANNELS: usize = 16;
 pub const UNAVAILABLE: &str =
     "需固定地址的数值变量；栈变量、复合类型和未解析表达式不支持无暂停采集";
@@ -21,6 +22,14 @@ pub struct WatchEntry {
     nodes: Vec<WatchNode>,
     evaluation_expression: String,
     function: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SavedWatch {
+    pub expression: String,
+    pub scope: Option<String>,
+    pub function: Option<String>,
+    pub waveform: bool,
 }
 
 impl WatchEntry {
@@ -84,6 +93,49 @@ pub struct WatchList {
 }
 
 impl WatchList {
+    pub fn saved(&self) -> Vec<SavedWatch> {
+        self.entries
+            .iter()
+            .map(|entry| SavedWatch {
+                expression: entry.expression.clone(),
+                scope: match entry.key {
+                    WatchKey::Variable(_) => Some(entry.scope.clone()),
+                    WatchKey::Expression(_) => None,
+                },
+                function: entry.function.clone(),
+                waveform: entry.waveform,
+            })
+            .collect()
+    }
+
+    pub fn restore(
+        &mut self,
+        saved: &[SavedWatch],
+        browser: Option<&crate::firmware_browser::FirmwareBrowser>,
+    ) -> usize {
+        self.entries.clear();
+        let mut missing = 0;
+        for item in saved {
+            if let Some(scope) = &item.scope {
+                if let Some(variable) = browser
+                    .and_then(|b| b.resolve_saved_variable(&item.expression, scope, &item.function))
+                {
+                    if item.waveform {
+                        if self.add_waveform(variable).is_err() {
+                            missing += 1;
+                        }
+                    } else {
+                        self.add_variable(variable);
+                    }
+                } else {
+                    missing += 1;
+                }
+            } else {
+                self.add_expression(&item.expression);
+            }
+        }
+        missing
+    }
     pub fn add_expression(&mut self, expression: &str) -> bool {
         let expression = expression.trim();
         if expression.is_empty() {

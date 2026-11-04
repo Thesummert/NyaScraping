@@ -453,6 +453,23 @@ impl FirmwareBrowser {
         let variable = matches.next()?.clone();
         matches.next().is_none().then_some(variable)
     }
+
+    pub fn resolve_saved_variable(
+        &self,
+        name: &str,
+        scope: &str,
+        function: &Option<String>,
+    ) -> Option<BrowserVariable> {
+        let mut matches = self
+            .nodes
+            .iter()
+            .filter_map(|node| node.variable.as_ref())
+            .filter(|variable| {
+                variable.name == name && variable.scope == scope && &variable.function == function
+            });
+        let variable = matches.next()?.clone();
+        matches.next().is_none().then_some(variable)
+    }
 }
 
 fn source_position(info: &FirmwareDebugInfo, location: Option<&SourceLocation>) -> String {

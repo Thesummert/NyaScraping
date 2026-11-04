@@ -1,4 +1,4 @@
-import { Button, TabWidget, TextEdit } from "std-widgets.slint";
+import { Button, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SourcePage } from "pages/source.slint";
 import { ToolsPage, ToolRow } from "pages/tools.slint";
@@ -19,7 +19,14 @@ export component AppWindow inherits Window {
 
     in-out property <bool> busy: false;
     in-out property <bool> file-dialog-open: false;
-    private property <bool> interaction-busy: root.busy || root.file-dialog-open;
+    in-out property <bool> project-dialog-open: true;
+    in-out property <[string]> project-history;
+    in-out property <string> project-path;
+    callback new-project();
+    callback open-project(string);
+    callback browse-project();
+    callback save-project();
+    private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open;
     in-out property <bool> debug-connected: false;
     in-out property <bool> debug-halted: false;
     in-out property <bool> debug-running: false;
@@ -124,6 +131,7 @@ export component AppWindow inherits Window {
                     spacing: 4px;
                     Text { text: "NYA /"; font-weight: 800; font-size: 22px; color: Theme.accent; }
                     Text { text: "Embedded Debug Studio"; font-size: 11px; color: Theme.muted; }
+                    Button { text: "保存项目"; enabled: !root.interaction-busy; clicked => { root.save-project(); } }
                 }
                 VerticalLayout {
                     horizontal-stretch: 1;
@@ -325,6 +333,41 @@ export component AppWindow inherits Window {
                 spacing: 16px;
                 Text { text: root.status; color: Theme.muted; overflow: elide; horizontal-stretch: 1; }
                 Text { text: root.busy ? "处理中" : root.debug-state; color: Theme.accent; font-size: 12px; }
+            }
+        }
+    }
+    if root.project-dialog-open: Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height;
+        background: #000a;
+        TouchArea { }
+        Rectangle {
+            width: 700px; height: 460px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Theme.sidebar; border-color: Theme.border; border-width: 1px;
+            VerticalLayout {
+                padding: 24px; spacing: 14px;
+                Text { text: "打开项目"; color: Theme.text; font-size: 22px; font-weight: 700; }
+                Text { text: "新建项目，或从历史记录中继续。"; color: Theme.muted; }
+                Text { text: "历史项目"; color: Theme.text; font-weight: 600; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 6px;
+                        if root.project-history.length == 0: Text { text: "暂无历史项目"; color: Theme.muted; }
+                        for path in root.project-history: HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: path; color: Theme.text; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                            Button { text: "打开"; enabled: !root.busy && !root.file-dialog-open; clicked => { root.open-project(path); } }
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "新建项目"; enabled: !root.busy && !root.file-dialog-open; clicked => { root.new-project(); } }
+                    Button { text: "浏览项目文件…"; enabled: !root.busy && !root.file-dialog-open; clicked => { root.browse-project(); } }
+                }
+                Text { text: root.status; color: Theme.muted; wrap: word-wrap; }
             }
         }
     }

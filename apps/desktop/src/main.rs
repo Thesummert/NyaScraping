@@ -2,12 +2,16 @@ mod acquisition;
 mod file_picker;
 mod firmware_browser;
 mod presenter;
+mod project;
 mod watch_list;
 mod waveform_view;
 
 use nya_application::{Application, Command};
 use nya_debug_adapter::DebugAdapter;
-use nya_domain::{DebugAction, TargetProfile, ToolKind, WatchRequest};
+use nya_domain::{
+    firmware::FirmwareBackend, DebugAction, TargetProfile, TextBackend, ToolKind, ToolRegistry,
+    WatchRequest,
+};
 use nya_firmware_backend::NativeFirmwareBackend;
 use nya_text_backend::NativeTextBackend;
 use slint::ComponentHandle;
@@ -104,6 +108,102 @@ fn sync_watches(updates: &WatchUpdates, presenter: &presenter::Presenter) {
     *updates.lock().expect("watch updates lock") = Some(presenter.watch_requests());
 }
 
+fn open_project(
+    ui: &AppWindow,
+    path: &std::path::Path,
+    presenter: &mut presenter::Presenter,
+    updates: &WatchUpdates,
+) -> Result<(), String> {
+    let project = project::Project::read(path)?;
+    let firmware = if project.firmware.is_empty() {
+        None
+    } else {
+        Some(
+            NativeFirmwareBackend
+                .load(std::path::Path::new(&project.firmware))
+                .map_err(|e| format!("无法打开项目固件：{e}"))?,
+        )
+    };
+    let browser = firmware.as_ref().map(|image| {
+        firmware_browser::FirmwareBrowser::new(
+            &image.debug,
+            image.little_endian,
+            image.kind == "Executable",
+        )
+    });
+    let mut checked = watch_list::WatchList::default();
+    let missing = checked.restore(&project.watches, browser.as_ref());
+    if missing != 0 {
+        return Err(format!(
+            "{missing} 个变量无法在当前固件中唯一匹配或恢复波形，请检查项目使用的固件"
+        ));
+    }
+    if project.backend_kind >= 0 && !project.backend_version.is_empty() {
+        let tool = tool_kind(project.backend_kind).ok_or("项目中的后端类型无效")?;
+        DebugAdapter::new()
+            .map_err(|e| e.to_string())?
+            .select(tool, &project.backend_version)
+            .map_err(|e| format!("无法选择项目后端：{e}"))?;
+    }
+    ui.set_backend_kind(project.backend_kind);
+    ui.set_firmware_path(project.firmware.clone().into());
+    ui.set_source_path(project.source.clone().into());
+    ui.set_gdb_path(project.gdb.into());
+    ui.set_debug_target(project.target.into());
+    ui.set_debug_interface(project.interface.into());
+    ui.set_debug_port(project.port.into());
+    ui.set_external_server(project.external_server);
+    ui.set_acquisition_endpoint(project.acquisition_endpoint.into());
+    ui.set_live_interval_index(project.live_interval_index);
+    ui.set_live_custom_hz(project.live_custom_hz.into());
+    if let Some(firmware) = firmware {
+        presenter.apply(
+            ui,
+            presenter::PreparedEvent::from(nya_application::Event::FirmwareOpened(Box::new(
+                firmware,
+            ))),
+        );
+    }
+    let missing = presenter.restore_watches(ui, &project.watches);
+    sync_watches(updates, presenter);
+    let mut warning = if missing > 0 {
+        format!("；{missing} 个变量未能在固件中唯一匹配")
+    } else {
+        String::new()
+    };
+    if !project.source.is_empty() {
+        match NativeTextBackend.load(std::path::Path::new(&project.source)) {
+            Ok(document) => presenter.apply(
+                ui,
+                presenter::PreparedEvent::from(nya_application::Event::SourceOpened(document)),
+            ),
+            Err(error) => warning.push_str(&format!("；源码打开失败：{error}")),
+        }
+    }
+    ui.set_project_path(path.to_string_lossy().as_ref().into());
+    ui.set_project_dialog_open(false);
+    if let Err(error) = project::remember(path) {
+        warning.push_str(&format!("；历史记录保存失败：{error}"));
+    }
+    ui.set_status(format!("项目已打开{warning}").into());
+    Ok(())
+}
+
+fn save_project(ui: &AppWindow, path: &std::path::Path, presenter: &presenter::Presenter) {
+    let project = project::Project::capture(ui, presenter.saved_watches());
+    match project.write(path) {
+        Ok(()) => {
+            ui.set_project_path(path.to_string_lossy().as_ref().into());
+            let message = match project::remember(path) {
+                Ok(()) => "项目已保存".to_owned(),
+                Err(error) => format!("项目已保存，但历史记录保存失败：{error}"),
+            };
+            ui.set_status(message.into());
+        }
+        Err(error) => ui.set_status(format!("项目保存失败：{error}").into()),
+    }
+}
+
 use acquisition::sampling_interval_micros;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -117,7 +217,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_shutdown = shutdown.clone();
     // A bounded queue prevents repeated UI actions from accumulating indefinitely.
     let (sender, receiver) = mpsc::sync_channel(8);
-    let weak = ui.as_weak();
     let presenter = Arc::new(Mutex::new(presenter::Presenter::default()));
     let acquisition = presenter
         .lock()
@@ -129,10 +228,108 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let acquisition_worker = std::thread::spawn(move || sampler.run());
     let worker_presenter = presenter.clone();
     let watch_updates: WatchUpdates = Arc::new(Mutex::new(None));
+    ui.set_project_history(slint::ModelRc::new(slint::VecModel::from(
+        project::history()
+            .iter()
+            .map(|path| slint::SharedString::from(path.to_string_lossy().as_ref()))
+            .collect::<Vec<_>>(),
+    )));
+    let weak = ui.as_weak();
+    ui.on_new_project(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_project_dialog_open(false);
+        }
+    });
+    let weak = ui.as_weak();
+    let project_presenter = presenter.clone();
+    let project_updates = watch_updates.clone();
+    ui.on_open_project(move |path| {
+        if let Some(ui) = weak.upgrade() {
+            let mut presenter = project_presenter.lock().expect("presenter lock");
+            match open_project(
+                &ui,
+                std::path::Path::new(path.as_str()),
+                &mut presenter,
+                &project_updates,
+            ) {
+                Ok(()) => ui.invoke_refresh_tools(),
+                Err(error) => ui.set_status(format!("项目打开失败：{error}").into()),
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_browse_project(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        ui.set_file_dialog_open(true);
+        let weak = ui.as_weak();
+        if let Err(error) = slint::spawn_local(async move {
+            let selected = rfd::AsyncFileDialog::new()
+                .set_title("打开项目")
+                .add_filter("NyaScraping 项目", &["nyaproj"])
+                .pick_file()
+                .await;
+            if let Some(ui) = weak.upgrade() {
+                ui.set_file_dialog_open(false);
+                if let Some(file) = selected {
+                    if let Some(path) = file.path().to_str() {
+                        ui.invoke_open_project(path.into());
+                    } else {
+                        ui.set_status("项目路径包含无法显示的字符".into());
+                    }
+                }
+            }
+        }) {
+            ui.set_file_dialog_open(false);
+            ui.set_status(format!("无法打开文件选择窗口：{error}").into());
+        }
+    });
+    let weak = ui.as_weak();
+    let project_presenter = presenter.clone();
+    ui.on_save_project(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let path = ui.get_project_path();
+        if !path.is_empty() {
+            save_project(
+                &ui,
+                std::path::Path::new(path.as_str()),
+                &project_presenter.lock().expect("presenter lock"),
+            );
+            return;
+        }
+        ui.set_file_dialog_open(true);
+        let weak = ui.as_weak();
+        let project_presenter = project_presenter.clone();
+        if let Err(error) = slint::spawn_local(async move {
+            let selected = rfd::AsyncFileDialog::new()
+                .set_title("保存项目")
+                .set_file_name("project.nyaproj")
+                .add_filter("NyaScraping 项目", &["nyaproj"])
+                .save_file()
+                .await;
+            if let Some(ui) = weak.upgrade() {
+                ui.set_file_dialog_open(false);
+                if let Some(file) = selected {
+                    save_project(
+                        &ui,
+                        file.path(),
+                        &project_presenter.lock().expect("presenter lock"),
+                    );
+                }
+            }
+        }) {
+            ui.set_file_dialog_open(false);
+            ui.set_status(format!("无法打开文件选择窗口：{error}").into());
+        }
+    });
     let worker_updates = watch_updates.clone();
     // Intervals use microseconds; zero disables sampling. Settings bypass the command queue.
     let live_interval = Arc::new(AtomicU64::new(0));
     let worker_interval = live_interval.clone();
+    let weak = ui.as_weak();
     let worker = std::thread::spawn(move || {
         let mut last_sample = std::time::Instant::now();
         while !worker_shutdown.load(Ordering::Relaxed) {

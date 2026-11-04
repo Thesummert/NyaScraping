@@ -87,6 +87,15 @@ impl ToolRegistry for DebugAdapter {
                     selected: active,
                 });
             }
+            for (name, executable) in self.manager.local(tool).map_err(error)? {
+                let version = format!("local:{name}");
+                installations.push(ToolInstallation {
+                    tool: kind,
+                    selected: selected.as_deref() == Some(version.as_str()),
+                    version,
+                    executable,
+                });
+            }
             for (index, executable) in self.manager.system(tool).into_iter().enumerate() {
                 installations.push(ToolInstallation {
                     tool: kind,
@@ -148,6 +157,23 @@ impl ToolRegistry for DebugAdapter {
         }
         self.manager
             .uninstall(core_tool(tool), version)
+            .map_err(error)
+    }
+
+    fn add_local(&mut self, tool: ToolKind, name: &str, directory: &std::path::Path) -> Result<()> {
+        self.manager
+            .add_local(core_tool(tool), name, directory)
+            .map_err(error)
+    }
+
+    fn remove_local(&mut self, tool: ToolKind, name: &str) -> Result<()> {
+        if self.server.is_some() || self.session.client.is_some() {
+            return Err(Error(
+                "Disconnect the GDB server before removing a local tool".into(),
+            ));
+        }
+        self.manager
+            .remove_local(core_tool(tool), name)
             .map_err(error)
     }
 
@@ -248,6 +274,42 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn local_tools_can_be_discovered_selected_and_unregistered() {
+        let fixture = Fixture::new();
+        let mut adapter = fixture.adapter();
+        let directory = fixture.0.join("custom/bin");
+        fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join(if cfg!(windows) { "pyocd.exe" } else { "pyocd" });
+        fs::write(&executable, b"fixture").unwrap();
+        let executable = fs::canonicalize(executable).unwrap();
+        adapter
+            .add_local(ToolKind::PyOcd, "custom", &fixture.0.join("custom"))
+            .unwrap();
+        assert!(adapter
+            .discover()
+            .unwrap()
+            .iter()
+            .any(|item| item.version == "local:custom"
+                && item.executable == executable
+                && !item.selected));
+        adapter.select(ToolKind::PyOcd, "local:custom").unwrap();
+        let mut reopened = fixture.adapter();
+        assert!(reopened
+            .discover()
+            .unwrap()
+            .iter()
+            .any(|item| item.version == "local:custom" && item.selected));
+        assert_eq!(reopened.manager.resolve(Tool::PyOcd).unwrap(), executable);
+        reopened.remove_local(ToolKind::PyOcd, "custom").unwrap();
+        assert!(!reopened
+            .discover()
+            .unwrap()
+            .iter()
+            .any(|item| item.version == "local:custom"));
+        assert!(executable.exists());
     }
 
     #[test]

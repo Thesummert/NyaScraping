@@ -12,6 +12,40 @@ pub enum FileKind {
     ProbeConfig,
 }
 
+pub fn browse_local_tool(ui: &AppWindow) {
+    if ui.get_busy() || ui.get_file_dialog_open() || ui.get_debug_connected() {
+        return;
+    }
+    let mut dialog = AsyncFileDialog::new()
+        .set_title("选择本地调试器目录")
+        .set_parent(&ui.window().window_handle());
+    let current = ui.get_local_tool_directory();
+    if Path::new(current.as_str()).is_dir() {
+        dialog = dialog.set_directory(current.as_str());
+    }
+    ui.set_file_dialog_open(true);
+    let weak = ui.as_weak();
+    if let Err(error) = slint::spawn_local(async move {
+        let selected = dialog.pick_folder().await;
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        ui.set_file_dialog_open(false);
+        if let Some(folder) = selected {
+            if let Some(path) = folder.path().to_str() {
+                if !ui.get_debug_connected() {
+                    ui.set_local_tool_directory(path.into());
+                }
+            } else {
+                ui.set_status("所选目录路径包含无法显示的字符".into());
+            }
+        }
+    }) {
+        ui.set_file_dialog_open(false);
+        ui.set_status(format!("无法打开目录选择窗口：{error}").into());
+    }
+}
+
 pub fn browse(ui: &AppWindow, sender: SyncSender<Command>, kind: FileKind) {
     if ui.get_busy()
         || ui.get_file_dialog_open()

@@ -10,6 +10,7 @@ export struct ToolRow {
     selected: bool,
     active: bool,
     managed: bool,
+    local: bool,
     selectable: bool,
 }
 
@@ -19,14 +20,36 @@ export component ToolsPage inherits VerticalLayout {
     in property <[ToolRow]> tools;
     in property <string> backend-summary;
     in property <string> message;
+    in-out property <string> local-directory;
     callback refresh();
     callback install(int, string);
     callback select-tool(int, string);
     callback uninstall(int, string);
+    callback add-local(int, string, string);
+    callback remove-local(int, string);
+    callback browse-local();
     spacing: 12px;
     HorizontalLayout {
         Text { text: "调试后端"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
         Button { text: "刷新"; enabled: !root.busy; clicked => { root.refresh(); } }
+    }
+    Panel {
+        VerticalLayout {
+            spacing: 8px;
+            Text { text: "添加本地后端"; color: Theme.text; font-weight: 600; }
+            HorizontalLayout {
+                spacing: 8px;
+                local-backend := ComboBox { model: ["OpenOCD", "pyOCD", "probe-rs"]; enabled: !root.busy && !root.connected; }
+                local-name := LineEdit { placeholder-text: "名称（字母、数字、.、-、_）"; horizontal-stretch: 1; enabled: !root.busy && !root.connected; }
+                Button { text: "添加"; enabled: !root.busy && !root.connected; clicked => { root.add-local(local-backend.current-index, local-name.text, root.local-directory); } }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                LineEdit { text <=> root.local-directory; placeholder-text: "工具目录（包含可执行文件或 bin / Scripts）"; horizontal-stretch: 1; enabled: !root.busy && !root.connected; }
+                Button { text: "浏览…"; enabled: !root.busy && !root.connected; clicked => { root.browse-local(); } }
+            }
+            Text { text: "仅记录路径，不复制或删除原文件。"; color: Theme.muted; font-size: 11px; }
+        }
     }
     Text { text: "当前后端：" + root.backend-summary; color: Theme.accent; wrap: word-wrap; }
     Panel {
@@ -65,10 +88,11 @@ export component ToolsPage inherits VerticalLayout {
                         Text { text: tool.name + " · " + tool.version; color: Theme.text; font-weight: 600; horizontal-stretch: 1; overflow: elide; }
                         Text { text: tool.active ? "当前后端" : (tool.selected ? "默认版本" : ""); color: Theme.accent; font-size: 12px; }
                         Button { text: "使用"; enabled: !root.busy && !root.connected && !tool.active && tool.selectable; clicked => { root.select-tool(tool.kind, tool.version); } }
-                        Button { text: "卸载"; enabled: !root.busy && !root.connected && tool.managed; clicked => { root.uninstall(tool.kind, tool.version); } }
+                        if tool.managed: Button { text: "卸载"; enabled: !root.busy && !root.connected; clicked => { root.uninstall(tool.kind, tool.version); } }
+                        if tool.local: Button { text: "移除引用"; enabled: !root.busy && !root.connected; clicked => { root.remove-local(tool.kind, tool.version); } }
                     }
                     Text { text: tool.path; color: Theme.muted; font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
-                    if !tool.managed: Text {
+                    if !tool.managed && !tool.local: Text {
                         text: tool.selectable ? "系统 PATH 工具，仅切换使用，不由此处卸载。" : "PATH 中的备用路径；优先使用同类工具的首个路径。";
                         color: Theme.muted; font-size: 11px; wrap: word-wrap;
                     }

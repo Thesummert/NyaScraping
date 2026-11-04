@@ -137,7 +137,9 @@ impl Presenter {
                             path: tool.executable.to_string_lossy().as_ref().into(),
                             selected: tool.selected,
                             active: Some(tool.tool) == state.backend && tool.selected,
-                            managed: tool.version != "system",
+                            managed: tool.version != "system"
+                                && !tool.version.starts_with("local:"),
+                            local: tool.version.starts_with("local:"),
                             selectable: tool.version != "system" || first_system,
                         }
                     })

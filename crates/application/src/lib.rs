@@ -20,9 +20,27 @@ pub enum Command {
     InstallPack(String),
     Debug(DebugAction),
     UpdateWatches(Vec<WatchRequest>),
-    InstallTool { tool: ToolKind, version: String },
-    SelectTool { tool: ToolKind, version: String },
-    UninstallTool { tool: ToolKind, version: String },
+    InstallTool {
+        tool: ToolKind,
+        version: String,
+    },
+    SelectTool {
+        tool: ToolKind,
+        version: String,
+    },
+    UninstallTool {
+        tool: ToolKind,
+        version: String,
+    },
+    AddLocalTool {
+        tool: ToolKind,
+        name: String,
+        directory: PathBuf,
+    },
+    RemoveLocalTool {
+        tool: ToolKind,
+        name: String,
+    },
     OpenSource(PathBuf),
     OpenFirmware(PathBuf),
     ReadLiveMemory(MemoryReadRequest),
@@ -138,6 +156,26 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
             Command::UninstallTool { tool, version } => {
                 let result = self.tools.uninstall(tool, &version);
                 self.tool_event(result.map(|()| format!("已卸载 {} · {version}", tool.name())))
+            }
+            Command::AddLocalTool {
+                tool,
+                name,
+                directory,
+            } => {
+                let result = self.tools.add_local(tool, name.trim(), &directory);
+                self.tool_event(result.map(|()| {
+                    format!(
+                        "已添加本地 {} · {}，可在列表中选择使用",
+                        tool.name(),
+                        name.trim()
+                    )
+                }))
+            }
+            Command::RemoveLocalTool { tool, name } => {
+                let result = self.tools.remove_local(tool, &name);
+                self.tool_event(
+                    result.map(|()| format!("已移除本地 {} · {name} 的引用", tool.name())),
+                )
             }
             Command::OpenSource(path) => self.text.load(&path).map(Event::SourceOpened),
             Command::OpenFirmware(path) => self

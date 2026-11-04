@@ -49,7 +49,7 @@ pub struct TargetProfile {
 #[derive(Clone, Debug)]
 pub struct ToolInstallation {
     pub tool: ToolKind,
-    /// "system" denotes a PATH executable; otherwise an installed version.
+    /// "system" denotes a PATH executable; "local:<name>" denotes a registration.
     pub version: String,
     pub executable: PathBuf,
     pub selected: bool,
@@ -88,6 +88,17 @@ pub trait ToolRegistry: Send {
     /// Select a version and persist this tool as the active desktop backend.
     fn select(&mut self, tool: ToolKind, version: &str) -> Result<()>;
     fn uninstall(&mut self, tool: ToolKind, version: &str) -> Result<()>;
+    fn add_local(
+        &mut self,
+        _tool: ToolKind,
+        _name: &str,
+        _directory: &std::path::Path,
+    ) -> Result<()> {
+        Err(Error("当前后端不支持添加本地工具".into()))
+    }
+    fn remove_local(&mut self, _tool: ToolKind, _name: &str) -> Result<()> {
+        Err(Error("当前后端不支持移除本地工具".into()))
+    }
     fn target_catalog(&self) -> Result<TargetCatalog> {
         Ok(TargetCatalog::default())
     }

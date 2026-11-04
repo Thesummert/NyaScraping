@@ -42,6 +42,10 @@ fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
         Command::UninstallTool { tool, version } => {
             Some(format!("正在卸载 {} · {version}…", tool.name()))
         }
+        Command::AddLocalTool { tool, .. } => Some(format!("正在添加本地 {}…", tool.name())),
+        Command::RemoveLocalTool { tool, .. } => {
+            Some(format!("正在移除本地 {} 引用…", tool.name()))
+        }
         _ => None,
     };
     match sender.try_send(command) {
@@ -265,6 +269,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     version: version.to_string(),
                 },
             );
+        }
+    });
+
+    let weak = ui.as_weak();
+    let tool_sender = sender.clone();
+    ui.on_add_local_tool(move |kind, name, directory| {
+        if let (Some(ui), Some(tool)) = (weak.upgrade(), tool_kind(kind)) {
+            if !ui.get_debug_connected() {
+                submit(
+                    &ui,
+                    &tool_sender,
+                    Command::AddLocalTool {
+                        tool,
+                        name: name.to_string(),
+                        directory: directory.as_str().trim().into(),
+                    },
+                );
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let tool_sender = sender.clone();
+    ui.on_remove_local_tool(move |kind, version| {
+        if let (Some(ui), Some(tool)) = (weak.upgrade(), tool_kind(kind)) {
+            if !ui.get_debug_connected() {
+                if let Some(name) = version.as_str().strip_prefix("local:") {
+                    submit(
+                        &ui,
+                        &tool_sender,
+                        Command::RemoveLocalTool {
+                            tool,
+                            name: name.into(),
+                        },
+                    );
+                }
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_browse_local_tool(move || {
+        if let Some(ui) = weak.upgrade() {
+            file_picker::browse_local_tool(&ui);
         }
     });
 

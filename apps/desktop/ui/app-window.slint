@@ -81,6 +81,10 @@ export component AppWindow inherits Window {
     callback install-tool(int, string);
     callback select-tool(int, string);
     callback uninstall-tool(int, string);
+    callback add-local-tool(int, string, string);
+    callback remove-local-tool(int, string);
+    callback browse-local-tool();
+    in-out property <string> local-tool-directory;
     callback open-source();
     callback open-firmware();
     callback browse-source();
@@ -232,10 +236,14 @@ export component AppWindow inherits Window {
                                 connected: root.debug-connected;
                                 backend-summary: root.backend-summary;
                                 message: root.tool-message;
+                                local-directory <=> root.local-tool-directory;
                                 refresh => { root.refresh-tools(); }
                                 install(kind, version) => { root.install-tool(kind, version); }
                                 select-tool(kind, version) => { root.select-tool(kind, version); }
                                 uninstall(kind, version) => { root.uninstall-tool(kind, version); }
+                                add-local(kind, name, directory) => { root.add-local-tool(kind, name, directory); }
+                                remove-local(kind, version) => { root.remove-local-tool(kind, version); }
+                                browse-local => { root.browse-local-tool(); }
                             }
                         }
                         Tab {

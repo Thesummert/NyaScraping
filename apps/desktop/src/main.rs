@@ -168,6 +168,12 @@ fn open_project(
     ui.set_debug_port(project.port.into());
     ui.set_external_server(project.external_server);
     ui.set_acquisition_endpoint(project.acquisition_endpoint.into());
+    ui.set_refresh_rate_index(if (0..=5).contains(&project.refresh_rate_index) {
+        project.refresh_rate_index
+    } else {
+        0
+    });
+    ui.invoke_refresh_rate_changed();
     ui.set_live_interval_index(project.live_interval_index);
     ui.set_live_custom_hz(project.live_custom_hz.into());
     if firmware.is_none() {
@@ -1082,27 +1088,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+    let waveform_timer = std::rc::Rc::new(slint::Timer::default());
+    let timer = waveform_timer.clone();
     let weak = ui.as_weak();
-    let refresh_presenter = presenter.clone();
     let weak_window = waveform_window.as_weak();
-    let waveform_timer = slint::Timer::default();
-    waveform_timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(33),
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                refresh_presenter
-                    .lock()
-                    .expect("presenter lock")
-                    .refresh_acquisition(&ui);
-                if ui.get_waveform_detached() {
-                    if let Some(window) = weak_window.upgrade() {
-                        sync_waveform_window(&ui, &window);
+    let refresh_presenter = presenter.clone();
+    ui.on_refresh_rate_changed(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let micros = match ui.get_refresh_rate_index() {
+            1 => 10_000,
+            2 => 16_667,
+            3 => 33_333,
+            4 => 100_000,
+            5 => 500_000,
+            _ => 1_000,
+        };
+        let weak = weak.clone();
+        let weak_window = weak_window.clone();
+        let presenter = refresh_presenter.clone();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_micros(micros),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    presenter
+                        .lock()
+                        .expect("presenter lock")
+                        .refresh_acquisition(&ui);
+                    if ui.get_waveform_detached() {
+                        if let Some(window) = weak_window.upgrade() {
+                            sync_waveform_window(&ui, &window);
+                        }
                     }
                 }
-            }
-        },
-    );
+            },
+        );
+    });
+    ui.invoke_refresh_rate_changed();
 
     ui.invoke_refresh_tools();
     let result = ui.run();

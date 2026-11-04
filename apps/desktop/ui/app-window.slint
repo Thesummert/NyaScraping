@@ -1,4 +1,4 @@
-import { Button, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
+import { Button, ComboBox, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SourcePage } from "pages/source.slint";
 import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
@@ -32,6 +32,8 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-open: false;
     in-out property <int> settings-tab: 0;
     in-out property <string> settings-message;
+    in-out property <int> refresh-rate-index: 0;
+    callback refresh-rate-changed();
     private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
     in-out property <bool> debug-connected: false;
     in-out property <bool> debug-halted: false;
@@ -153,6 +155,7 @@ export component AppWindow inherits Window {
             title: "设置";
             MenuItem { title: "选择后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 0; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "安装后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "刷新率"; enabled: !root.interaction-busy; activated => { root.settings-tab = 3; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
         }
     }
@@ -431,6 +434,21 @@ export component AppWindow inherits Window {
                             firmware <=> root.firmware-path;
                             external-server <=> root.external-server;
                             browse-firmware => { root.browse-firmware(); }
+                        }
+                    }
+                    Tab {
+                        title: "刷新率";
+                        VerticalLayout {
+                            padding-top: 16px;
+                            spacing: 12px;
+                            Text { text: "数据界面刷新率"; color: Theme.text; font-size: 16px; }
+                            ComboBox {
+                                model: ["最高 · 1000 Hz", "100 Hz", "60 Hz", "30 Hz", "10 Hz", "2 Hz"];
+                                current-index <=> root.refresh-rate-index;
+                                selected => { root.refresh-rate-changed(); }
+                            }
+                            Text { text: "控制变量和波形界面的更新频率，不改变后端采样频率。"; color: Theme.muted; wrap: word-wrap; }
+                            Rectangle { vertical-stretch: 1; }
                         }
                     }
                 }

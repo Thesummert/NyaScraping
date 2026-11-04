@@ -20,6 +20,8 @@ pub struct Project {
     pub backend_kind: i32,
     pub backend_version: String,
     pub acquisition_endpoint: String,
+    #[serde(default)]
+    pub refresh_rate_index: i32,
     pub live_interval_index: i32,
     pub live_custom_hz: String,
     pub watches: Vec<SavedWatch>,
@@ -45,6 +47,7 @@ impl Project {
             backend_kind: ui.get_backend_kind(),
             backend_version,
             acquisition_endpoint: ui.get_acquisition_endpoint().to_string(),
+            refresh_rate_index: ui.get_refresh_rate_index(),
             live_interval_index: ui.get_live_interval_index(),
             live_custom_hz: ui.get_live_custom_hz().to_string(),
             watches,
@@ -97,6 +100,7 @@ mod tests {
             backend_kind: 0,
             backend_version: "system".into(),
             acquisition_endpoint: "127.0.0.1:6666".into(),
+            refresh_rate_index: 0,
             live_interval_index: 5,
             live_custom_hz: "10".into(),
             watches: vec![SavedWatch {
@@ -110,6 +114,11 @@ mod tests {
         project.write(&path).unwrap();
         let loaded = Project::read(&path).unwrap();
         assert_eq!(loaded.target, "chip");
+        assert_eq!(loaded.refresh_rate_index, 0);
+        let mut legacy = serde_json::to_value(&loaded).unwrap();
+        legacy.as_object_mut().unwrap().remove("refresh_rate_index");
+        let legacy: Project = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.refresh_rate_index, 0);
         assert!(loaded.watches[0].waveform);
         assert_eq!(loaded.watches[0].scope.as_deref(), Some("main.c:1"));
         let mut future = loaded;

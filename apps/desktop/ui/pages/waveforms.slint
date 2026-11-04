@@ -19,6 +19,11 @@ export component WaveformsPage inherits VerticalLayout {
     in property <[string]> charts;
     in property <int> selected-chart;
     in property <image> plot;
+    in property <[string]> axis-channels;
+    in property <int> axis-index;
+    in property <[string]> y-ticks;
+    in property <[string]> time-ticks;
+    in property <string> zoom-label;
     in property <bool> detached;
     in property <bool> active;
     in property <string> status;
@@ -28,6 +33,8 @@ export component WaveformsPage inherits VerticalLayout {
     in property <bool> use-session;
     in property <bool> session-ready;
     callback toggle-detached(bool);
+    callback zoom(bool, bool, bool);
+    callback select-axis(int);
     callback add-chart();
     callback select-chart(int);
     callback move-channel(int, int, int);
@@ -55,8 +62,42 @@ export component WaveformsPage inherits VerticalLayout {
         Text { text: "图表"; color: Theme.text; vertical-alignment: center; }
         chart-selector := ComboBox { model: root.charts; current-index: root.selected-chart; selected => { root.select-chart(chart-selector.current-index); } }
         Button { text: "新建图表"; clicked => { root.add-chart(); } }
+        Text { text: "纵轴通道"; color: Theme.muted; vertical-alignment: center; }
+        axis-selector := ComboBox { model: root.axis-channels; current-index: root.axis-index; enabled: root.axis-channels.length > 0; selected => { root.select-axis(axis-selector.current-index); } }
+        Text { text: root.zoom-label; color: Theme.muted; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; }
     }
-    Image { source: root.plot; min-height: 150px; vertical-stretch: 1; image-fit: fill; }
+    HorizontalLayout {
+        min-height: 150px; vertical-stretch: 1; spacing: 4px;
+        Rectangle {
+            width: 78px;
+            for tick[index] in root.y-ticks: Text {
+                x: 0; width: parent.width; height: 16px;
+                y: max(0px, min(parent.height - self.height, parent.height * index / 4 - self.height / 2));
+                text: tick; color: Theme.muted; font-size: 10px; horizontal-alignment: right;
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            Image { source: root.plot; width: parent.width; height: parent.height; image-fit: fill; }
+            TouchArea {
+                scroll-event(event) => {
+                    if event.delta-y != 0px { root.zoom(event.delta-y > 0px, event.modifiers.control, event.modifiers.alt); return accept; }
+                    reject
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        Rectangle { width: 82px; }
+        Rectangle {
+            height: 18px; horizontal-stretch: 1;
+            for tick[index] in root.time-ticks: Text {
+                width: 80px; height: parent.height;
+                x: max(0px, min(parent.width - self.width, parent.width * index / 4 - self.width / 2));
+                text: tick; color: Theme.muted; font-size: 10px; horizontal-alignment: center;
+            }
+        }
+    }
     Rectangle {
         height: 140px;
         background: Theme.background;
@@ -90,5 +131,5 @@ export component WaveformsPage inherits VerticalLayout {
             vertical-alignment: center;
         }
     }
-    Text { text: "运行中读内存 · 不暂停 CPU · 无目标端采样代码\n5 秒滚动时窗 / 各通道自动纵轴；采集全速运行，显示约 30 帧/秒。实际速度与总线影响取决于芯片和探针。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+    Text { text: "运行中读内存 · 不暂停 CPU · 无目标端采样代码\n时间轴相对最新采样时刻；各通道独立纵轴。滚轮缩放双轴，Ctrl + 滚轮缩放时间轴，Alt + 滚轮缩放纵轴。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
 }

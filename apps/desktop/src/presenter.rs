@@ -26,6 +26,8 @@ pub struct Presenter {
     watch_revision: u64,
     sample_count: u64,
     chart_assignments: HashMap<usize, usize>,
+    waveform_window_seconds: Option<f64>,
+    waveform_y_zoom: Option<f64>,
     values: HashMap<String, EvaluatedWatch>,
     targets: Vec<DebugTarget>,
     probes: Vec<DebugTarget>,
@@ -640,6 +642,7 @@ impl Presenter {
         let mut charts: Vec<slint::SharedString> = ui.get_waveform_charts().iter().collect();
         charts.push(format!("图表 {}", charts.len() + 1).into());
         ui.set_waveform_selected_chart((charts.len() - 1) as i32);
+        ui.set_waveform_axis_index(0);
         ui.set_waveform_charts(ModelRc::from(Rc::new(VecModel::from(charts))));
         self.refresh_chart(ui);
     }
@@ -647,6 +650,7 @@ impl Presenter {
     pub fn select_waveform_chart(&mut self, ui: &AppWindow, index: i32) {
         if index >= 0 && (index as usize) < ui.get_waveform_charts().row_count() {
             ui.set_waveform_selected_chart(index);
+            ui.set_waveform_axis_index(0);
             self.refresh_chart(ui);
         }
     }
@@ -666,6 +670,26 @@ impl Presenter {
             .and_then(|entry| entry.channel_id(node as usize))
         {
             self.chart_assignments.insert(id, chart as usize);
+            self.refresh_chart(ui);
+        }
+    }
+
+    pub fn zoom_waveform(&mut self, ui: &AppWindow, up: bool, control: bool, alt: bool) {
+        let factor = if up { 1.25 } else { 0.8 };
+        if control || !alt {
+            self.waveform_window_seconds =
+                Some((self.waveform_window_seconds.unwrap_or(5.0) / factor).clamp(0.05, 3600.0));
+        }
+        if alt || !control {
+            self.waveform_y_zoom =
+                Some((self.waveform_y_zoom.unwrap_or(1.0) * factor).clamp(0.01, 100.0));
+        }
+        self.refresh_chart(ui);
+    }
+
+    pub fn select_waveform_axis(&mut self, ui: &AppWindow, index: i32) {
+        if index >= 0 && (index as usize) < ui.get_waveform_axis_channels().row_count() {
+            ui.set_waveform_axis_index(index);
             self.refresh_chart(ui);
         }
     }
@@ -794,8 +818,13 @@ impl Presenter {
                         .map(|sample| waveform_view::format_value(sample.value));
                     let bins = data
                         .map(|c| {
-                            c.samples
-                                .envelope(state.elapsed, Duration::from_secs(5), PLOT_WIDTH)
+                            c.samples.envelope(
+                                state.elapsed,
+                                Duration::from_secs_f64(
+                                    self.waveform_window_seconds.unwrap_or(5.0),
+                                ),
+                                PLOT_WIDTH,
+                            )
                         })
                         .unwrap_or_else(|| vec![None; PLOT_WIDTH]);
                     let count = data.map(|c| c.samples.len()).unwrap_or(0);
@@ -880,16 +909,56 @@ impl Presenter {
         }
         if update_plot {
             let mut traces = Vec::new();
-            for (index, (watch, node, _, _, _, bins, _, _, _)) in plots.iter().enumerate() {
+            let mut axis_names: Vec<slint::SharedString> = Vec::new();
+            for (index, (watch, node, name, scope, _, bins, _, _, _)) in plots.iter().enumerate() {
                 let id = self.watches.entries[*watch].channel_id(*node);
                 let chart = id
                     .and_then(|id| self.chart_assignments.get(&id).copied())
                     .unwrap_or(0);
                 if chart == ui.get_waveform_selected_chart() as usize {
                     traces.push((bins.as_slice(), COLORS[index % COLORS.len()]));
+                    axis_names.push(format!("{} · {}", name, scope).into());
                 }
             }
-            ui.set_waveform_plot(waveform_view::render(&traces));
+            let current_names: Vec<_> = ui.get_waveform_axis_channels().iter().collect();
+            if current_names != axis_names {
+                ui.set_waveform_axis_channels(ModelRc::from(Rc::new(VecModel::from(axis_names))));
+            }
+            let axis_index =
+                (ui.get_waveform_axis_index().max(0) as usize).min(traces.len().saturating_sub(1));
+            ui.set_waveform_axis_index(axis_index as i32);
+            let zoom = self.waveform_y_zoom.unwrap_or(1.0);
+            let seconds = self.waveform_window_seconds.unwrap_or(5.0);
+            let ticks: Vec<slint::SharedString> = (0..5)
+                .map(|i| {
+                    traces
+                        .get(axis_index)
+                        .and_then(|(bins, _)| waveform_view::Scale::from_bins(bins, zoom))
+                        .map(|scale| scale.tick(i))
+                        .unwrap_or_else(|| "—".into())
+                        .into()
+                })
+                .collect();
+            ui.set_waveform_y_ticks(ModelRc::from(Rc::new(VecModel::from(ticks))));
+            let times: Vec<slint::SharedString> = (0..5)
+                .map(|i| {
+                    format!(
+                        "{} s",
+                        waveform_view::format_value(-seconds * (4 - i) as f64 / 4.0)
+                    )
+                    .into()
+                })
+                .collect();
+            ui.set_waveform_time_ticks(ModelRc::from(Rc::new(VecModel::from(times))));
+            ui.set_waveform_zoom_label(
+                format!(
+                    "时窗 {} s · 纵轴 {:.2}×",
+                    waveform_view::format_value(seconds),
+                    zoom
+                )
+                .into(),
+            );
+            ui.set_waveform_plot(waveform_view::render(&traces, zoom, seconds));
             let rows: Vec<_> = plots
                 .into_iter()
                 .enumerate()

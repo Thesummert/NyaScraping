@@ -248,6 +248,11 @@ fn sync_waveform_window(ui: &AppWindow, window: &WaveformWindow) {
     window.set_charts(ui.get_waveform_charts());
     window.set_selected_chart(ui.get_waveform_selected_chart());
     window.set_plot(ui.get_waveform_plot());
+    window.set_axis_channels(ui.get_waveform_axis_channels());
+    window.set_axis_index(ui.get_waveform_axis_index());
+    window.set_y_ticks(ui.get_waveform_y_ticks());
+    window.set_time_ticks(ui.get_waveform_time_ticks());
+    window.set_zoom_label(ui.get_waveform_zoom_label());
     window.set_active(ui.get_acquisition_active());
     window.set_status(ui.get_acquisition_status());
     window.set_statistics(ui.get_acquisition_statistics());
@@ -941,6 +946,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let weak = ui.as_weak();
+    let chart_presenter = presenter.clone();
+    ui.on_zoom_waveform(move |up, control, alt| {
+        if let Some(ui) = weak.upgrade() {
+            chart_presenter
+                .lock()
+                .expect("presenter lock")
+                .zoom_waveform(&ui, up, control, alt);
+        }
+    });
+    let weak = ui.as_weak();
+    let chart_presenter = presenter.clone();
+    ui.on_select_waveform_axis(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            chart_presenter
+                .lock()
+                .expect("presenter lock")
+                .select_waveform_axis(&ui, index);
+        }
+    });
+    let weak = ui.as_weak();
     let plot_presenter = presenter.clone();
     ui.on_start_acquisition(move || {
         if let Some(ui) = weak.upgrade() {
@@ -999,6 +1024,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     waveform_window.on_toggle_detached(move |value| {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_toggle_waveform_window(value);
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_zoom(move |up, control, alt| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_zoom_waveform(up, control, alt);
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_select_axis(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_select_waveform_axis(index);
         }
     });
     let weak = ui.as_weak();

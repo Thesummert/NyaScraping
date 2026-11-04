@@ -87,6 +87,13 @@ export component AppWindow inherits Window {
     in-out property <[string]> waveform-charts: ["图表 1"];
     in-out property <int> waveform-selected-chart: 0;
     in-out property <image> waveform-plot;
+    in-out property <[string]> waveform-axis-channels;
+    in-out property <int> waveform-axis-index;
+    in-out property <[string]> waveform-y-ticks: ["—", "—", "—", "—", "—"];
+    in-out property <[string]> waveform-time-ticks: ["-5 s", "-3.75 s", "-2.5 s", "-1.25 s", "0 s"];
+    in-out property <string> waveform-zoom-label;
+    callback zoom-waveform(bool, bool, bool);
+    callback select-waveform-axis(int);
     in-out property <bool> waveform-detached: false;
     callback toggle-waveform-window(bool);
     callback add-waveform-chart();
@@ -254,6 +261,13 @@ export component AppWindow inherits Window {
                                 charts: root.waveform-charts;
                                 selected-chart: root.waveform-selected-chart;
                                 plot: root.waveform-plot;
+                                axis-channels: root.waveform-axis-channels;
+                                axis-index: root.waveform-axis-index;
+                                y-ticks: root.waveform-y-ticks;
+                                time-ticks: root.waveform-time-ticks;
+                                zoom-label: root.waveform-zoom-label;
+                                zoom(up, control, alt) => { root.zoom-waveform(up, control, alt); }
+                                select-axis(index) => { root.select-waveform-axis(index); }
                                 add-chart => { root.add-waveform-chart(); }
                                 select-chart(index) => { root.select-waveform-chart(index); }
                                 move-channel(watch, node, chart) => { root.move-waveform-channel(watch, node, chart); }
@@ -468,6 +482,13 @@ export component WaveformWindow inherits Window {
     in property <[string]> charts;
     in property <int> selected-chart;
     in property <image> plot;
+    in property <[string]> axis-channels;
+    in property <int> axis-index;
+    in property <[string]> y-ticks;
+    in property <[string]> time-ticks;
+    in property <string> zoom-label;
+    callback zoom(bool, bool, bool);
+    callback select-axis(int);
     in property <bool> active;
     in property <string> status;
     in property <string> statistics;
@@ -491,6 +512,13 @@ export component WaveformWindow inherits Window {
         charts: root.charts;
         selected-chart: root.selected-chart;
         plot: root.plot;
+        axis-channels: root.axis-channels;
+        axis-index: root.axis-index;
+        y-ticks: root.y-ticks;
+        time-ticks: root.time-ticks;
+        zoom-label: root.zoom-label;
+        zoom(up, control, alt) => { root.zoom(up, control, alt); }
+        select-axis(index) => { root.select-axis(index); }
         active: root.active;
         status: root.status;
         statistics: root.statistics;

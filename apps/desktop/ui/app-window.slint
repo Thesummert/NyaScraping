@@ -149,7 +149,7 @@ export component AppWindow inherits Window {
                         alignment: end;
                         spacing: 8px;
                         Text { text: "● " + root.debug-state; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
-                        Button { text: root.debug-connected ? "断开" : "连接"; enabled: !root.interaction-busy; clicked => { if root.debug-connected { root.debug-action(1); } else { root.current-tab = 4; } } }
+                        Button { text: root.debug-connected ? "断开" : "连接"; enabled: !root.interaction-busy; clicked => { root.debug-action(root.debug-connected ? 1 : 0); } }
                         Button { text: "下载"; enabled: root.debug-halted && !root.interaction-busy; clicked => { root.debug-action(8); } }
                     }
                 }

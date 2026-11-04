@@ -130,6 +130,23 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     declarations
         .get_mut(state_var)
         .set(gimli::DW_AT_type, A::UnitRef(qualified));
+    let array = declarations.add(root, gimli::DW_TAG_array_type);
+    declarations
+        .get_mut(array)
+        .set(gimli::DW_AT_type, A::UnitRef(int));
+    for count in [2, 3] {
+        let dim = declarations.add(array, gimli::DW_TAG_subrange_type);
+        declarations
+            .get_mut(dim)
+            .set(gimli::DW_AT_count, A::Udata(count));
+    }
+    let matrix = declarations.add(root, gimli::DW_TAG_variable);
+    declarations
+        .get_mut(matrix)
+        .set(gimli::DW_AT_name, A::String(b"matrix".to_vec()));
+    declarations
+        .get_mut(matrix)
+        .set(gimli::DW_AT_type, A::UnitRef(array));
     let function = declarations.add(root, gimli::DW_TAG_subprogram);
     for (attribute, value) in [
         (gimli::DW_AT_name, A::String(b"calculate".to_vec())),
@@ -337,6 +354,17 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
         ));
         assert_eq!(counters[0].scalar_type, Some(ScalarType::Signed));
         assert_eq!(counters[0].byte_size, Some(4));
+        let matrix = info.variables.iter().find(|v| v.name == "matrix").unwrap();
+        assert_eq!(matrix.type_name.as_deref(), Some("int[2][3]"));
+        assert_eq!(matrix.members.len(), 2);
+        assert_eq!(matrix.members[1].offset, Some(12));
+        assert_eq!(matrix.members[1].type_name, "int[3]");
+        assert_eq!(matrix.members[1].members[2].name, "[2]");
+        assert_eq!(matrix.members[1].members[2].offset, Some(8));
+        assert_eq!(
+            matrix.members[1].members[2].scalar_type,
+            Some(ScalarType::Signed)
+        );
         let state = info.variables.iter().find(|v| v.name == "state").unwrap();
         assert_eq!(state.type_name.as_deref(), Some("const StateAlias"));
         assert_eq!(state.members.len(), 2);

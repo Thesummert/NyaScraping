@@ -119,11 +119,15 @@ fn append_members(
             });
         let expression = if member.name.starts_with('<') {
             parent.to_owned()
+        } else if member.name.starts_with('[') {
+            format!("({parent}){}", member.name)
         } else {
             format!("({parent}).{}", member.name)
         };
         let path = if member.name.starts_with('<') {
             parent_path.to_owned()
+        } else if member.name.starts_with('[') {
+            format!("{parent_path}{}", member.name)
         } else {
             format!("{parent_path}.{}", member.name)
         };
@@ -495,6 +499,35 @@ mod tests {
         restored.toggle_waveform(0, 1).unwrap();
         restored.toggle_waveform(0, 17).unwrap();
         assert!(restored.entries[0].node_waveform(17));
+    }
+
+    #[test]
+    fn array_elements_use_index_expressions_and_element_addresses() {
+        let mut variable = variable(0);
+        variable.name = "samples".into();
+        variable.evaluation_expression = "samples".into();
+        variable.members = vec![DebugMember {
+            name: "[1]".into(),
+            type_name: "int".into(),
+            offset: Some(4),
+            byte_size: Some(4),
+            scalar_type: Some(nya_domain::waveform::ScalarType::Signed),
+            members: vec![],
+        }];
+        let mut watches = WatchList::default();
+        watches.add_variable(variable);
+        let rows = watches.rows();
+        assert_eq!(rows[1].name, "[1]");
+        assert_eq!(rows[1].expression, "(samples)[1]");
+        assert_eq!(
+            watches.entries[0]
+                .node_memory(rows[1].node)
+                .unwrap()
+                .address,
+            0x20000004
+        );
+        watches.toggle_waveform(0, rows[1].node).unwrap();
+        assert_eq!(watches.saved()[0].waveform_members, ["samples[1]"]);
     }
 
     #[test]

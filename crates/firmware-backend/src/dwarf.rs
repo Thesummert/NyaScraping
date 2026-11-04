@@ -498,10 +498,88 @@ impl Context {
                     });
                 }
             }
+            gimli::DW_TAG_array_type => {
+                let target = self
+                    .attr(key, gimli::DW_AT_type)?
+                    .and_then(|(owner, value)| self.reference(owner, value));
+                if let Some(target) = target {
+                    let mut dimensions = Vec::new();
+                    let mut tree = self.units[key.0].entries_tree(Some(key.1)).map_err(error)?;
+                    let root = tree.root().map_err(error)?;
+                    let mut children = root.children();
+                    while let Some(child) = children.next().map_err(error)? {
+                        if child.entry().tag() != gimli::DW_TAG_subrange_type {
+                            continue;
+                        }
+                        let dim = (key.0, child.entry().offset());
+                        let lower = self.number(dim, gimli::DW_AT_lower_bound)?.unwrap_or(0);
+                        let count = self.number(dim, gimli::DW_AT_count)?.or(self
+                            .number(dim, gimli::DW_AT_upper_bound)?
+                            .and_then(|upper| upper.checked_sub(lower)?.checked_add(1)));
+                        dimensions.push((lower, count));
+                    }
+                    if !dimensions.is_empty() {
+                        members = self.array_members(target, &dimensions, visited, budget)?;
+                    }
+                }
+            }
             // Pointers stay leaves: inspecting their target requires a live session.
             _ => {}
         }
         visited.pop();
+        Ok(members)
+    }
+
+    fn array_members(
+        &self,
+        target: Key,
+        dimensions: &[(u64, Option<u64>)],
+        visited: &mut Vec<Key>,
+        budget: &mut usize,
+    ) -> Result<Vec<DebugMember>> {
+        let (lower, Some(count)) = dimensions[0] else {
+            return Ok(Vec::new());
+        };
+        let (base_name, base_size) = self.type_name(target, &mut Vec::new())?;
+        let remaining = &dimensions[1..];
+        let stride = remaining.iter().fold(base_size, |size, (_, count)| {
+            size.zip(*count)
+                .and_then(|(size, count)| size.checked_mul(count))
+        });
+        let mut type_name = base_name;
+        for (_, count) in remaining {
+            type_name.push_str(&format!(
+                "[{}]",
+                count.map(|n| n.to_string()).unwrap_or_default()
+            ));
+        }
+        let mut members = Vec::new();
+        for index in 0..count {
+            if *budget == 0 {
+                break;
+            }
+            let Some(label) = lower.checked_add(index) else {
+                break;
+            };
+            *budget -= 1;
+            let children = if remaining.is_empty() {
+                self.type_members(target, visited, budget)?
+            } else {
+                self.array_members(target, remaining, visited, budget)?
+            };
+            members.push(DebugMember {
+                name: format!("[{label}]"),
+                type_name: type_name.clone(),
+                offset: stride.and_then(|size| size.checked_mul(index)),
+                byte_size: stride,
+                scalar_type: if remaining.is_empty() {
+                    self.scalar_type(target, &mut Vec::new())?
+                } else {
+                    None
+                },
+                members: children,
+            });
+        }
         Ok(members)
     }
 

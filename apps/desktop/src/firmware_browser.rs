@@ -13,6 +13,7 @@ struct Node {
     expanded: bool,
     variable: Option<BrowserVariable>,
     function: bool,
+    has_variables: bool,
     search_name: String,
 }
 
@@ -309,6 +310,15 @@ impl FirmwareBrowser {
                 "\n包含 {function_count} 个函数条目、{variable_count} 个变量/参数条目。"
             );
         }
+        // Parents are created before their children, so propagate variable
+        // presence upward after the complete tree has been built.
+        for id in (0..tree.nodes.len()).rev() {
+            tree.nodes[id].has_variables = tree.nodes[id].variable.is_some()
+                || tree.nodes[id]
+                    .children
+                    .iter()
+                    .any(|child| tree.nodes[*child].has_variables);
+        }
         let labels: Vec<_> = tree.nodes.iter().map(|n| n.label.clone()).collect();
         for node in &mut tree.nodes {
             node.children.sort_by(|a, b| labels[*a].cmp(&labels[*b]));
@@ -330,6 +340,7 @@ impl FirmwareBrowser {
             expanded: false,
             variable: None,
             function: false,
+            has_variables: false,
             search_name: String::new(),
         });
         match parent {
@@ -345,9 +356,7 @@ impl FirmwareBrowser {
         let mut stack: Vec<_> = self.roots.iter().rev().map(|id| (*id, 0)).collect();
         while let Some((id, depth)) = stack.pop() {
             let node = &self.nodes[id];
-            if (!self.query.is_empty() && !self.matches[id])
-                || (self.query.is_empty() && node.function && !self.show_functions)
-            {
+            if !self.node_visible(id) {
                 continue;
             }
             self.visible.push(id);
@@ -395,14 +404,21 @@ impl FirmwareBrowser {
             .is_some_and(|id| self.has_visible_children(*id))
     }
 
+    fn node_visible(&self, id: usize) -> bool {
+        if !self.query.is_empty() {
+            self.matches[id]
+        } else if self.show_functions {
+            true
+        } else {
+            self.nodes[id].has_variables && !self.nodes[id].function
+        }
+    }
+
     fn has_visible_children(&self, id: usize) -> bool {
-        self.nodes[id].children.iter().any(|child| {
-            if self.query.is_empty() {
-                self.show_functions || !self.nodes[*child].function
-            } else {
-                self.matches[*child]
-            }
-        })
+        self.nodes[id]
+            .children
+            .iter()
+            .any(|child| self.node_visible(*child))
     }
 
     fn expanded(&self, id: usize) -> bool {
@@ -589,6 +605,32 @@ mod tests {
     }
 
     #[test]
+    fn default_tree_only_shows_files_containing_variables() {
+        let image = NativeFirmwareBackend
+            .parse(
+                Path::new("firmware.axf"),
+                include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf4.axf"),
+            )
+            .unwrap();
+        let mut info = image.debug;
+        info.files.push(SourceFile {
+            path: "/empty/empty.c".into(),
+        });
+        let mut browser = FirmwareBrowser::new(&info, true, true);
+        let labels: Vec<_> = browser.rows().into_iter().map(|row| row.label).collect();
+        assert!(labels.contains(&"main.c".to_string()));
+        assert!(!labels.contains(&"empty.c".to_string()));
+        assert!(!labels.contains(&"empty".to_string()));
+
+        browser.set_query("empty.c");
+        assert!(browser.rows().iter().any(|row| row.label == "empty.c"));
+        browser.set_query("");
+        assert!(!browser.rows().iter().any(|row| row.label == "empty.c"));
+        browser.set_show_functions(true);
+        assert!(browser.rows().iter().any(|row| row.label == "empty.c"));
+    }
+
+    #[test]
     fn identical_basenames_in_different_directories_remain_separate() {
         let info = FirmwareDebugInfo {
             files: vec![
@@ -602,6 +644,7 @@ mod tests {
             ..Default::default()
         };
         let mut browser = FirmwareBrowser::new(&info, true, true);
+        browser.set_show_functions(true);
         let rows = browser.rows();
         let files: Vec<_> = rows
             .iter()

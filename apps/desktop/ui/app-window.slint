@@ -79,6 +79,8 @@ export component AppWindow inherits Window {
     in-out property <string> firmware-meta;
     in-out property <string> firmware-report: "解析编译产物后，在这里查看段、节与符号表。";
     in-out property <[FirmwareTreeRow]> firmware-tree;
+    in-out property <int> firmware-tree-label-width;
+    in-out property <int> firmware-tree-content-width;
     in-out property <int> firmware-selected-node: -1;
     in-out property <string> firmware-details: "选择文件树中的函数或变量，查看类型、声明位置及存储位置。";
     in-out property <bool> functions-visible: false;
@@ -217,6 +219,8 @@ export component AppWindow inherits Window {
                     path <=> root.firmware-path;
                     title: root.firmware-title;
                     tree: root.firmware-tree;
+                    tree-label-width: root.firmware-tree-label-width * 1px;
+                    tree-content-width: root.firmware-tree-content-width * 1px;
                     details: root.firmware-details;
                     selected-node: root.firmware-selected-node;
                     functions-visible <=> root.functions-visible;

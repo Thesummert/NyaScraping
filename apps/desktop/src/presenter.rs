@@ -1164,6 +1164,34 @@ impl Presenter {
                 can_plot: row.can_plot,
             })
             .collect();
+        // Leave enough room for the indentation and both text columns, including
+        // wide glyphs, so scrolling exposes names instead of truncating them.
+        let text_width = |text: &str| {
+            text.chars().fold(0usize, |width, ch| {
+                width.saturating_add(if ch.is_ascii() { 10 } else { 16 })
+            })
+        };
+        let label_width = rows
+            .iter()
+            .map(|row| {
+                32usize
+                    .saturating_add((row.depth.max(0) as usize).saturating_mul(14))
+                    .saturating_add(text_width(&row.label))
+            })
+            .max()
+            .unwrap_or(0);
+        let type_width = rows
+            .iter()
+            .map(|row| text_width(&row.type_name))
+            .max()
+            .unwrap_or(0);
+        ui.set_firmware_tree_label_width(label_width.min(i32::MAX as usize) as i32);
+        ui.set_firmware_tree_content_width(
+            label_width
+                .saturating_add(type_width)
+                .saturating_add(24)
+                .min(i32::MAX as usize) as i32,
+        );
         ui.set_firmware_tree(ModelRc::from(Rc::new(VecModel::from(rows))));
     }
 }

@@ -16,6 +16,8 @@ export component FirmwarePage inherits VerticalLayout {
     in-out property <string> path;
     in property <string> title;
     in property <[FirmwareTreeRow]> tree;
+    in property <length> tree-label-width;
+    in property <length> tree-content-width;
     in property <string> details;
     in property <int> selected-node;
     in-out property <bool> functions-visible;
@@ -61,14 +63,17 @@ export component FirmwarePage inherits VerticalLayout {
         background: Theme.background;
         border-radius: 12px;
         clip: true;
-        ListView {
+        tree-view := ListView {
+            content-width: max(self.visible-width, root.tree-content-width);
+            horizontal-scrollbar-policy: as-needed;
             for row[index] in root.tree: Rectangle {
                 height: 32px;
+                width: tree-view.content-width;
                 border-radius: 8px;
                 background: index == root.selected-node ? Theme.selection : (area.has-hover ? Theme.panel : transparent);
                 Text {
                     x: 8px + row.depth * 14px;
-                    width: max(0px, parent.width - self.x - (row.type-name != "" ? 100px : 8px));
+                    width: max(0px, root.tree-label-width - self.x);
                     height: parent.height;
                     vertical-alignment: center;
                     text: (row.branch ? (row.expanded ? "▾ " : "▸ ") : "  ") + row.label;
@@ -77,8 +82,8 @@ export component FirmwarePage inherits VerticalLayout {
                     overflow: elide;
                 }
                 if row.type-name != "": Text {
-                    x: max(0px, parent.width - 94px);
-                    width: 86px;
+                    x: root.tree-label-width;
+                    width: max(0px, parent.width - self.x - 8px);
                     height: parent.height;
                     text: row.type-name;
                     color: Theme.accent;
@@ -101,11 +106,34 @@ export component FirmwarePage inherits VerticalLayout {
                     }
                 }
                 area := TouchArea {
+                    property <bool> middle-dragging: false;
+                    property <length> drag-start-x;
+                    property <length> drag-start-y;
+                    property <length> drag-content-x;
+                    property <length> drag-content-y;
                     clicked => { root.select-node(index); }
                     double-clicked => { if row.variable { root.add-variable(index); } }
                     pointer-event(event) => {
                         if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                             menu.show({ x: self.mouse-x, y: self.mouse-y });
+                        }
+                        if event.button == PointerEventButton.middle && event.kind == PointerEventKind.down {
+                            self.middle-dragging = true;
+                            self.drag-start-x = self.mouse-x + tree-view.content-x;
+                            self.drag-start-y = self.mouse-y + parent.y + tree-view.content-y;
+                            self.drag-content-x = tree-view.content-x;
+                            self.drag-content-y = tree-view.content-y;
+                        }
+                        if (event.button == PointerEventButton.middle && event.kind == PointerEventKind.up) || event.kind == PointerEventKind.cancel {
+                            self.middle-dragging = false;
+                        }
+                    }
+                    moved => {
+                        if self.middle-dragging {
+                            tree-view.content-x = min(0px, max(tree-view.visible-width - tree-view.content-width,
+                                self.drag-content-x + self.mouse-x + tree-view.content-x - self.drag-start-x));
+                            tree-view.content-y = min(0px, max(tree-view.visible-height - tree-view.content-height,
+                                self.drag-content-y + self.mouse-y + parent.y + tree-view.content-y - self.drag-start-y));
                         }
                     }
                 }

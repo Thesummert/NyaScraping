@@ -68,6 +68,8 @@ pub struct Application<T, E, F> {
     text: E,
     firmware: F,
     watches: Vec<WatchRequest>,
+    pending_breakpoints: Vec<nya_domain::Breakpoint>,
+    next_pending_breakpoint: u64,
 }
 
 impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Application<T, E, F> {
@@ -77,6 +79,8 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
             text,
             firmware,
             watches: Vec::new(),
+            pending_breakpoints: Vec::new(),
+            next_pending_breakpoint: 1,
         }
     }
 
@@ -103,10 +107,77 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
                         Err(error) => return Event::Failed(error.to_string()),
                     }
                 }
-                let result = self.tools.execute_debug(action);
+                let state = self.tools.debug_snapshot(&[]).state;
+                let mut pending_message = None;
+                let flush_after =
+                    matches!(&action, DebugAction::Connect { .. } | DebugAction::Pause);
+                let result = match action {
+                    DebugAction::AddSourceBreakpoint { file, line }
+                        if state != nya_domain::SessionState::Halted =>
+                    {
+                        if file.is_empty() || line == 0 {
+                            Err(nya_domain::Error("无效的源码断点位置".into()))
+                        } else {
+                            let id = format!("pending:{}", self.next_pending_breakpoint);
+                            self.next_pending_breakpoint += 1;
+                            self.pending_breakpoints.push(nya_domain::Breakpoint {
+                                id,
+                                location: format!("{file}:{line}"),
+                                enabled: true,
+                                file,
+                                line,
+                            });
+                            pending_message =
+                                Some("断点已记录，连接目标并暂停后自动设置".to_owned());
+                            Ok(())
+                        }
+                    }
+                    DebugAction::RemoveBreakpoint(id) if id.starts_with("pending:") => {
+                        let before = self.pending_breakpoints.len();
+                        self.pending_breakpoints.retain(|bp| bp.id != id);
+                        if before == self.pending_breakpoints.len() {
+                            Err(nya_domain::Error("未找到待设置断点".into()))
+                        } else {
+                            pending_message = Some("已移除待设置断点".into());
+                            Ok(())
+                        }
+                    }
+                    DebugAction::SetBreakpointEnabled { id, enabled }
+                        if id.starts_with("pending:") =>
+                    {
+                        if let Some(bp) = self.pending_breakpoints.iter_mut().find(|bp| bp.id == id)
+                        {
+                            bp.enabled = enabled;
+                            pending_message = Some(
+                                if enabled {
+                                    "待设置断点已启用"
+                                } else {
+                                    "待设置断点已禁用"
+                                }
+                                .into(),
+                            );
+                            if enabled && state == nya_domain::SessionState::Halted {
+                                pending_message =
+                                    self.install_pending_breakpoints().or(pending_message);
+                            }
+                            Ok(())
+                        } else {
+                            Err(nya_domain::Error("未找到待设置断点".into()))
+                        }
+                    }
+                    action => self.tools.execute_debug(action),
+                };
+                if result.is_ok()
+                    && flush_after
+                    && self.tools.debug_snapshot(&[]).state == nya_domain::SessionState::Halted
+                {
+                    pending_message = self.install_pending_breakpoints().or(pending_message);
+                }
                 let mut snapshot = self.snapshot();
                 if let Err(error) = result {
                     snapshot.message = format!("操作失败：{error}");
+                } else if let Some(message) = pending_message {
+                    snapshot.message = message;
                 }
                 Ok(Event::DebugUpdated {
                     snapshot,
@@ -190,9 +261,18 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
         match self.tools.poll_debug() {
             Ok(false) => None,
             result => {
+                let pending_message = if result.is_ok()
+                    && self.tools.debug_snapshot(&[]).state == nya_domain::SessionState::Halted
+                {
+                    self.install_pending_breakpoints()
+                } else {
+                    None
+                };
                 let mut snapshot = self.snapshot();
                 if let Err(error) = result {
                     snapshot.message = format!("调试连接异常：{error}");
+                } else if let Some(message) = pending_message {
+                    snapshot.message = message;
                 }
                 Some(Event::DebugUpdated {
                     snapshot,
@@ -207,6 +287,9 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
             return None;
         }
         let mut snapshot = self.tools.sample_watches(&self.watches);
+        snapshot
+            .breakpoints
+            .extend(self.pending_breakpoints.iter().cloned());
         if snapshot.state == nya_domain::SessionState::Running
             && !snapshot.watch_sample
             && snapshot.watch_sample_error.is_none()
@@ -231,8 +314,48 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
 
     fn snapshot(&mut self) -> DebugSnapshot {
         let mut snapshot = self.tools.debug_snapshot(&self.watches);
+        snapshot
+            .breakpoints
+            .extend(self.pending_breakpoints.iter().cloned());
         self.load_frame_source(&mut snapshot);
         snapshot
+    }
+
+    fn install_pending_breakpoints(&mut self) -> Option<String> {
+        let mut failures = Vec::new();
+        let mut installed = 0;
+        let mut index = 0;
+        while index < self.pending_breakpoints.len() {
+            let bp = &self.pending_breakpoints[index];
+            if !bp.enabled {
+                index += 1;
+                continue;
+            }
+            match self.tools.execute_debug(DebugAction::AddSourceBreakpoint {
+                file: bp.file.clone(),
+                line: bp.line,
+            }) {
+                Ok(()) => {
+                    self.pending_breakpoints.remove(index);
+                    installed += 1;
+                }
+                Err(error) => {
+                    failures.push(format!("{}：{}", bp.location, error));
+                    index += 1;
+                }
+            }
+        }
+        if !failures.is_empty() {
+            Some(format!(
+                "{} 个断点设置失败，已保留：{}",
+                failures.len(),
+                failures.join("；")
+            ))
+        } else if installed > 0 {
+            Some(format!("已设置 {installed} 个待处理断点"))
+        } else {
+            None
+        }
     }
 
     fn load_frame_source(&self, snapshot: &mut DebugSnapshot) {
@@ -361,6 +484,18 @@ mod tests {
                 DebugAction::Continue => self.debug.state = SessionState::Running,
                 DebugAction::Disconnect => self.debug.state = SessionState::Disconnected,
                 DebugAction::AddBreakpoint(_) => return Err(Error("bad breakpoint".into())),
+                DebugAction::AddSourceBreakpoint { file, line } => {
+                    if file == "missing.c" {
+                        return Err(Error("source unavailable".into()));
+                    }
+                    self.debug.breakpoints.push(nya_domain::Breakpoint {
+                        id: (self.debug.breakpoints.len() + 1).to_string(),
+                        location: format!("{file}:{line}"),
+                        enabled: true,
+                        file: file.clone(),
+                        line: *line,
+                    });
+                }
                 _ => {}
             }
             self.actions.push(action);
@@ -412,6 +547,80 @@ mod tests {
             Event::ToolsUpdated { state, message } => (state, message),
             _ => panic!("expected tools snapshot"),
         }
+    }
+
+    fn debug(event: Event) -> DebugSnapshot {
+        match event {
+            Event::DebugUpdated { snapshot, .. } => snapshot,
+            _ => panic!("expected debug snapshot"),
+        }
+    }
+
+    #[test]
+    fn source_breakpoints_can_be_queued_managed_and_installed_after_connect() {
+        use nya_domain::{SessionState, TargetProfile};
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        let add = |file: &str, line| {
+            Command::Debug(DebugAction::AddSourceBreakpoint {
+                file: file.into(),
+                line,
+            })
+        };
+        let snapshot = debug(app.execute(add("main.c", 12)));
+        assert_eq!(snapshot.breakpoints.len(), 1);
+        assert!(snapshot.breakpoints[0].id.starts_with("pending:"));
+        assert!(app.tools.actions.is_empty());
+        let id = snapshot.breakpoints[0].id.clone();
+        let snapshot = debug(
+            app.execute(Command::Debug(DebugAction::SetBreakpointEnabled {
+                id: id.clone(),
+                enabled: false,
+            })),
+        );
+        assert!(!snapshot.breakpoints[0].enabled);
+        let profile = TargetProfile {
+            name: "fixture".into(),
+            tool: ToolKind::OpenOcd,
+            target: "chip".into(),
+            interface: None,
+            gdb_port: 3333,
+            gdb_executable: "gdb".into(),
+            firmware: "fixture.elf".into(),
+        };
+        let snapshot = debug(app.execute(Command::Debug(DebugAction::Connect {
+            profile,
+            external_server: true,
+        })));
+        assert_eq!(snapshot.state, SessionState::Halted);
+        assert_eq!(snapshot.breakpoints[0].id, id);
+        let snapshot = debug(
+            app.execute(Command::Debug(DebugAction::SetBreakpointEnabled {
+                id,
+                enabled: true,
+            })),
+        );
+        assert_eq!(snapshot.breakpoints.len(), 1);
+        assert_eq!(snapshot.breakpoints[0].id, "1");
+        assert_eq!(snapshot.breakpoints[0].line, 12);
+
+        app.tools.debug.state = SessionState::Running;
+        let pending = debug(app.execute(add("other.c", 7)))
+            .breakpoints
+            .pop()
+            .unwrap();
+        assert!(pending.id.starts_with("pending:"));
+        let snapshot =
+            debug(app.execute(Command::Debug(DebugAction::RemoveBreakpoint(pending.id))));
+        assert_eq!(snapshot.breakpoints.len(), 1);
+        let pending = debug(app.execute(add("missing.c", 8)))
+            .breakpoints
+            .pop()
+            .unwrap();
+        app.tools.debug.state = SessionState::Halted;
+        app.tools.dirty = true;
+        let snapshot = debug(app.poll().unwrap());
+        assert!(snapshot.message.contains("source unavailable"));
+        assert!(snapshot.breakpoints.iter().any(|bp| bp.id == pending.id));
     }
 
     #[test]

@@ -271,6 +271,7 @@ fn sync_waveform_window(ui: &AppWindow, window: &WaveformWindow) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = AppWindow::new()?;
     let waveform_window = WaveformWindow::new()?;
+    let breakpoint_window = BreakpointWindow::new()?;
     #[cfg(target_os = "macos")]
     set_application_icon();
     let mut application = Application::new(
@@ -636,6 +637,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     });
+    let weak = ui.as_weak();
+    let source_presenter = presenter.clone();
+    let debug_sender = sender.clone();
+    ui.on_toggle_source_breakpoint(move |line| {
+        if let Some(ui) = weak.upgrade() {
+            let action = source_presenter
+                .lock()
+                .expect("presenter lock")
+                .source_breakpoint_action(line);
+            if let Some(action) = action {
+                submit(&ui, &debug_sender, Command::Debug(action));
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let weak_window = breakpoint_window.as_weak();
+    ui.on_show_breakpoints(move || {
+        if let (Some(ui), Some(window)) = (weak.upgrade(), weak_window.upgrade()) {
+            window.set_breakpoints(ui.get_breakpoints());
+            window.set_can_edit(ui.get_debug_halted() && !ui.get_busy());
+            window.set_can_edit_pending(!ui.get_busy());
+            if let Err(error) = window.show() {
+                ui.set_status(format!("无法打开断点记录窗口：{error}").into());
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let debug_sender = sender.clone();
+    breakpoint_window.on_set_enabled(move |id, enabled| {
+        if let Some(ui) = weak.upgrade() {
+            submit(
+                &ui,
+                &debug_sender,
+                Command::Debug(DebugAction::SetBreakpointEnabled {
+                    id: id.to_string(),
+                    enabled,
+                }),
+            );
+        }
+    });
+    let weak = ui.as_weak();
+    let debug_sender = sender.clone();
+    breakpoint_window.on_remove(move |id| {
+        if let Some(ui) = weak.upgrade() {
+            submit(
+                &ui,
+                &debug_sender,
+                Command::Debug(DebugAction::RemoveBreakpoint(id.to_string())),
+            );
+        }
+    });
+    breakpoint_window
+        .window()
+        .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+    let breakpoint_timer = slint::Timer::default();
+    let weak = ui.as_weak();
+    let weak_window = breakpoint_window.as_weak();
+    breakpoint_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(100),
+        move || {
+            if let (Some(ui), Some(window)) = (weak.upgrade(), weak_window.upgrade()) {
+                window.set_breakpoints(ui.get_breakpoints());
+                window.set_can_edit(ui.get_debug_halted() && !ui.get_busy());
+                window.set_can_edit_pending(!ui.get_busy());
+            }
+        },
+    );
     let weak = ui.as_weak();
     let debug_sender = sender.clone();
     ui.on_select_frame(move |level| {
@@ -1115,8 +1184,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         slint::CloseRequestResponse::HideWindow
     });
     let weak_window = waveform_window.as_weak();
+    let weak_breakpoint_window = breakpoint_window.as_weak();
     ui.window().on_close_requested(move || {
         if let Some(window) = weak_window.upgrade() {
+            let _ = window.hide();
+        }
+        if let Some(window) = weak_breakpoint_window.upgrade() {
             let _ = window.hide();
         }
         slint::CloseRequestResponse::HideWindow
@@ -1236,6 +1309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.invoke_refresh_tools();
     let result = ui.run();
     waveform_timer.stop();
+    breakpoint_timer.stop();
     acquisition.shutdown();
     acquisition_worker
         .join()

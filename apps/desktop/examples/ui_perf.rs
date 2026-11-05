@@ -1,7 +1,7 @@
 //! Headless benchmark for HiDPI redraws and large firmware-tree selection.
 //! Run with `cargo run -p nya-scraping --example ui_perf --locked`.
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, PlatformError, WindowAdapter, WindowEvent};
+use slint::platform::{Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, Model, Rgb8Pixel};
 use std::{rc::Rc, time::Instant};
 
@@ -117,6 +117,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(ui.get_source_tabs().row_count(), 2);
     assert_eq!(ui.get_source_text(), "updated");
+    presenter.apply(
+        &ui,
+        nya_application::Event::DebugUpdated {
+            snapshot: nya_domain::DebugSnapshot {
+                state: nya_domain::SessionState::Halted,
+                breakpoints: vec![nya_domain::Breakpoint {
+                    id: "7".into(),
+                    location: "two/main.c:1".into(),
+                    enabled: false,
+                    file: "two/main.c".into(),
+                    line: 1,
+                }],
+                ..Default::default()
+            },
+            completes_command: true,
+        }
+        .into(),
+    );
+    assert_eq!(ui.get_source_breakpoints().row_count(), 1);
+    assert!(!ui.get_source_breakpoints().row_data(0).unwrap().enabled);
+    assert!(
+        matches!(presenter.source_breakpoint_action(1), Some(nya_domain::DebugAction::RemoveBreakpoint(id)) if id == "7")
+    );
+    presenter.select_source_tab(&ui, 0);
+    assert_eq!(ui.get_source_breakpoints().row_count(), 0);
+    assert!(
+        matches!(presenter.source_breakpoint_action(1), Some(nya_domain::DebugAction::AddSourceBreakpoint { file, line: 1 }) if file == "one/main.c")
+    );
+    presenter.select_source_tab(&ui, 1);
     presenter.close_source_tab(&ui, 0);
     assert_eq!(ui.get_source_selected_tab(), 0);
     assert_eq!(ui.get_source_text(), "updated");
@@ -158,6 +187,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sections: vec![],
         symbols: vec![],
     };
+    let mut lines_image = image.clone();
+    lines_image.debug.files = vec![SourceFile {
+        path: "one/main.c".into(),
+    }];
+    lines_image.debug.executable_lines = vec![SourceLocation {
+        file: 0,
+        line: Some(2),
+        column: None,
+    }];
+    presenter.apply(
+        &ui,
+        nya_application::Event::FirmwareOpened(Box::new(lines_image)).into(),
+    );
+    presenter.apply(
+        &ui,
+        nya_application::Event::SourceOpened(make_document("one/main.c", "first\nsecond\nthird"))
+            .into(),
+    );
+    ui.set_firmware_path("benchmark.elf".into());
+    assert_eq!(ui.get_source_executable_lines().row_count(), 3);
+    assert!(!ui.get_source_executable_lines().row_data(0).unwrap());
+    assert!(ui.get_source_executable_lines().row_data(1).unwrap());
+    ui.set_project_dialog_open(false);
+    redraw(&window, &mut pixels, 2960);
+    let clicked = Rc::new(std::cell::Cell::new(0));
+    let observed = clicked.clone();
+    ui.on_toggle_source_breakpoint(move |line| observed.set(line));
+    let mut found = None;
+    'search: for y in (220_i32..500).step_by(4) {
+        for x in (330..410).step_by(2) {
+            let position = slint::LogicalPosition::new(x as f32, y as f32);
+            window.dispatch_event(WindowEvent::PointerMoved { position });
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+            if clicked.get() == 2 {
+                found = Some((x, y));
+                break 'search;
+            }
+        }
+    }
+    let (gutter_x, row_y) =
+        found.expect("clicking the line gutter must invoke the breakpoint callback");
+    let marker = (row_y.saturating_sub(4)..row_y + 24)
+        .flat_map(|y| (gutter_x..gutter_x + 20).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            let pixel = pixels[(y as usize * 2) * 2960 + x as usize * 2];
+            (pixel.r, pixel.g, pixel.b) == (0xb8, 0xa9, 0xff)
+        })
+        .expect("visible executable-line marker");
+    let position = slint::LogicalPosition::new(marker.0 as f32, marker.1 as f32);
+    for halted in [true, false] {
+        ui.set_debug_halted(halted);
+        clicked.set(0);
+        window.dispatch_event(WindowEvent::PointerMoved { position });
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+        assert_eq!(
+            clicked.get(),
+            2,
+            "clicking the marker must report its source line"
+        );
+    }
+    presenter.apply(
+        &ui,
+        nya_application::Event::SourceOpened(make_document("two/main.c", "other")).into(),
+    );
+    assert_eq!(ui.get_source_executable_lines().row_count(), 0);
+    presenter.select_source_tab(&ui, 0);
+    assert!(ui.get_source_executable_lines().row_data(1).unwrap());
+    presenter.clear_source_tabs(&ui);
     presenter.apply(
         &ui,
         nya_application::Event::FirmwareOpened(Box::new(image.clone())).into(),
@@ -723,6 +834,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: "1".into(),
                     location: "compute".into(),
                     enabled: true,
+                    file: "main.c".into(),
+                    line: 8,
                 }],
                 values: vec![EvaluatedWatch {
                     id: request.id.clone(),

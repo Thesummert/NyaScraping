@@ -5,8 +5,8 @@ use crate::{
     firmware_browser::FirmwareBrowser,
     watch_list::WatchList,
     waveform_view::{self, COLORS, PLOT_WIDTH},
-    AppWindow, BreakpointRow, FirmwareTreeRow, FrameRow, PackRow, SourceTab, TargetRow, ToolRow,
-    WatchRow, WaveformRow,
+    AppWindow, BreakpointRow, FirmwareTreeRow, FrameRow, PackRow, SourceBreakpoint, SourceTab,
+    TargetRow, ToolRow, WatchRow, WaveformRow,
 };
 use nya_application::Event;
 use nya_domain::{
@@ -21,6 +21,8 @@ pub struct Presenter {
     browser: Option<FirmwareBrowser>,
     source_documents: Vec<Document>,
     source_selected: Option<usize>,
+    breakpoints: Vec<nya_domain::Breakpoint>,
+    executable_lines: HashMap<std::path::PathBuf, Vec<u32>>,
     watches: WatchList,
     pub acquisition: Arc<Acquisition>,
     last_sequence: Option<u64>,
@@ -53,6 +55,29 @@ pub struct FirmwareView {
     details: String,
     status: String,
     browser: FirmwareBrowser,
+    executable_lines: HashMap<std::path::PathBuf, Vec<u32>>,
+}
+
+fn executable_lines(
+    info: &nya_domain::firmware::FirmwareDebugInfo,
+) -> HashMap<std::path::PathBuf, Vec<u32>> {
+    let mut result: HashMap<std::path::PathBuf, Vec<u32>> = HashMap::new();
+    for location in &info.executable_lines {
+        if let (Some(file), Some(line)) = (
+            info.files.get(location.file),
+            location.line.and_then(|n| u32::try_from(n).ok()),
+        ) {
+            result
+                .entry(Presenter::source_key(std::path::Path::new(&file.path)))
+                .or_default()
+                .push(line);
+        }
+    }
+    for lines in result.values_mut() {
+        lines.sort_unstable();
+        lines.dedup();
+    }
+    result
 }
 
 impl From<Event> for PreparedEvent {
@@ -83,6 +108,7 @@ impl From<Event> for PreparedEvent {
                     if image.debug.warnings.is_empty() { "" } else { "（存在调试信息提示，见详情）" },
                 ),
                 browser: FirmwareBrowser::new(&image.debug, image.little_endian, image.kind == "Executable"),
+                executable_lines: executable_lines(&image.debug),
             })),
         }
     }
@@ -186,6 +212,9 @@ impl Presenter {
             ui.set_source_path(path.as_ref().into());
             ui.set_source_title(path.as_ref().into());
             ui.set_source_text(document.text.as_str().into());
+            ui.set_source_line_count(
+                document.text.split('\n').count().min(i32::MAX as usize) as i32
+            );
             ui.set_source_meta(
                 format!(
                     "{}  ·  {:?}{}",
@@ -204,6 +233,87 @@ impl Presenter {
             ui.set_source_title("尚未打开文件".into());
             ui.set_source_meta("".into());
             ui.set_source_text("打开一个源码文件以开始浏览。".into());
+            ui.set_source_line_count(0);
+        }
+        self.sync_source_breakpoints(ui);
+        self.sync_executable_lines(ui);
+    }
+
+    fn sync_executable_lines(&self, ui: &AppWindow) {
+        let lines = self
+            .source_selected
+            .and_then(|i| self.source_documents.get(i))
+            .and_then(|doc| {
+                self.executable_lines
+                    .get(&Self::source_key(&doc.path))
+                    .map(|lines| (doc, lines))
+            });
+        let (model, message) = if let Some((doc, lines)) = lines {
+            let count = doc.text.split('\n').count();
+            let mut model = vec![false; count];
+            for &line in lines {
+                if let Some(index) = (line as usize).checked_sub(1) {
+                    if let Some(value) = model.get_mut(index) {
+                        *value = true;
+                    }
+                }
+            }
+            (
+                model,
+                "紫色小圆点：可执行行；橙色：待设置断点；红色：已设置断点",
+            )
+        } else {
+            (
+                Vec::new(),
+                "没有此文件的可执行行信息；请解析带 DWARF 行号信息的编译产物",
+            )
+        };
+        ui.set_source_executable_lines(ModelRc::from(Rc::new(VecModel::from(model))));
+        ui.set_source_line_hint(message.into());
+    }
+
+    fn sync_source_breakpoints(&self, ui: &AppWindow) {
+        let markers = self
+            .source_selected
+            .and_then(|i| self.source_documents.get(i))
+            .map(|document| {
+                let path = Self::source_key(&document.path);
+                self.breakpoints
+                    .iter()
+                    .filter(|bp| {
+                        bp.line > 0
+                            && !bp.file.is_empty()
+                            && Self::source_key(std::path::Path::new(&bp.file)) == path
+                    })
+                    .map(|bp| SourceBreakpoint {
+                        line: bp.line.min(i32::MAX as u32) as i32,
+                        id: bp.id.as_str().into(),
+                        enabled: bp.enabled,
+                        pending: bp.id.starts_with("pending:"),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        ui.set_source_breakpoints(ModelRc::from(Rc::new(VecModel::from(markers))));
+    }
+
+    pub fn source_breakpoint_action(&self, line: i32) -> Option<nya_domain::DebugAction> {
+        let line = u32::try_from(line).ok().filter(|line| *line > 0)?;
+        let document = self
+            .source_selected
+            .and_then(|i| self.source_documents.get(i))?;
+        let path = Self::source_key(&document.path);
+        if let Some(bp) = self.breakpoints.iter().find(|bp| {
+            bp.line == line
+                && !bp.file.is_empty()
+                && Self::source_key(std::path::Path::new(&bp.file)) == path
+        }) {
+            Some(nya_domain::DebugAction::RemoveBreakpoint(bp.id.clone()))
+        } else {
+            Some(nya_domain::DebugAction::AddSourceBreakpoint {
+                file: document.path.to_string_lossy().into_owned(),
+                line,
+            })
         }
     }
 
@@ -212,6 +322,8 @@ impl Presenter {
         self.acquisition.stop();
         self.acquisition.set_targets(Vec::new());
         self.browser = None;
+        self.executable_lines.clear();
+        self.sync_executable_lines(ui);
         self.watches.reset_firmware();
         self.sync_waveforms(ui);
         self.invalidate_watches(ui);
@@ -393,21 +505,35 @@ impl Presenter {
                     })
                     .collect();
                 ui.set_stack_frames(ModelRc::from(Rc::new(VecModel::from(frames))));
-                let breakpoints: Vec<_> = snapshot
+                self.breakpoints = snapshot.breakpoints;
+                let breakpoints: Vec<_> = self
                     .breakpoints
-                    .into_iter()
+                    .iter()
                     .map(|bp| BreakpointRow {
                         id: bp.id.as_str().into(),
+                        enabled: bp.enabled,
+                        pending: bp.id.starts_with("pending:"),
                         label: format!(
                             "#{} {}{}",
                             bp.id,
                             bp.location,
-                            if bp.enabled { "" } else { "（禁用）" }
+                            if bp.id.starts_with("pending:") {
+                                if bp.enabled {
+                                    "（待设置）"
+                                } else {
+                                    "（待设置，已禁用）"
+                                }
+                            } else if bp.enabled {
+                                ""
+                            } else {
+                                "（禁用）"
+                            }
                         )
                         .into(),
                     })
                     .collect();
                 ui.set_breakpoints(ModelRc::from(Rc::new(VecModel::from(breakpoints))));
+                self.sync_source_breakpoints(ui);
                 ui.set_execution_location(
                     snapshot
                         .frames
@@ -457,6 +583,8 @@ impl Presenter {
                 browser.set_show_functions(ui.get_functions_visible());
                 browser.set_query(&ui.get_firmware_search());
                 self.browser = Some(browser);
+                self.executable_lines = view.executable_lines;
+                self.sync_executable_lines(ui);
                 self.watches.reset_firmware();
                 self.sync_waveforms(ui);
                 self.invalidate_watches(ui);

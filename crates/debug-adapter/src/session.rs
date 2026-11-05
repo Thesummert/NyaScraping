@@ -81,6 +81,13 @@ impl Session {
                     )
                 },
                 enabled: bp.field("enabled") == "y",
+                file: if bp.field("fullname").is_empty() {
+                    bp.field("file")
+                } else {
+                    bp.field("fullname")
+                }
+                .into(),
+                line: bp.field("line").parse().unwrap_or(0),
             })
             .collect();
         Ok(())
@@ -416,6 +423,34 @@ impl DebugSession for DebugAdapter {
                 self.session.breakpoint_list()?;
                 self.session.message = "断点已移除".into();
             }
+            DebugAction::AddSourceBreakpoint { file, line } => {
+                if file.is_empty() || line == 0 {
+                    return Err(Error("无效的源码断点位置".into()));
+                }
+                self.session.halted()?.command(&format!(
+                    "-break-insert --source {} --line {}",
+                    mi::quote(&file),
+                    line
+                ))?;
+                self.session.breakpoint_list()?;
+                self.session.message = "断点已添加".into();
+            }
+            DebugAction::SetBreakpointEnabled { id, enabled } => {
+                if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+                    return Err(Error("无效断点编号".into()));
+                }
+                self.session.halted()?.command(&format!(
+                    "-break-{} {id}",
+                    if enabled { "enable" } else { "disable" }
+                ))?;
+                self.session.breakpoint_list()?;
+                self.session.message = if enabled {
+                    "断点已启用"
+                } else {
+                    "断点已禁用"
+                }
+                .into();
+            }
             DebugAction::SelectFrame(level) => {
                 self.session
                     .halted()?
@@ -488,6 +523,7 @@ impl DebugSession for DebugAdapter {
             let _ = self.stop_server();
             self.session.state = SessionState::Faulted;
             self.session.frames.clear();
+            self.session.breakpoints.clear();
             self.session.message = error.to_string();
         }
         result
@@ -839,6 +875,48 @@ mod tests {
         let snapshot = adapter.debug_snapshot(std::slice::from_ref(&watch));
         assert_eq!(snapshot.state, SessionState::Halted);
         assert_eq!(snapshot.values[0].value.display_value, "23");
+    }
+
+    #[test]
+    fn source_breakpoint_and_enable_disable_round_trip() {
+        let (_root, mut adapter, profile) = fixture();
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+            })
+            .unwrap();
+        adapter
+            .execute_debug(DebugAction::AddSourceBreakpoint {
+                file: "/fixture/main.c".into(),
+                line: 8,
+            })
+            .unwrap();
+        let bp = adapter.debug_snapshot(&[]).breakpoints.remove(0);
+        assert_eq!(
+            (bp.file.as_str(), bp.line, bp.enabled),
+            ("/fixture/main.c", 8, true)
+        );
+        adapter
+            .execute_debug(DebugAction::SetBreakpointEnabled {
+                id: bp.id.clone(),
+                enabled: false,
+            })
+            .unwrap();
+        assert!(!adapter.debug_snapshot(&[]).breakpoints[0].enabled);
+        adapter
+            .execute_debug(DebugAction::SetBreakpointEnabled {
+                id: bp.id,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(adapter.debug_snapshot(&[]).breakpoints[0].enabled);
+        assert!(adapter
+            .execute_debug(DebugAction::SetBreakpointEnabled {
+                id: "1\n-exec-continue".into(),
+                enabled: false
+            })
+            .is_err());
     }
 
     #[test]

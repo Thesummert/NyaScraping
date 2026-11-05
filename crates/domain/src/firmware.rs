@@ -62,6 +62,8 @@ pub trait FirmwareBackend: Send {
 #[derive(Clone, Debug, Default)]
 pub struct FirmwareDebugInfo {
     pub files: Vec<SourceFile>,
+    /// Source lines with instruction addresses in the embedded DWARF line tables.
+    pub executable_lines: Vec<SourceLocation>,
     pub functions: Vec<DebugFunction>,
     pub variables: Vec<DebugVariable>,
     /// Unsupported or unavailable debug information, shown in the inspector.

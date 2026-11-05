@@ -28,6 +28,17 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
         line.default_directory(),
         None,
     );
+    line.begin_sequence(Some(write::Address::Constant(0x08001200)));
+    line.row().file = file;
+    line.row().line = 10;
+    line.generate_row();
+    line.row().address_offset = 4;
+    line.generate_row(); // Multiple addresses for one source line.
+    line.row().line = 12;
+    line.row().address_offset = 8;
+    line.generate_row();
+    line.row().line = 99; // The end-sequence row is not an executable line.
+    line.end_sequence(12);
     let mut declarations = write::Unit::new(encoding, line);
     let root = declarations.root();
     declarations
@@ -323,6 +334,18 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
         let info = image.debug;
         assert!(info.warnings.is_empty(), "{:?}", info.warnings);
         assert_eq!(info.files[0].path, "C:/project/src/main.cpp");
+        let lines: Vec<_> = info
+            .executable_lines
+            .iter()
+            .map(|loc| (info.files[loc.file].path.as_str(), loc.line.unwrap()))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                ("C:/project/src/main.cpp", 10),
+                ("C:/project/src/main.cpp", 12)
+            ]
+        );
         let concrete = info
             .functions
             .iter()
@@ -432,6 +455,10 @@ fn clang_arm_dwarf4_files_functions_types_and_lexical_variables() {
         .unwrap();
     let info = image.debug;
     assert!(info.warnings.is_empty(), "{:?}", info.warnings);
+    assert!(info
+        .executable_lines
+        .iter()
+        .any(|loc| info.files[loc.file].path == "/firmware/source/main.c" && loc.line == Some(9)));
     assert!(
         info.files
             .iter()

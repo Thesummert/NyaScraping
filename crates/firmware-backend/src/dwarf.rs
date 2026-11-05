@@ -110,6 +110,11 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
     }
     let mut info = FirmwareDebugInfo::default();
     ctx.read_files(&mut info)?;
+    if let Err(error) = ctx.read_executable_lines(&mut info) {
+        info.executable_lines.clear();
+        info.warnings
+            .push(format!("DWARF 可执行行信息不可用：{error}"));
+    }
     if ctx.units.is_empty() {
         info.warnings.push("DWARF 信息节中没有编译单元。".into());
     }
@@ -360,6 +365,84 @@ impl Context {
             }
             self.files.push(files);
         }
+        Ok(())
+    }
+
+    fn read_executable_lines(&self, info: &mut FirmwareDebugInfo) -> Result<()> {
+        let mut locations = Vec::new();
+        let mut rows_seen = 0usize;
+        let mut paths: HashMap<_, _> = info
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, file)| (file.path.clone(), i))
+            .collect();
+        for (index, unit) in self.units.iter().enumerate() {
+            let Some(program) = &unit.line_program else {
+                continue;
+            };
+            let mut files = self.files[index].clone();
+            let comp_dir = unit
+                .comp_dir
+                .as_ref()
+                .map(|r| r.to_string_lossy().map(|s| s.into_owned()))
+                .transpose()
+                .map_err(error)?
+                .unwrap_or_default();
+            let mut rows = program.clone().rows();
+            while let Some((header, row)) = rows.next_row().map_err(error)? {
+                rows_seen += 1;
+                if rows_seen > MAX_RECORDS * 10 {
+                    return Err(error("too many DWARF line rows"));
+                }
+                if row.end_sequence() {
+                    continue;
+                }
+                let Some(line) = row.line() else { continue };
+                let index = row.file_index();
+                let file = if let Some(&file) = files.get(&index) {
+                    file
+                } else if let Some(file) = row.file(header) {
+                    if info.files.len() >= MAX_RECORDS {
+                        return Err(error("too many DWARF source files"));
+                    }
+                    let name = self
+                        .dwarf
+                        .attr_string(unit, file.path_name())
+                        .map_err(error)?
+                        .to_string_lossy()
+                        .map_err(error)?
+                        .into_owned();
+                    let directory = file
+                        .directory(header)
+                        .map(|v| {
+                            self.dwarf
+                                .attr_string(unit, v)
+                                .and_then(|r| r.to_string_lossy().map(|s| s.into_owned()))
+                        })
+                        .transpose()
+                        .map_err(error)?
+                        .unwrap_or_default();
+                    let file = intern_file(
+                        info,
+                        &mut paths,
+                        join_path(&join_path(&comp_dir, &directory), &name),
+                    );
+                    files.insert(index, file);
+                    file
+                } else {
+                    continue;
+                };
+                locations.push(SourceLocation {
+                    file,
+                    line: Some(line.get()),
+                    column: None,
+                });
+            }
+        }
+        locations.sort_unstable_by_key(|location| (location.file, location.line));
+        locations.dedup();
+        info.executable_lines = locations;
         Ok(())
     }
 

@@ -6,6 +6,8 @@ import sys
 state = "stopped"
 frame = 0
 breakpoints = False
+breakpoint_enabled = True
+breakpoint_source = False
 values = {}
 current_expression = ""
 break_on_interrupt = False
@@ -73,12 +75,20 @@ for line in sys.stdin:
         send(token + '^done')
     elif command.startswith('-break-insert'):
         breakpoints = True
+        breakpoint_enabled = True
+        breakpoint_source = command.startswith('-break-insert --source "/fixture/main.c" --line 8')
         send(token + '^done,bkpt={number="1",enabled="y",original-location="compute"}')
+    elif command.startswith('-break-enable'):
+        breakpoint_enabled = True
+        send(token + '^done')
+    elif command.startswith('-break-disable'):
+        breakpoint_enabled = False
+        send(token + '^done')
     elif command.startswith('-break-delete'):
         breakpoints = False
         send(token + '^done')
     elif command == '-break-list':
-        body = 'bkpt={number="1",enabled="y",original-location="compute"}' if breakpoints else ''
+        body = ('bkpt={number="1",enabled="' + ('y' if breakpoint_enabled else 'n') + '",original-location="compute"' + (',fullname="/fixture/main.c",line="8"' if breakpoint_source else '') + '}') if breakpoints else ''
         send(token + '^done,BreakpointTable={body=[' + body + ']}')
     elif command.startswith('-var-show-attributes'):
         editable = current_expression not in ('2 + 3', 'readonly')

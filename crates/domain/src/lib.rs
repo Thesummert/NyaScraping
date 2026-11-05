@@ -156,7 +156,15 @@ pub enum DebugAction {
     Reset,
     Download,
     AddBreakpoint(String),
+    AddSourceBreakpoint {
+        file: String,
+        line: u32,
+    },
     RemoveBreakpoint(String),
+    SetBreakpointEnabled {
+        id: String,
+        enabled: bool,
+    },
     SelectFrame(u32),
     Refresh,
     WriteWatch {
@@ -192,6 +200,8 @@ pub struct Breakpoint {
     pub id: String,
     pub location: String,
     pub enabled: bool,
+    pub file: String,
+    pub line: u32,
 }
 
 #[derive(Clone, Debug, Default)]

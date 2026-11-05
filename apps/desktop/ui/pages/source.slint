@@ -5,6 +5,7 @@ export struct SourceTab {
     name: string,
     path: string,
 }
+export struct SourceBreakpoint { line: int, id: string, enabled: bool, pending: bool }
 
 export component SourcePage inherits VerticalLayout {
     in property <bool> busy;
@@ -14,6 +15,13 @@ export component SourcePage inherits VerticalLayout {
     in property <string> source-text;
     in property <[SourceTab]> tabs;
     in property <int> selected-tab;
+    in property <int> line-count;
+    in property <bool> halted;
+    in property <[SourceBreakpoint]> breakpoints;
+    in property <[bool]> executable-lines;
+    in property <string> line-hint;
+    in property <bool> firmware-matches;
+    callback toggle-breakpoint(int);
     callback select-tab(int);
     callback close-tab(int);
     callback open();
@@ -47,5 +55,42 @@ export component SourcePage inherits VerticalLayout {
     }
     Text { text: root.source-title; color: Theme.text; overflow: elide; }
     Text { text: root.metadata; color: Theme.muted; }
-    TextEdit { text: root.source-text; read-only: true; wrap: no-wrap; font-family: "monospace"; vertical-stretch: 1; }
+    if root.selected-tab >= 0: Text {
+        text: root.firmware-matches ? root.line-hint : "请先解析当前编译产物，查看可设置断点的行";
+        color: Theme.muted; font-size: 11px; wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: 0px;
+        vertical-stretch: 1;
+        gutter := Rectangle {
+            width: 62px;
+            background: Theme.sidebar;
+            clip: true;
+            // Match the TextEdit's font metrics and its Fluent 12px scroll padding.
+            property <length> line-height: metric.preferred-height;
+            property <int> first-line: floor(max(0, -editor.content-y / self.line-height));
+            metric := Text { text: "M"; font-family: "monospace"; font-size: 14px; visible: false; }
+            for n[index] in (ceil(gutter.height / gutter.line-height) + 2): Rectangle {
+                property <int> line: gutter.first-line + index + 1;
+                y: 12px + editor.content-y + (self.line - 1) * gutter.line-height;
+                width: parent.width; height: gutter.line-height;
+                visible: root.selected-tab >= 0 && self.line <= root.line-count;
+                background: hit.has-hover && hit.enabled ? Theme.selection : transparent;
+                if root.firmware-matches && gutter.first-line + index < root.executable-lines.length && root.executable-lines[gutter.first-line + index]: Rectangle {
+                    x: 7px; y: (parent.height - 6px) / 2;
+                    width: 6px; height: 6px; border-radius: 3px; background: Theme.accent;
+                }
+                Text { text: parent.line; color: Theme.muted; font-family: "monospace"; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; x: 18px; width: parent.width - 22px; height: parent.height; }
+                hit := TouchArea { enabled: !root.busy; clicked => { root.toggle-breakpoint(parent.line); } }
+            }
+            for bp in root.breakpoints: Rectangle {
+                x: 5px; y: 12px + editor.content-y + (bp.line - 1) * gutter.line-height + (gutter.line-height - 10px) / 2;
+                width: 10px; height: 10px; border-radius: 5px;
+                background: bp.enabled ? (bp.pending ? #e9ab56 : #ef5a66) : transparent;
+                border-width: 1px; border-color: bp.enabled ? (bp.pending ? #e9ab56 : #ef5a66) : Theme.muted;
+                TouchArea { enabled: !root.busy; clicked => { root.toggle-breakpoint(bp.line); } }
+            }
+        }
+        editor := TextEdit { text: root.source-text; read-only: true; wrap: no-wrap; font-family: "monospace"; font-size: 14px; horizontal-stretch: 1; }
+    }
 }

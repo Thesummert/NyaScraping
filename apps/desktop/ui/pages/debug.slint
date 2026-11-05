@@ -2,7 +2,7 @@ import { Button, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.sl
 import { Theme } from "../theme.slint";
 
 export struct FrameRow { level: int, label: string, selected: bool }
-export struct BreakpointRow { id: string, label: string }
+export struct BreakpointRow { id: string, label: string, enabled: bool, pending: bool }
 export component DebugPage inherits ScrollView {
     in property <bool> busy;
     in property <bool> connected;
@@ -53,7 +53,7 @@ export component DebugPage inherits ScrollView {
                     for bp in root.breakpoints: HorizontalLayout {
                         height: 28px;
                         Text { text: bp.label; color: Theme.text; font-size: 11px; overflow: elide; horizontal-stretch: 1; }
-                        Button { text: "×"; enabled: root.halted && !root.busy; clicked => { root.remove-breakpoint(bp.id); } }
+                        Button { text: "×"; enabled: (root.halted || bp.pending) && !root.busy; clicked => { root.remove-breakpoint(bp.id); } }
                     }
                 }
             }

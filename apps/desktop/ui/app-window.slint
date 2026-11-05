@@ -1,6 +1,6 @@
-import { Button, ComboBox, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
+import { Button, ComboBox, ListView, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { SourcePage, SourceTab } from "pages/source.slint";
+import { SourcePage, SourceTab, SourceBreakpoint } from "pages/source.slint";
 import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
 import { WaveformsPage, WaveformRow } from "pages/waveforms.slint";
@@ -8,7 +8,7 @@ import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
 import { DebugPage, FrameRow, BreakpointRow } from "pages/debug.slint";
 import { DebugSettings } from "pages/debug-settings.slint";
 import { TargetRow, PackRow } from "pages/target-selector.slint";
-export { SourceTab, FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
+export { SourceTab, SourceBreakpoint, FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
 
 component PanelDivider inherits Rectangle {
     callback drag-start();
@@ -103,6 +103,8 @@ export component AppWindow inherits Window {
     callback debug-action(int);
     callback add-breakpoint(string);
     callback remove-breakpoint(string);
+    callback toggle-source-breakpoint(int);
+    callback show-breakpoints();
     callback select-frame(int);
     in-out property <int> current-tab: 0;
     in-out property <string> status: "就绪";
@@ -118,6 +120,10 @@ export component AppWindow inherits Window {
     in-out property <string> source-title: "尚未打开文件";
     in-out property <string> source-meta: "";
     in-out property <string> source-text: "打开一个源码文件以开始浏览。";
+    in-out property <int> source-line-count;
+    in-out property <[SourceBreakpoint]> source-breakpoints;
+    in-out property <[bool]> source-executable-lines;
+    in-out property <string> source-line-hint;
     in-out property <string> firmware-path;
     in-out property <string> firmware-title: "尚未打开编译产物";
     in-out property <string> firmware-meta;
@@ -195,6 +201,21 @@ export component AppWindow inherits Window {
             MenuItem { title: "打开固件…"; enabled: !root.interaction-busy && !root.debug-connected; activated => { root.browse-firmware(); } }
             MenuSeparator { }
             MenuItem { title: "保存项目"; enabled: !root.interaction-busy; activated => { root.save-project(); } }
+        }
+        Menu {
+            title: "调试";
+            MenuItem { title: "连接目标"; enabled: !root.debug-connected && !root.interaction-busy; activated => { root.debug-action(0); } }
+            MenuItem { title: "断开连接"; enabled: root.debug-connected && !root.interaction-busy; activated => { root.debug-action(1); } }
+            MenuSeparator { }
+            MenuItem { title: "开始 / 继续"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(2); } }
+            MenuItem { title: "暂停"; enabled: root.debug-running && !root.interaction-busy; activated => { root.debug-action(3); } }
+            MenuItem { title: "步过"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(4); } }
+            MenuItem { title: "步入"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(5); } }
+            MenuItem { title: "步出"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(6); } }
+            MenuItem { title: "复位目标"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(7); } }
+            MenuItem { title: "下载固件"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(8); } }
+            MenuSeparator { }
+            MenuItem { title: "断点记录…"; enabled: !root.interaction-busy; activated => { root.show-breakpoints(); } }
         }
         Menu {
             title: "波形";
@@ -326,6 +347,13 @@ export component AppWindow inherits Window {
                                 busy: root.interaction-busy;
                                 tabs: root.source-tabs;
                                 selected-tab: root.source-selected-tab;
+                                line-count: root.source-line-count;
+                                halted: root.debug-halted;
+                                breakpoints: root.source-breakpoints;
+                                executable-lines: root.source-executable-lines;
+                                line-hint: root.source-line-hint;
+                                firmware-matches: root.firmware-title != "尚未打开编译产物" && root.firmware-path == root.firmware-title;
+                                toggle-breakpoint(line) => { root.toggle-source-breakpoint(line); }
                                 select-tab(index) => { root.select-source-tab(index); }
                                 close-tab(index) => { root.close-source-tab(index); }
                                 path <=> root.source-path;
@@ -578,6 +606,32 @@ export component AppWindow inherits Window {
     }
 }
 
+
+export component BreakpointWindow inherits Window {
+    title: "断点记录";
+    preferred-width: 700px;
+    preferred-height: 420px;
+    background: Theme.background;
+    in property <[BreakpointRow]> breakpoints;
+    in property <bool> can-edit;
+    in property <bool> can-edit-pending;
+    callback set-enabled(string, bool);
+    callback remove(string);
+    VerticalLayout {
+        padding: 16px; spacing: 10px;
+        Text { text: "断点记录"; color: Theme.text; font-size: 18px; font-weight: 700; }
+        Text { text: root.breakpoints.length == 0 ? "当前没有断点" : "待设置断点可提前管理；已设置断点请在目标暂停后操作"; color: Theme.muted; }
+        ListView {
+            vertical-stretch: 1;
+            for bp in root.breakpoints: HorizontalLayout {
+                height: 42px; spacing: 8px;
+                Text { text: bp.label; color: Theme.text; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                Button { text: bp.enabled ? "禁用" : "启用"; enabled: root.can-edit || (bp.pending && root.can-edit-pending); clicked => { root.set-enabled(bp.id, !bp.enabled); } }
+                Button { text: "删除"; enabled: root.can-edit || (bp.pending && root.can-edit-pending); clicked => { root.remove(bp.id); } }
+            }
+        }
+    }
+}
 
 export component WaveformWindow inherits Window {
     title: "实时波形";

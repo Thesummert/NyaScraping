@@ -276,6 +276,22 @@ fn sync_waveform_window(ui: &AppWindow, window: &WaveformWindow) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let hardware_rendering = project::hardware_rendering_enabled();
+    let backend_override = std::env::var_os("SLINT_BACKEND");
+    // An explicit environment override also provides a recovery path if GPU startup fails.
+    if backend_override.is_none() {
+        slint::BackendSelector::new()
+            .backend_name("winit".into())
+            .renderer_name(
+                if hardware_rendering {
+                    "skia-wgpu"
+                } else {
+                    "software"
+                }
+                .into(),
+            )
+            .select()?;
+    }
     let fps_enabled = project::fps_enabled();
     if fps_enabled && std::env::var_os("SLINT_DEBUG_PERFORMANCE").is_none() {
         std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,overlay");
@@ -553,6 +569,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     ui.set_show_fps(fps_enabled);
+    ui.set_hardware_rendering(hardware_rendering);
+    let weak_renderer_ui = ui.as_weak();
+    ui.on_hardware_rendering_changed(move |enabled| {
+        if let Some(ui) = weak_renderer_ui.upgrade() {
+            match project::set_hardware_rendering_enabled(enabled) {
+                Ok(()) => {
+                    let mode = if enabled {
+                        "硬件渲染"
+                    } else {
+                        "软件渲染"
+                    };
+                    ui.invoke_record_system_error(
+                        format!("渲染设置已更改为{mode}，重启后生效").into(),
+                    );
+                    ui.set_settings_message("渲染方式将在重新启动应用后生效".into());
+                }
+                Err(error) => {
+                    ui.set_hardware_rendering(!enabled);
+                    ui.set_settings_message(format!("无法保存渲染设置：{error}").into());
+                }
+            }
+        }
+    });
     let weak_fps_ui = ui.as_weak();
     ui.on_show_fps_changed(move |enabled| {
         if let Some(ui) = weak_fps_ui.upgrade() {
@@ -660,6 +699,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let system_log = std::rc::Rc::new(std::cell::RefCell::new(system_log::SystemLog::default()));
     system_log.borrow_mut().record("应用", &ui.get_status());
+    let renderer_message =
+        match backend_override {
+            Some(value) => {
+                format!(
+            "渲染方式由 SLINT_BACKEND={} 指定；已保存的设置为{}。实际渲染器取决于后端选择。",
+            value.to_string_lossy(),
+            if hardware_rendering { "硬件渲染" } else { "软件渲染" }
+        )
+            }
+            None if hardware_rendering => {
+                "启动时选择硬件渲染（Skia / WGPU）；等待图形接口初始化。".into()
+            }
+            None => "启动时选择软件渲染。".into(),
+        };
+    system_log.borrow_mut().record("渲染", &renderer_message);
+    let render_log = system_log.clone();
+    let weak_render_log_window = log_window.as_weak();
+    if ui
+        .window()
+        .set_rendering_notifier(move |state, api| {
+            if matches!(state, slint::RenderingState::RenderingSetup) {
+                let message = format!(
+                    "图形接口已初始化：{api:?}；是否使用物理 GPU 取决于系统选择的图形设备。"
+                );
+                let log = render_log.clone();
+                let weak_window = weak_render_log_window.clone();
+                // Defer UI updates until the render callback has returned.
+                slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                    let mut log = log.borrow_mut();
+                    log.record("渲染", &message);
+                    if let Some(window) = weak_window.upgrade() {
+                        window.set_events(log.text().into());
+                    }
+                });
+            }
+        })
+        .is_err()
+    {
+        system_log
+            .borrow_mut()
+            .record("渲染", "当前渲染器不提供图形接口状态通知。");
+    }
     log_window.set_events(system_log.borrow().text().into());
     let log = system_log.clone();
     let weak_log = log_window.as_weak();

@@ -66,6 +66,8 @@ export component AppWindow inherits Window {
     in-out property <int> refresh-rate-index: 0;
     in-out property <bool> show-fps: false;
     callback show-fps-changed(bool);
+    in-out property <bool> hardware-rendering: true;
+    callback hardware-rendering-changed(bool);
     callback refresh-rate-changed();
     private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
     in-out property <bool> workspace-expanded: false;
@@ -630,6 +632,12 @@ export component AppWindow inherits Window {
                                 selected => { root.refresh-rate-changed(); }
                             }
                             Text { text: "控制变量和波形界面的更新频率，不改变后端采样频率。"; color: Theme.muted; wrap: word-wrap; }
+                            CheckBox {
+                                text: "启用硬件渲染（重启后生效）";
+                                checked <=> root.hardware-rendering;
+                                toggled => { root.hardware-rendering-changed(self.checked); }
+                            }
+                            Text { text: "启用后使用 GPU 加速界面绘制；关闭后使用软件渲染。若 GPU 无法启动，可设置 SLINT_BACKEND=winit-software 启动并修改此设置。"; color: Theme.muted; wrap: word-wrap; }
                             CheckBox {
                                 text: "显示每秒绘制帧数（重启后生效）";
                                 checked <=> root.show-fps;

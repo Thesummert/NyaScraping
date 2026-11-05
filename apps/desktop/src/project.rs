@@ -162,6 +162,45 @@ pub fn set_fps_enabled(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+pub fn hardware_rendering_enabled() -> bool {
+    config_dir().map_or(true, |dir| read_renderer_setting(&dir))
+}
+
+fn read_renderer_setting(dir: &Path) -> bool {
+    fs::read_to_string(dir.join("renderer.txt"))
+        .map(|value| value.trim() != "software")
+        .unwrap_or(true)
+}
+
+pub fn set_hardware_rendering_enabled(enabled: bool) -> Result<(), String> {
+    let dir = config_dir().ok_or("无法确定设置目录")?;
+    write_renderer_setting(&dir, enabled)
+}
+
+fn write_renderer_setting(dir: &Path, enabled: bool) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
+    write!(tmp, "{}", if enabled { "hardware" } else { "software" }).map_err(|e| e.to_string())?;
+    tmp.persist(dir.join("renderer.txt"))
+        .map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod renderer_tests {
+    use super::*;
+
+    #[test]
+    fn renderer_preference_defaults_to_hardware_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_renderer_setting(dir.path()));
+        write_renderer_setting(dir.path(), false).unwrap();
+        assert!(!read_renderer_setting(dir.path()));
+        write_renderer_setting(dir.path(), true).unwrap();
+        assert!(read_renderer_setting(dir.path()));
+    }
+}
+
 pub fn history() -> Vec<PathBuf> {
     history_path()
         .and_then(|path| fs::read(path).ok())

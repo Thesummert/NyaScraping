@@ -24,7 +24,7 @@ encoding_rs = "0.8"
 chardetng = "1.0"
 tempfile = "3"
 
-# The desktop uses CPU rendering; unoptimized HiDPI redraws block the event loop.
+# Keep software rendering responsive in development builds too.
 # Keep debug symbols and assertions while optimizing the interactive build.
 [profile.dev]
 opt-level = 1

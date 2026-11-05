@@ -43,7 +43,7 @@ export component WaveformsPage inherits VerticalLayout {
     callback start();
     callback stop();
     callback remove(int, int);
-    spacing: 12px;
+    spacing: 8px;
     HorizontalLayout {
         Text { text: "实时波形"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
         Switch { text: "独立窗口"; checked <=> root.detached; toggled => { root.toggle-detached(self.checked); } }
@@ -112,15 +112,15 @@ export component WaveformsPage inherits VerticalLayout {
         }
     }
     Rectangle {
-        height: 140px;
+        height: 108px;
         background: Theme.background;
         ListView {
             for channel in root.channels: Rectangle {
-                height: 100px;
+                height: 92px;
                 background: Theme.panel;
                 border-radius: 16px;
                 VerticalLayout {
-                    padding: 14px;
+                    padding: 10px;
                     spacing: 4px;
                     HorizontalLayout {
                         spacing: 8px;

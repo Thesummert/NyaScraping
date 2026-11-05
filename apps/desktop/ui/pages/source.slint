@@ -37,7 +37,7 @@ export component SourcePage inherits VerticalLayout {
     callback close-tab(int);
     callback open();
     callback browse();
-    spacing: 12px;
+    spacing: 8px;
     HorizontalLayout {
         spacing: 8px;
         LineEdit { text <=> root.path; placeholder-text: "输入源码文件路径…"; enabled: !root.busy; horizontal-stretch: 1; accepted => { root.open(); } }

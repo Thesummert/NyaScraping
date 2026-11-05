@@ -68,8 +68,9 @@ export component AppWindow inherits Window {
     callback show-fps-changed(bool);
     callback refresh-rate-changed();
     private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
-    private property <length> left-panel-width: 300px;
-    private property <length> right-panel-width: 360px;
+    in-out property <bool> workspace-expanded: false;
+    private property <length> left-panel-width: 280px;
+    private property <length> right-panel-width: 330px;
     private property <length> drag-panel-width;
     changed width => {
         root.left-panel-width = min(root.left-panel-width, max(260px, root.width - 40px - 360px - 330px));
@@ -273,6 +274,10 @@ export component AppWindow inherits Window {
             MenuItem { title: "清空当前图表历史波形"; enabled: !root.interaction-busy; activated => { root.clear-waveform-history(); } }
         }
         Menu {
+            title: "视图";
+            MenuItem { title: root.workspace-expanded ? "恢复三栏布局" : "扩大源码 / 波形区域"; enabled: !root.interaction-busy; activated => { root.workspace-expanded = !root.workspace-expanded; } }
+        }
+        Menu {
             title: "设置";
             MenuItem { title: "选择后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 0; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "安装后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }
@@ -336,7 +341,9 @@ export component AppWindow inherits Window {
             padding: 10px;
             spacing: 0px;
             left-panel := Rectangle {
-                width: root.left-panel-width;
+                width: root.workspace-expanded ? 0px : root.left-panel-width;
+                visible: !root.workspace-expanded;
+                clip: true;
                 background: Theme.sidebar;
                 border-radius: 16px;
                 FirmwarePage {
@@ -363,6 +370,8 @@ export component AppWindow inherits Window {
                 }
             }
             PanelDivider {
+                width: root.workspace-expanded ? 0px : 10px;
+                visible: !root.workspace-expanded;
                 drag-start => { root.drag-panel-width = left-panel.width; }
                 drag(delta) => {
                     root.left-panel-width = max(260px, min(root.drag-panel-width + delta, root.width - 40px - 360px - right-panel.width));
@@ -372,8 +381,8 @@ export component AppWindow inherits Window {
                 background: Theme.background;
                 horizontal-stretch: 1;
                 VerticalLayout {
-                    padding: 12px;
-                    spacing: 10px;
+                    padding: 8px;
+                    spacing: 8px;
                     TabWidget {
                         current-index <=> root.current-tab;
                         Tab {
@@ -469,13 +478,17 @@ export component AppWindow inherits Window {
                 }
             }
             PanelDivider {
+                width: root.workspace-expanded ? 0px : 10px;
+                visible: !root.workspace-expanded;
                 drag-start => { root.drag-panel-width = right-panel.width; }
                 drag(delta) => {
                     root.right-panel-width = max(330px, min(root.drag-panel-width - delta, root.width - 40px - 360px - left-panel.width));
                 }
             }
             right-panel := Rectangle {
-                width: root.right-panel-width;
+                width: root.workspace-expanded ? 0px : root.right-panel-width;
+                visible: !root.workspace-expanded;
+                clip: true;
                 background: Theme.sidebar;
                 border-radius: 16px;
                 VariablesPage {

@@ -10,6 +10,36 @@ import { DebugSettings } from "pages/debug-settings.slint";
 import { TargetRow, PackRow } from "pages/target-selector.slint";
 export { FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
 
+component PanelDivider inherits Rectangle {
+    callback drag-start();
+    callback drag(length);
+    width: 10px;
+    background: transparent;
+    Rectangle {
+        width: 2px;
+        height: 40px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: 1px;
+        background: handle.has-hover || handle.pressed ? Theme.accent : Theme.border;
+    }
+    handle := TouchArea {
+        property <length> start-x;
+        mouse-cursor: ew-resize;
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                self.start-x = self.absolute-position.x + self.mouse-x;
+                root.drag-start();
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.drag(self.absolute-position.x + self.mouse-x - self.start-x);
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "NyaScraping · Embedded Debug Studio";
     icon: @image-url("../assets/icon.png");
@@ -35,6 +65,13 @@ export component AppWindow inherits Window {
     in-out property <int> refresh-rate-index: 0;
     callback refresh-rate-changed();
     private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
+    private property <length> left-panel-width: 300px;
+    private property <length> right-panel-width: 360px;
+    private property <length> drag-panel-width;
+    changed width => {
+        root.left-panel-width = min(root.left-panel-width, max(260px, root.width - 40px - 360px - 330px));
+        root.right-panel-width = min(root.right-panel-width, max(330px, root.width - 40px - 360px - root.left-panel-width));
+    }
     in-out property <bool> debug-connected: false;
     in-out property <bool> debug-halted: false;
     in-out property <bool> debug-running: false;
@@ -211,9 +248,9 @@ export component AppWindow inherits Window {
         }
         HorizontalLayout {
             padding: 10px;
-            spacing: 10px;
-            Rectangle {
-                width: 300px;
+            spacing: 0px;
+            left-panel := Rectangle {
+                width: root.left-panel-width;
                 background: Theme.sidebar;
                 border-radius: 16px;
                 FirmwarePage {
@@ -235,6 +272,12 @@ export component AppWindow inherits Window {
                     show-functions(show) => { root.show-functions(show); }
                     open => { root.open-firmware(); }
                     browse => { root.browse-firmware(); }
+                }
+            }
+            PanelDivider {
+                drag-start => { root.drag-panel-width = left-panel.width; }
+                drag(delta) => {
+                    root.left-panel-width = max(260px, min(root.drag-panel-width + delta, root.width - 40px - 360px - right-panel.width));
                 }
             }
             Rectangle {
@@ -319,8 +362,14 @@ export component AppWindow inherits Window {
                     }
                 }
             }
-            Rectangle {
-                width: 360px;
+            PanelDivider {
+                drag-start => { root.drag-panel-width = right-panel.width; }
+                drag(delta) => {
+                    root.right-panel-width = max(330px, min(root.drag-panel-width - delta, root.width - 40px - 360px - left-panel.width));
+                }
+            }
+            right-panel := Rectangle {
+                width: root.right-panel-width;
                 background: Theme.sidebar;
                 border-radius: 16px;
                 VariablesPage {

@@ -280,6 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_window = SystemLogWindow::new()?;
     let install_window = InstallProgressWindow::new()?;
     let install_cancel = Arc::new(AtomicBool::new(false));
+    let install_progress: nya_debug_adapter::SharedInstallProgress = Default::default();
     let cancel = install_cancel.clone();
     let weak_install = install_window.as_weak();
     install_window.on_cancel(move || {
@@ -297,12 +298,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let progress_timer = slint::Timer::default();
     let weak_install = install_window.as_weak();
+    let progress = install_progress.clone();
     progress_timer.start(
         slint::TimerMode::Repeated,
         std::time::Duration::from_millis(40),
         move || {
             if let Some(window) = weak_install.upgrade() {
                 window.set_phase((window.get_phase() + 0.015) % 1.0);
+                if let Ok(value) = progress.lock() {
+                    window.set_stage(value.stage.as_str().into());
+                    window.set_determinate(value.percent.is_some());
+                    window.set_progress(value.percent.unwrap_or(0.0) / 100.0);
+                    let size = |n: u64| -> String {
+                        if n >= 1024 * 1024 {
+                            format!("{:.1} MB", n as f64 / 1048576.0)
+                        } else if n >= 1024 {
+                            format!("{:.1} KB", n as f64 / 1024.0)
+                        } else {
+                            format!("{n} B")
+                        }
+                    };
+                    let amount = match (value.downloaded, value.total) {
+                        (Some(done), Some(total)) => format!(
+                            "{} / {} · {:.0}%",
+                            size(done),
+                            size(total),
+                            value.percent.unwrap_or(0.0)
+                        ),
+                        (Some(done), None) => format!("已下载 {}", size(done)),
+                        _ => value
+                            .percent
+                            .map(|percent| format!("进度：{percent:.0}%"))
+                            .unwrap_or_else(|| "进度：未知".into()),
+                    };
+                    let speed = value
+                        .bytes_per_second
+                        .map(|n| format!("{}/s", size(n)))
+                        .unwrap_or_else(|| "速度：未知".into());
+                    let eta = value
+                        .remaining_seconds
+                        .map(|n| {
+                            if n >= 3600 {
+                                format!("约 {} 小时 {} 分钟后", n / 3600, n % 3600 / 60)
+                            } else if n >= 60 {
+                                format!("约 {} 分 {} 秒后", n / 60, n % 60)
+                            } else {
+                                format!("约 {n} 秒后")
+                            }
+                        })
+                        .unwrap_or_else(|| "未知".into());
+                    window.set_details(format!("{amount} · {speed} · 预计完成：{eta}").into());
+                }
             }
         },
     );
@@ -369,6 +415,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     set_application_icon();
     let mut adapter = DebugAdapter::new()?;
     adapter.set_install_cancel(install_cancel.clone());
+    adapter.set_install_progress(install_progress.clone());
     let mut application = Application::new(adapter, NativeTextBackend, NativeFirmwareBackend);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = shutdown.clone();
@@ -601,6 +648,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tool_sender = sender.clone();
     let weak_install = install_window.as_weak();
     let cancel = install_cancel.clone();
+    let progress = install_progress.clone();
     ui.on_install_tool(move |kind, version| {
         if let (Some(ui), Some(tool), Some(window)) =
             (weak.upgrade(), tool_kind(kind), weak_install.upgrade())
@@ -609,6 +657,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
             cancel.store(false, Ordering::SeqCst);
+            if let Ok(mut current) = progress.lock() {
+                *current = nya_debug_adapter::InstallProgress {
+                    stage: "正在准备安装…".into(),
+                    ..Default::default()
+                };
+            }
             window.set_cancelling(false);
             window.set_message(
                 format!(

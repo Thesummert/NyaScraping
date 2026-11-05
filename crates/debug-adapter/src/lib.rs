@@ -1,3 +1,4 @@
+pub use nya_scraping_core::manager::{InstallProgress, SharedInstallProgress};
 pub mod live_memory;
 mod mi;
 mod non_stop;
@@ -41,6 +42,7 @@ fn options(profile: &TargetProfile) -> GdbServerOptions {
 pub struct DebugAdapter {
     manager: Manager,
     install_cancel: Arc<AtomicBool>,
+    install_progress: SharedInstallProgress,
     server: Option<RunningGdbServer>,
     session: session::Session,
 }
@@ -50,6 +52,7 @@ impl DebugAdapter {
         Ok(Self {
             manager: Manager::new().map_err(error)?,
             install_cancel: Arc::new(AtomicBool::new(false)),
+            install_progress: Default::default(),
             server: None,
             session: session::Session::default(),
         })
@@ -57,6 +60,10 @@ impl DebugAdapter {
 
     pub fn set_install_cancel(&mut self, cancel: Arc<AtomicBool>) {
         self.install_cancel = cancel;
+    }
+
+    pub fn set_install_progress(&mut self, progress: SharedInstallProgress) {
+        self.install_progress = progress;
     }
 
     fn operation(&mut self, profile: &TargetProfile, operation: Operation) -> Result<()> {
@@ -135,13 +142,22 @@ impl ToolRegistry for DebugAdapter {
 
     fn install_latest(&mut self, tool: ToolKind) -> Result<()> {
         self.manager
-            .install_latest_cancellable(core_tool(tool), &self.install_cancel)
+            .install_latest_with_progress(
+                core_tool(tool),
+                &self.install_cancel,
+                &self.install_progress,
+            )
             .map_err(error)
     }
 
     fn install(&mut self, tool: ToolKind, version: &str) -> Result<()> {
         self.manager
-            .install_cancellable(core_tool(tool), version, &self.install_cancel)
+            .install_with_progress(
+                core_tool(tool),
+                version,
+                &self.install_cancel,
+                &self.install_progress,
+            )
             .map_err(error)
     }
 
@@ -264,6 +280,7 @@ mod tests {
                     data_dir: self.0.join("data"),
                 },
                 install_cancel: Default::default(),
+                install_progress: Default::default(),
                 server: None,
                 session: session::Session::default(),
             }

@@ -742,10 +742,14 @@ export component WaveformWindow inherits Window {
 
 export component InstallProgressWindow inherits Window {
     title: "安装工具链";
-    width: 400px;
-    height: 150px;
+    width: 480px;
+    height: 205px;
     background: Theme.background;
     in property <string> message;
+    in property <string> stage;
+    in property <string> details;
+    in property <float> progress;
+    in property <bool> determinate;
     in property <float> phase;
     in-out property <bool> cancelling: false;
     callback cancel();
@@ -753,12 +757,14 @@ export component InstallProgressWindow inherits Window {
         padding: 20px;
         spacing: 12px;
         Text { text: root.cancelling ? "正在取消并清理安装文件…" : root.message; color: Theme.text; wrap: word-wrap; }
+        Text { text: root.stage; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
         Rectangle {
             height: 6px;
             background: Theme.border;
             clip: true;
-            Rectangle { x: (parent.width + self.width) * root.phase - self.width; width: parent.width / 3; height: parent.height; background: Theme.accent; }
+            Rectangle { x: root.determinate ? 0px : (parent.width + self.width) * root.phase - self.width; width: root.determinate ? parent.width * root.progress : parent.width / 3; height: parent.height; background: Theme.accent; }
         }
+        Text { text: root.details; color: Theme.text; font-size: 12px; wrap: word-wrap; }
         HorizontalLayout {
             Rectangle { horizontal-stretch: 1; }
             Button { text: root.cancelling ? "正在取消…" : "取消"; enabled: !root.cancelling; clicked => { root.cancel(); } }

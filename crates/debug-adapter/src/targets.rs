@@ -416,6 +416,7 @@ mod tests {
         let mut adapter = DebugAdapter {
             manager,
             install_cancel: Default::default(),
+            install_progress: Default::default(),
             server: None,
             session: Default::default(),
         };
@@ -511,6 +512,7 @@ else:
         let mut adapter = DebugAdapter {
             manager,
             install_cancel: Default::default(),
+            install_progress: Default::default(),
             server: None,
             session: Default::default(),
         };
@@ -532,6 +534,7 @@ else:
                 data_dir: adapter.manager.data_dir.clone(),
             },
             install_cancel: Default::default(),
+            install_progress: Default::default(),
             server: None,
             session: Default::default(),
         };

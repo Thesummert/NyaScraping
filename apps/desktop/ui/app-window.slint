@@ -1,4 +1,4 @@
-import { Button, ComboBox, ListView, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, ListView, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SourcePage, SourceTab, SourceBreakpoint } from "pages/source.slint";
 import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
@@ -22,6 +22,7 @@ component PanelDivider inherits Rectangle {
         y: (parent.height - self.height) / 2;
         border-radius: 1px;
         background: handle.has-hover || handle.pressed ? Theme.accent : Theme.border;
+        animate background { duration: 140ms; }
     }
     handle := TouchArea {
         property <length> start-x;
@@ -63,6 +64,8 @@ export component AppWindow inherits Window {
     in-out property <int> settings-tab: 0;
     in-out property <string> settings-message;
     in-out property <int> refresh-rate-index: 0;
+    in-out property <bool> show-fps: false;
+    callback show-fps-changed(bool);
     callback refresh-rate-changed();
     private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
     private property <length> left-panel-width: 300px;
@@ -478,20 +481,24 @@ export component AppWindow inherits Window {
                 spacing: 16px;
                 Rectangle {
                     horizontal-stretch: 1;
-                    Text { text: root.status; color: status-hit.has-hover ? Theme.text : Theme.muted; overflow: elide; vertical-alignment: center; }
+                    Text { text: root.status; color: status-hit.has-hover ? Theme.text : Theme.muted; animate color { duration: 140ms; } overflow: elide; vertical-alignment: center; }
                     status-hit := TouchArea { mouse-cursor: pointer; clicked => { root.show-system-log(); } }
                 }
                 Text { text: root.busy ? "处理中" : root.debug-state; color: Theme.accent; font-size: 12px; }
             }
         }
     }
-    if root.settings-open: Rectangle {
+    settings-overlay := Rectangle {
         x: 0; y: 0; width: root.width; height: root.height;
+        property <float> reveal: root.settings-open ? 1 : 0;
+        animate reveal { duration: 240ms; easing: ease-out; }
+        visible: root.settings-open || self.reveal > 0;
         background: #000a;
         TouchArea { }
         Rectangle {
             width: min(900px, root.width - 48px); height: min(680px, root.height - 48px);
-            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 + (1 - settings-overlay.reveal) * 24px;
             background: Theme.sidebar; border-radius: 20px;
             VerticalLayout {
                 padding: 24px; spacing: 12px;
@@ -574,6 +581,12 @@ export component AppWindow inherits Window {
                                 selected => { root.refresh-rate-changed(); }
                             }
                             Text { text: "控制变量和波形界面的更新频率，不改变后端采样频率。"; color: Theme.muted; wrap: word-wrap; }
+                            CheckBox {
+                                text: "显示每秒绘制帧数（重启后生效）";
+                                checked <=> root.show-fps;
+                                toggled => { root.show-fps-changed(self.checked); }
+                            }
+                            Text { text: "统计最近一秒实际绘制的帧数。界面静止时不会持续绘制；短动画结束后数值也会降低。请持续滚动或操作至少一秒再观察。"; color: Theme.muted; wrap: word-wrap; }
                             Rectangle { vertical-stretch: 1; }
                         }
                     }

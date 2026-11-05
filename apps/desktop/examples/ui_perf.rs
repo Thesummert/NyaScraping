@@ -211,6 +211,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(ui.get_source_executable_lines().row_data(1).unwrap());
     ui.set_project_dialog_open(false);
     redraw(&window, &mut pixels, 2960);
+    // Verify rendered intermediate frames, not just the final property value.
+    let closed = pixels.clone();
+    ui.set_settings_open(true);
+    slint::platform::update_timers_and_animations();
+    redraw(&window, &mut pixels, 2960);
+    let opening = pixels.clone();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    slint::platform::update_timers_and_animations();
+    redraw(&window, &mut pixels, 2960);
+    let intermediate = pixels.clone();
+    std::thread::sleep(std::time::Duration::from_millis(220));
+    slint::platform::update_timers_and_animations();
+    redraw(&window, &mut pixels, 2960);
+    assert!(
+        opening != intermediate && intermediate != pixels,
+        "settings panel must render intermediate animation frames"
+    );
+    ui.set_settings_open(false);
+    slint::platform::update_timers_and_animations();
+    redraw(&window, &mut pixels, 2960);
+    std::thread::sleep(std::time::Duration::from_millis(260));
+    slint::platform::update_timers_and_animations();
+    redraw(&window, &mut pixels, 2960);
+    assert_eq!(
+        pixels[200 * 2960 + 20],
+        closed[200 * 2960 + 20],
+        "settings overlay must disappear after closing"
+    );
+    println!("Settings overlay animation: passed");
     let status_log = Rc::new(std::cell::RefCell::new(String::new()));
     let observed_status = status_log.clone();
     ui.on_status_message_changed(move |message| {
@@ -346,6 +375,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "Select + redraw with source and tree: {:.2} ms/frame",
         start.elapsed().as_secs_f64() * 50.
+    );
+    let start = Instant::now();
+    for _ in 0..30 {
+        window.dispatch_event(WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(100., 400.),
+            delta_x: 0.,
+            delta_y: -32.,
+        });
+        slint::platform::update_timers_and_animations();
+        redraw(&window, &mut pixels, 2960);
+    }
+    println!(
+        "Scroll 20000-node tree: {:.2} ms/frame",
+        start.elapsed().as_secs_f64() * 1000. / 30.
     );
     // Exercise the remaining presenter paths without a GUI event loop.
     presenter.add_firmware_variable(&ui, 20);

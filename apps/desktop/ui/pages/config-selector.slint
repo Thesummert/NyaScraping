@@ -48,6 +48,7 @@ export component ConfigSelector inherits VerticalLayout {
                     height: 44px;
                     border-radius: 8px;
                     background: root.value == row.name ? Theme.selection : (area.has-hover ? Theme.panel : transparent);
+                    animate background { duration: 140ms; }
                     VerticalLayout {
                         padding-left: 8px;
                         padding-right: 8px;

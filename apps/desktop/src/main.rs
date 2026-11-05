@@ -274,7 +274,24 @@ fn sync_waveform_window(ui: &AppWindow, window: &WaveformWindow) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let fps_enabled = project::fps_enabled();
+    if fps_enabled && std::env::var_os("SLINT_DEBUG_PERFORMANCE").is_none() {
+        std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,overlay");
+    }
     let ui = AppWindow::new()?;
+    ui.set_show_fps(fps_enabled);
+    let weak_fps_ui = ui.as_weak();
+    ui.on_show_fps_changed(move |enabled| {
+        if let Some(ui) = weak_fps_ui.upgrade() {
+            match project::set_fps_enabled(enabled) {
+                Ok(()) => ui.set_settings_message("FPS 设置将在重新启动应用后生效".into()),
+                Err(error) => {
+                    ui.set_show_fps(!enabled);
+                    ui.set_settings_message(format!("无法保存 FPS 设置：{error}").into());
+                }
+            }
+        }
+    });
     let waveform_window = WaveformWindow::new()?;
     let breakpoint_window = BreakpointWindow::new()?;
     let log_window = SystemLogWindow::new()?;

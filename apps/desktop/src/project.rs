@@ -129,7 +129,7 @@ mod tests {
     }
 }
 
-fn history_path() -> Option<PathBuf> {
+fn config_dir() -> Option<PathBuf> {
     let base = if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else if cfg!(target_os = "macos") {
@@ -139,7 +139,27 @@ fn history_path() -> Option<PathBuf> {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
     }?;
-    Some(base.join("NyaScraping/projects.json"))
+    Some(base.join("NyaScraping"))
+}
+
+fn history_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("projects.json"))
+}
+
+pub fn fps_enabled() -> bool {
+    config_dir()
+        .and_then(|dir| fs::read_to_string(dir.join("fps.txt")).ok())
+        .is_some_and(|value| value.trim() == "true")
+}
+
+pub fn set_fps_enabled(enabled: bool) -> Result<(), String> {
+    let dir = config_dir().ok_or("无法确定设置目录")?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
+    write!(tmp, "{enabled}").map_err(|e| e.to_string())?;
+    tmp.persist(dir.join("fps.txt"))
+        .map_err(|e| e.error.to_string())?;
+    Ok(())
 }
 
 pub fn history() -> Vec<PathBuf> {

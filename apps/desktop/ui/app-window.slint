@@ -140,6 +140,8 @@ export component AppWindow inherits Window {
     callback add-waveform-chart();
     callback select-waveform-chart(int);
     callback move-waveform-channel(int, int, int);
+    callback export-waveform-csv();
+    callback clear-waveform-history();
     in-out property <bool> acquisition-active: false;
     in-out property <string> acquisition-status: "采集未启动";
     in-out property <string> acquisition-statistics: "每通道最多保留 32768 个样本；尚无采集数据";
@@ -321,6 +323,8 @@ export component AppWindow inherits Window {
                                 add-chart => { root.add-waveform-chart(); }
                                 select-chart(index) => { root.select-waveform-chart(index); }
                                 move-channel(watch, node, chart) => { root.move-waveform-channel(watch, node, chart); }
+                                export-csv => { root.export-waveform-csv(); }
+                                clear-history => { root.clear-waveform-history(); }
                                 active: root.acquisition-active;
                                 status: root.acquisition-status;
                                 statistics: root.acquisition-statistics;
@@ -571,6 +575,8 @@ export component WaveformWindow inherits Window {
     callback add-chart();
     callback select-chart(int);
     callback move-channel(int, int, int);
+    callback export-csv();
+    callback clear-history();
     callback start();
     callback stop();
     callback remove(int, int);
@@ -601,6 +607,8 @@ export component WaveformWindow inherits Window {
         add-chart => { root.add-chart(); }
         select-chart(index) => { root.select-chart(index); }
         move-channel(watch, node, chart) => { root.move-channel(watch, node, chart); }
+        export-csv => { root.export-csv(); }
+        clear-history => { root.clear-history(); }
         start => { root.start(); }
         stop => { root.stop(); }
         remove(watch, node) => { root.remove(watch, node); }

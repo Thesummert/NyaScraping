@@ -953,6 +953,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let weak = ui.as_weak();
     let chart_presenter = presenter.clone();
+    ui.on_clear_waveform_history(move || {
+        if let Some(ui) = weak.upgrade() {
+            chart_presenter
+                .lock()
+                .expect("presenter lock")
+                .clear_waveform_history(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let chart_presenter = presenter.clone();
+    ui.on_export_waveform_csv(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let csv = chart_presenter
+            .lock()
+            .expect("presenter lock")
+            .waveform_csv(&ui);
+        ui.set_file_dialog_open(true);
+        let weak = ui.as_weak();
+        if let Err(error) = slint::spawn_local(async move {
+            let selected = rfd::AsyncFileDialog::new()
+                .set_title("导出当前图表")
+                .set_file_name("waveform.csv")
+                .add_filter("CSV", &["csv"])
+                .save_file()
+                .await;
+            if let Some(ui) = weak.upgrade() {
+                ui.set_file_dialog_open(false);
+                if let Some(file) = selected {
+                    match std::fs::write(file.path(), csv) {
+                        Ok(()) => ui.set_acquisition_status("波形 CSV 已导出".into()),
+                        Err(error) => {
+                            ui.set_acquisition_status(format!("导出波形失败：{error}").into())
+                        }
+                    }
+                }
+            }
+        }) {
+            ui.set_file_dialog_open(false);
+            ui.set_acquisition_status(format!("无法打开文件选择窗口：{error}").into());
+        }
+    });
+    let weak = ui.as_weak();
+    let chart_presenter = presenter.clone();
     ui.on_zoom_waveform(move |up, control, alt| {
         if let Some(ui) = weak.upgrade() {
             chart_presenter
@@ -1060,6 +1105,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     waveform_window.on_move_channel(move |watch, node, chart| {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_move_waveform_channel(watch, node, chart);
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_export_csv(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_export_waveform_csv();
+        }
+    });
+    let weak = ui.as_weak();
+    waveform_window.on_clear_history(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_clear_waveform_history();
         }
     });
     let weak = ui.as_weak();

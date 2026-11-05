@@ -38,6 +38,8 @@ export component WaveformsPage inherits VerticalLayout {
     callback add-chart();
     callback select-chart(int);
     callback move-channel(int, int, int);
+    callback export-csv();
+    callback clear-history();
     callback start();
     callback stop();
     callback remove(int, int);
@@ -79,7 +81,18 @@ export component WaveformsPage inherits VerticalLayout {
         Rectangle {
             horizontal-stretch: 1;
             Image { source: root.plot; width: parent.width; height: parent.height; image-fit: fill; }
+            menu := ContextMenuArea {
+                Menu {
+                    MenuItem { title: "导出当前图表为 CSV…"; activated => { root.export-csv(); } }
+                    MenuItem { title: "清空当前图表历史波形"; activated => { root.clear-history(); } }
+                }
+            }
             TouchArea {
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                        menu.show({ x: self.mouse-x, y: self.mouse-y });
+                    }
+                }
                 scroll-event(event) => {
                     if event.delta-y != 0px { root.zoom(event.delta-y > 0px, event.modifiers.control, event.modifiers.alt); return accept; }
                     reject

@@ -674,6 +674,60 @@ impl Presenter {
         }
     }
 
+    fn current_chart_channels(&self, ui: &AppWindow) -> Vec<(usize, String, String)> {
+        let chart = ui.get_waveform_selected_chart();
+        ui.get_waveform_channels()
+            .iter()
+            .filter(|row| row.chart_index == chart)
+            .filter_map(|row| {
+                let id = self
+                    .watches
+                    .entries
+                    .get(row.watch_index as usize)?
+                    .channel_id(row.node_index as usize)?;
+                Some((id, row.name.to_string(), row.scope.to_string()))
+            })
+            .collect()
+    }
+
+    pub fn waveform_csv(&self, ui: &AppWindow) -> String {
+        let channels = self.current_chart_channels(ui);
+        let state = self.acquisition.state.lock().expect("acquisition lock");
+        let mut csv = String::from("channel,scope,elapsed_seconds,value\r\n");
+        for (id, name, scope) in channels {
+            if let Some(channel) = state.channels.iter().find(|channel| channel.id == id) {
+                let name = csv_field(&name);
+                let scope = csv_field(&scope);
+                for sample in channel.samples.samples() {
+                    use std::fmt::Write;
+                    let _ = write!(
+                        csv,
+                        "{name},{scope},{:.9},{}\r\n",
+                        sample.elapsed.as_secs_f64(),
+                        sample.value
+                    );
+                }
+            }
+        }
+        csv
+    }
+
+    pub fn clear_waveform_history(&mut self, ui: &AppWindow) {
+        let channels = self.current_chart_channels(ui);
+        {
+            let mut state = self.acquisition.state.lock().expect("acquisition lock");
+            for channel in &mut state.channels {
+                if channels.iter().any(|(id, _, _)| *id == channel.id) {
+                    channel.samples.clear();
+                    channel.invalid = 0;
+                }
+            }
+            state.sequence = state.sequence.wrapping_add(1);
+        }
+        self.refresh_chart(ui);
+        ui.set_acquisition_status("已清空当前图表的历史波形".into());
+    }
+
     pub fn zoom_waveform(&mut self, ui: &AppWindow, up: bool, control: bool, alt: bool) {
         let factor = if up { 1.25 } else { 0.8 };
         if control || !alt {
@@ -1252,4 +1306,8 @@ fn firmware_report(image: &FirmwareImage) -> String {
         );
     }
     report
+}
+
+fn csv_field(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }

@@ -415,6 +415,7 @@ mod tests {
         }
         let mut adapter = DebugAdapter {
             manager,
+            install_cancel: Default::default(),
             server: None,
             session: Default::default(),
         };
@@ -509,6 +510,7 @@ else:
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         let mut adapter = DebugAdapter {
             manager,
+            install_cancel: Default::default(),
             server: None,
             session: Default::default(),
         };
@@ -529,6 +531,7 @@ else:
                 config_path: adapter.manager.config_path.clone(),
                 data_dir: adapter.manager.data_dir.clone(),
             },
+            install_cancel: Default::default(),
             server: None,
             session: Default::default(),
         };

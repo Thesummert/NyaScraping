@@ -12,7 +12,11 @@ use nya_scraping_core::{
     gdbserver::{GdbServer, RunningGdbServer},
     manager::{Manager, Tool},
 };
-use std::{fs, time::Duration};
+use std::{
+    fs,
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
+};
 
 fn error(error: impl std::fmt::Display) -> Error {
     Error(error.to_string())
@@ -36,6 +40,7 @@ fn options(profile: &TargetProfile) -> GdbServerOptions {
 
 pub struct DebugAdapter {
     manager: Manager,
+    install_cancel: Arc<AtomicBool>,
     server: Option<RunningGdbServer>,
     session: session::Session,
 }
@@ -44,9 +49,14 @@ impl DebugAdapter {
     pub fn new() -> Result<Self> {
         Ok(Self {
             manager: Manager::new().map_err(error)?,
+            install_cancel: Arc::new(AtomicBool::new(false)),
             server: None,
             session: session::Session::default(),
         })
+    }
+
+    pub fn set_install_cancel(&mut self, cancel: Arc<AtomicBool>) {
+        self.install_cancel = cancel;
     }
 
     fn operation(&mut self, profile: &TargetProfile, operation: Operation) -> Result<()> {
@@ -124,12 +134,14 @@ impl ToolRegistry for DebugAdapter {
     }
 
     fn install_latest(&mut self, tool: ToolKind) -> Result<()> {
-        self.manager.install_latest(core_tool(tool)).map_err(error)
+        self.manager
+            .install_latest_cancellable(core_tool(tool), &self.install_cancel)
+            .map_err(error)
     }
 
     fn install(&mut self, tool: ToolKind, version: &str) -> Result<()> {
         self.manager
-            .install(core_tool(tool), version)
+            .install_cancellable(core_tool(tool), version, &self.install_cancel)
             .map_err(error)
     }
 
@@ -251,6 +263,7 @@ mod tests {
                     config_path: self.0.join("config/config"),
                     data_dir: self.0.join("data"),
                 },
+                install_cancel: Default::default(),
                 server: None,
                 session: session::Session::default(),
             }

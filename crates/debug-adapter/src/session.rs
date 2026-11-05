@@ -676,6 +676,7 @@ mod tests {
                 config_path: root.path().join("config/config"),
                 data_dir: root.path().join("data"),
             },
+            install_cancel: Default::default(),
             server: None,
             session: Session::default(),
         };

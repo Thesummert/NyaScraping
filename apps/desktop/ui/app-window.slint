@@ -739,3 +739,29 @@ export component WaveformWindow inherits Window {
         remove(watch, node) => { root.remove(watch, node); }
     }
 }
+
+export component InstallProgressWindow inherits Window {
+    title: "安装工具链";
+    width: 400px;
+    height: 150px;
+    background: Theme.background;
+    in property <string> message;
+    in property <float> phase;
+    in-out property <bool> cancelling: false;
+    callback cancel();
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        Text { text: root.cancelling ? "正在取消并清理安装文件…" : root.message; color: Theme.text; wrap: word-wrap; }
+        Rectangle {
+            height: 6px;
+            background: Theme.border;
+            clip: true;
+            Rectangle { x: (parent.width + self.width) * root.phase - self.width; width: parent.width / 3; height: parent.height; background: Theme.accent; }
+        }
+        HorizontalLayout {
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: root.cancelling ? "正在取消…" : "取消"; enabled: !root.cancelling; clicked => { root.cancel(); } }
+        }
+    }
+}

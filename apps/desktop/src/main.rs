@@ -278,6 +278,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let waveform_window = WaveformWindow::new()?;
     let breakpoint_window = BreakpointWindow::new()?;
     let log_window = SystemLogWindow::new()?;
+    let install_window = InstallProgressWindow::new()?;
+    let install_cancel = Arc::new(AtomicBool::new(false));
+    let cancel = install_cancel.clone();
+    let weak_install = install_window.as_weak();
+    install_window.on_cancel(move || {
+        cancel.store(true, Ordering::SeqCst);
+        if let Some(window) = weak_install.upgrade() {
+            window.set_cancelling(true);
+        }
+    });
+    let weak_install = install_window.as_weak();
+    install_window.window().on_close_requested(move || {
+        if let Some(window) = weak_install.upgrade() {
+            window.invoke_cancel();
+        }
+        slint::CloseRequestResponse::KeepWindowShown
+    });
+    let progress_timer = slint::Timer::default();
+    let weak_install = install_window.as_weak();
+    progress_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(40),
+        move || {
+            if let Some(window) = weak_install.upgrade() {
+                window.set_phase((window.get_phase() + 0.015) % 1.0);
+            }
+        },
+    );
     let system_log = std::rc::Rc::new(std::cell::RefCell::new(system_log::SystemLog::default()));
     system_log.borrow_mut().record("应用", &ui.get_status());
     log_window.set_events(system_log.borrow().text().into());
@@ -339,11 +367,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
     #[cfg(target_os = "macos")]
     set_application_icon();
-    let mut application = Application::new(
-        DebugAdapter::new()?,
-        NativeTextBackend,
-        NativeFirmwareBackend,
-    );
+    let mut adapter = DebugAdapter::new()?;
+    adapter.set_install_cancel(install_cancel.clone());
+    let mut application = Application::new(adapter, NativeTextBackend, NativeFirmwareBackend);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = shutdown.clone();
     // A bounded queue prevents repeated UI actions from accumulating indefinitely.
@@ -467,10 +493,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live_interval = Arc::new(AtomicU64::new(0));
     let worker_interval = live_interval.clone();
     let weak = ui.as_weak();
+    let weak_install = install_window.as_weak();
     let worker = std::thread::spawn(move || {
         let mut last_sample = std::time::Instant::now();
         while !worker_shutdown.load(Ordering::Relaxed) {
             let pending = worker_updates.lock().expect("watch updates lock").take();
+            let mut finished_install = false;
             let event = if let Some(watches) = pending {
                 Some(application.execute(Command::UpdateWatches(watches)))
             } else {
@@ -485,7 +513,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .min(poll_interval)
                 };
                 match receiver.recv_timeout(wait) {
-                    Ok(command) => Some(application.execute(command)),
+                    Ok(command) => {
+                        finished_install = matches!(&command, Command::InstallTool { .. });
+                        Some(application.execute(command))
+                    }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         let event = application.poll();
                         let interval = worker_interval.load(Ordering::Relaxed);
@@ -532,6 +563,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 worker_interval.store(0, Ordering::Relaxed);
             }
+            if finished_install {
+                let _ = weak_install.upgrade_in_event_loop(|window| {
+                    let _ = window.hide();
+                });
+            }
             let event = presenter::PreparedEvent::from(event);
             let sync = matches!(&event, presenter::PreparedEvent::Firmware(_));
             let updates = worker_updates.clone();
@@ -563,8 +599,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let weak = ui.as_weak();
     let tool_sender = sender.clone();
+    let weak_install = install_window.as_weak();
+    let cancel = install_cancel.clone();
     ui.on_install_tool(move |kind, version| {
-        if let (Some(ui), Some(tool)) = (weak.upgrade(), tool_kind(kind)) {
+        if let (Some(ui), Some(tool), Some(window)) =
+            (weak.upgrade(), tool_kind(kind), weak_install.upgrade())
+        {
+            if ui.get_busy() || ui.get_file_dialog_open() {
+                return;
+            }
+            cancel.store(false, Ordering::SeqCst);
+            window.set_cancelling(false);
+            window.set_message(
+                format!(
+                    "正在安装 {} · {}…",
+                    tool.name(),
+                    if version.trim().is_empty() {
+                        "最新稳定版"
+                    } else {
+                        version.trim()
+                    }
+                )
+                .into(),
+            );
             submit(
                 &ui,
                 &tool_sender,
@@ -573,6 +630,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     version: version.to_string(),
                 },
             );
+            if ui.get_busy() {
+                if let Err(error) = window.show() {
+                    cancel.store(true, Ordering::SeqCst);
+                    ui.set_status(format!("无法打开安装进度窗口：{error}").into());
+                }
+            }
         }
     });
 
@@ -1378,6 +1441,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.invoke_refresh_tools();
     let result = ui.run();
+    install_cancel.store(true, Ordering::SeqCst);
+    progress_timer.stop();
     waveform_timer.stop();
     breakpoint_timer.stop();
     acquisition.shutdown();

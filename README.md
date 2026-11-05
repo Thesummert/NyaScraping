@@ -81,6 +81,21 @@ Windows 使用 Rust MSVC 工具链和 Visual Studio C++ Build Tools；本次尚�
 
 这些包不包含 GDB、OpenOCD、pyOCD 或 probe-rs，需要按实际使用的后端另行安装。Linux 包依赖目标系统的图形及其他动态运行库；Windows 可能需要对应的 Microsoft Visual C++ 运行库。macOS 包未经签名或公证，分发给其他用户前需自行完成签名和公证。
 
+Arch Linux 原生安装包：
+
+```sh
+# 在已完整更新的 x86_64 Arch Linux 上，以普通用户运行。
+# 除 base-devel / Rust 外，还需 PKGBUILD 中声明的构建和运行依赖：
+sudo pacman -S --needed base-devel rust clang cmake ninja python pkgconf \
+  fontconfig freetype2 libxkbcommon libxkbcommon-x11 libxcb libx11 wayland libglvnd
+./scripts/package-arch.sh
+sudo pacman -U build/packages/nya-scraping-*.pkg.tar.zst
+```
+
+脚本使用当前工作区源码（包含未提交修改及后端子模块），在 `build/arch/` 生成源码快照、带 SHA-256 校验的 `PKGBUILD` 和 `.SRCINFO`，通过 `makepkg` 执行锁定依赖的 Release 构建。模板位于 `packaging/arch/PKGBUILD.in`。产物及校验文件保存在 `build/packages/`，安装后可运行 `nya-scraping` 或通过系统菜单打开；可用 `sudo pacman -R nya-scraping` 卸载。脚本不会自动安装依赖或安装产物，缺少依赖时 `makepkg` 会列出缺失项。需要调整同版本包修订号时，运行 `NYA_ARCH_PKGREL=2 ./scripts/package-arch.sh`。
+
+构建复用 Cargo 缓存，可通过 `CARGO_TARGET_DIR` 指定其他缓存目录。首次构建需要联网下载 Rust 依赖和 Skia 预编译库；`cargo --frozen` 不会禁止 Skia 构建脚本的独立下载。此流程面向本地 Arch 打包，尚未发布到 AUR。调试工具、Tree-sitter CLI 及语言解析器需按使用需求另行安装或配置。
+
 开发构建已开启优化并保留调试信息，软件渲染器使用更高优化级别，以减少高分屏上的重绘卡顿。首次重新构建依赖会花更长时间。源码与符号报告使用横向滚动，不随窗口宽度重新折行；文件树只在展开或折叠时更新结构，选择变量保留列表模型和滚动位置。固件文件树构建与报告格式化在后台线程完成。
 
 源码页的标签栏记录当前打开的文件，可切换或关闭标签；重复打开同一路径会复用标签。文件树中的源码路径来自编译信息，双击时需要该路径在本机可读取，否则状态栏会显示错误。

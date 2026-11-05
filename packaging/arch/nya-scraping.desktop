@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NyaScraping
+Comment=Embedded Debug Studio
+Exec=nya-scraping
+Icon=nya-scraping
+Terminal=false
+Categories=Development;Debugger;
+StartupNotify=true

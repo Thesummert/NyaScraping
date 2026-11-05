@@ -379,7 +379,7 @@ export component AppWindow inherits Window {
                             title: "波形";
                             WaveformsPage {
                                 padding-top: 12px;
-                                detached: root.waveform-detached;
+                                detached <=> root.waveform-detached;
                                 toggle-detached(detached) => { root.toggle-waveform-window(detached); }
                                 channels: root.waveform-channels;
                                 charts: root.waveform-charts;
@@ -709,6 +709,7 @@ export component WaveformWindow inherits Window {
     in property <string> source-label;
     in property <bool> use-session;
     in property <bool> session-ready;
+    in-out property <bool> detached: true;
     callback toggle-detached(bool);
     callback add-chart();
     callback select-chart(int);
@@ -722,7 +723,7 @@ export component WaveformWindow inherits Window {
     changed endpoint => { root.endpoint-edited(root.endpoint); }
     WaveformsPage {
         padding: 12px;
-        detached: true;
+        detached <=> root.detached;
         channels: root.channels;
         charts: root.charts;
         selected-chart: root.selected-chart;

@@ -1409,9 +1409,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let (Some(ui), Some(window)) = (weak_ui.upgrade(), weak_window.upgrade()) {
             if detached {
                 sync_waveform_window(&ui, &window);
+                window.set_detached(true);
                 match window.show() {
                     Ok(()) => ui.set_waveform_detached(true),
                     Err(error) => {
+                        ui.set_waveform_detached(false);
                         ui.set_acquisition_status(format!("无法打开波形窗口：{error}").into())
                     }
                 }

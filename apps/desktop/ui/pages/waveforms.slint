@@ -24,7 +24,7 @@ export component WaveformsPage inherits VerticalLayout {
     in property <[string]> y-ticks;
     in property <[string]> time-ticks;
     in property <string> zoom-label;
-    in property <bool> detached;
+    in-out property <bool> detached;
     in property <bool> active;
     in property <string> status;
     in property <string> statistics;
@@ -46,7 +46,7 @@ export component WaveformsPage inherits VerticalLayout {
     spacing: 12px;
     HorizontalLayout {
         Text { text: "实时波形"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
-        Switch { text: "独立窗口"; checked: root.detached; toggled => { root.toggle-detached(self.checked); } }
+        Switch { text: "独立窗口"; checked <=> root.detached; toggled => { root.toggle-detached(self.checked); } }
         Text { text: root.channels.length + " / 16 通道"; color: Theme.accent; vertical-alignment: center; }
     }
     HorizontalLayout {

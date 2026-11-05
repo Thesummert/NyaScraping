@@ -25,8 +25,8 @@ export component DebugPage inherits ScrollView {
         Text { text: "连接只加载调试符号。需要写入目标时，暂停后点击顶部「下载」。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
         HorizontalLayout {
             spacing: 8px;
-            breakpoint := LineEdit { placeholder-text: "断点：函数名 或 文件:行号"; horizontal-stretch: 1; enabled: root.halted && !root.busy; accepted => { root.add-breakpoint(self.text); } }
-            Button { text: "添加断点"; enabled: root.halted && !root.busy && breakpoint.text != ""; clicked => { root.add-breakpoint(breakpoint.text); } }
+            breakpoint := LineEdit { placeholder-text: "断点：函数名 或 文件:行号"; horizontal-stretch: 1; enabled: root.connected && !root.busy; accepted => { root.add-breakpoint(self.text); } }
+            Button { text: "添加断点"; enabled: root.connected && !root.busy && breakpoint.text != ""; clicked => { root.add-breakpoint(breakpoint.text); } }
             Button { text: "刷新"; enabled: root.connected && !root.busy; clicked => { root.action(9); } }
         }
         HorizontalLayout {
@@ -54,7 +54,7 @@ export component DebugPage inherits ScrollView {
                     for bp in root.breakpoints: HorizontalLayout {
                         height: 28px;
                         Text { text: bp.label; color: Theme.text; font-size: 11px; overflow: elide; horizontal-stretch: 1; }
-                        Button { text: "×"; enabled: (root.halted || bp.pending) && !root.busy; clicked => { root.remove-breakpoint(bp.id); } }
+                        Button { text: "×"; enabled: (root.connected || bp.pending) && !root.busy; clicked => { root.remove-breakpoint(bp.id); } }
                     }
                 }
             }

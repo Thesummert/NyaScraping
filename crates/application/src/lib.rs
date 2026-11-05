@@ -113,7 +113,10 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
                     matches!(&action, DebugAction::Connect { .. } | DebugAction::Pause);
                 let result = match action {
                     DebugAction::AddSourceBreakpoint { file, line }
-                        if state != nya_domain::SessionState::Halted =>
+                        if !matches!(
+                            state,
+                            nya_domain::SessionState::Halted | nya_domain::SessionState::Running
+                        ) =>
                     {
                         if file.is_empty() || line == 0 {
                             Err(nya_domain::Error("无效的源码断点位置".into()))
@@ -156,7 +159,13 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
                                 }
                                 .into(),
                             );
-                            if enabled && state == nya_domain::SessionState::Halted {
+                            if enabled
+                                && matches!(
+                                    state,
+                                    nya_domain::SessionState::Halted
+                                        | nya_domain::SessionState::Running
+                                )
+                            {
                                 pending_message =
                                     self.install_pending_breakpoints().or(pending_message);
                             }
@@ -484,6 +493,9 @@ mod tests {
                 DebugAction::Continue => self.debug.state = SessionState::Running,
                 DebugAction::Disconnect => self.debug.state = SessionState::Disconnected,
                 DebugAction::AddBreakpoint(_) => return Err(Error("bad breakpoint".into())),
+                DebugAction::RemoveBreakpoint(id) => {
+                    self.debug.breakpoints.retain(|bp| bp.id != *id)
+                }
                 DebugAction::AddSourceBreakpoint { file, line } => {
                     if file == "missing.c" {
                         return Err(Error("source unavailable".into()));
@@ -604,14 +616,20 @@ mod tests {
         assert_eq!(snapshot.breakpoints[0].line, 12);
 
         app.tools.debug.state = SessionState::Running;
-        let pending = debug(app.execute(add("other.c", 7)))
+        let installed = debug(app.execute(add("other.c", 7)))
             .breakpoints
             .pop()
             .unwrap();
-        assert!(pending.id.starts_with("pending:"));
+        assert!(!installed.id.starts_with("pending:"));
+        assert_eq!(app.tools.debug.state, SessionState::Running);
+        assert!(matches!(
+            app.tools.actions.last(),
+            Some(DebugAction::AddSourceBreakpoint { line: 7, .. })
+        ));
         let snapshot =
-            debug(app.execute(Command::Debug(DebugAction::RemoveBreakpoint(pending.id))));
+            debug(app.execute(Command::Debug(DebugAction::RemoveBreakpoint(installed.id))));
         assert_eq!(snapshot.breakpoints.len(), 1);
+        app.tools.debug.state = SessionState::Disconnected;
         let pending = debug(app.execute(add("missing.c", 8)))
             .breakpoints
             .pop()

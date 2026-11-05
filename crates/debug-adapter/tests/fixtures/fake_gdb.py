@@ -74,6 +74,9 @@ for line in sys.stdin:
         frame = int(command.split()[-1])
         send(token + '^done')
     elif command.startswith('-break-insert'):
+        if 'missing.c' in command:
+            send(token + '^error,msg="No source file named missing.c"')
+            continue
         breakpoints = True
         breakpoint_enabled = True
         breakpoint_source = command.startswith('-break-insert --source "/fixture/main.c" --line 8')

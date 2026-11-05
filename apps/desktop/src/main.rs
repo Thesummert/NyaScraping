@@ -1183,7 +1183,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_show_breakpoints(move || {
         if let (Some(ui), Some(window)) = (weak.upgrade(), weak_window.upgrade()) {
             window.set_breakpoints(ui.get_breakpoints());
-            window.set_can_edit(ui.get_debug_halted() && !ui.get_busy());
+            window
+                .set_can_edit((ui.get_debug_halted() || ui.get_debug_running()) && !ui.get_busy());
             window.set_can_edit_pending(!ui.get_busy());
             if let Err(error) = window.show() {
                 ui.set_status(format!("无法打开断点记录窗口：{error}").into());
@@ -1227,7 +1228,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         move || {
             if let (Some(ui), Some(window)) = (weak.upgrade(), weak_window.upgrade()) {
                 window.set_breakpoints(ui.get_breakpoints());
-                window.set_can_edit(ui.get_debug_halted() && !ui.get_busy());
+                window.set_can_edit(
+                    (ui.get_debug_halted() || ui.get_debug_running()) && !ui.get_busy(),
+                );
                 window.set_can_edit_pending(!ui.get_busy());
             }
         },

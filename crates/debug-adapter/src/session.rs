@@ -92,6 +92,42 @@ impl Session {
             .collect();
         Ok(())
     }
+    /// All-stop remote targets require a brief interrupt to change breakpoints.
+    fn breakpoint_command(&mut self, command: &str) -> Result<()> {
+        self.client()?.poll()?;
+        let was_running = self.client()?.state == SessionState::Running;
+        let mut resume = false;
+        if was_running {
+            self.client()?.command("-exec-interrupt --all")?;
+            let start = Instant::now();
+            while self.client()?.state == SessionState::Running {
+                if start.elapsed() > Duration::from_secs(3) {
+                    return Err(Error("等待目标暂停超时，未修改断点".into()));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                self.client()?.poll()?;
+            }
+            resume = self.client()?.stop.as_ref().is_some_and(|stop| {
+                stop.field("reason") == "signal-received" && stop.field("signal-name") == "SIGINT"
+            });
+        }
+        let result = (|| {
+            self.halted()?.command(command)?;
+            self.breakpoint_list()
+        })();
+        // Restore execution even if setting a breakpoint failed. A real breakpoint
+        // racing with the interrupt must stay stopped and retain its source context.
+        if resume {
+            self.last_stop = self.client()?.stop_generation;
+            self.halted()?.command("-exec-continue")?;
+            self.frames.clear();
+        } else if was_running {
+            self.selected_frame = 0;
+            self.context()?;
+        }
+        result
+    }
+
     fn thread_state(&mut self) -> Result<()> {
         let info = self.client()?.command("-thread-info")?;
         let threads = info.get("threads").map(Value::list).unwrap_or_default();
@@ -447,9 +483,7 @@ impl DebugSession for DebugAdapter {
                     return Err(Error("请输入函数名或 文件:行号".into()));
                 }
                 self.session
-                    .halted()?
-                    .command(&format!("-break-insert {}", mi::quote(location.trim())))?;
-                self.session.breakpoint_list()?;
+                    .breakpoint_command(&format!("-break-insert {}", mi::quote(location.trim())))?;
                 self.session.message = "断点已添加".into();
             }
             DebugAction::RemoveBreakpoint(id) => {
@@ -457,32 +491,28 @@ impl DebugSession for DebugAdapter {
                     return Err(Error("无效断点编号".into()));
                 }
                 self.session
-                    .halted()?
-                    .command(&format!("-break-delete {id}"))?;
-                self.session.breakpoint_list()?;
+                    .breakpoint_command(&format!("-break-delete {id}"))?;
                 self.session.message = "断点已移除".into();
             }
             DebugAction::AddSourceBreakpoint { file, line } => {
                 if file.is_empty() || line == 0 {
                     return Err(Error("无效的源码断点位置".into()));
                 }
-                self.session.halted()?.command(&format!(
+                self.session.breakpoint_command(&format!(
                     "-break-insert --source {} --line {}",
                     mi::quote(&file),
                     line
                 ))?;
-                self.session.breakpoint_list()?;
                 self.session.message = "断点已添加".into();
             }
             DebugAction::SetBreakpointEnabled { id, enabled } => {
                 if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
                     return Err(Error("无效断点编号".into()));
                 }
-                self.session.halted()?.command(&format!(
+                self.session.breakpoint_command(&format!(
                     "-break-{} {id}",
                     if enabled { "enable" } else { "disable" }
                 ))?;
-                self.session.breakpoint_list()?;
                 self.session.message = if enabled {
                     "断点已启用"
                 } else {
@@ -916,6 +946,57 @@ mod tests {
         let snapshot = adapter.debug_snapshot(std::slice::from_ref(&watch));
         assert_eq!(snapshot.state, SessionState::Halted);
         assert_eq!(snapshot.values[0].value.display_value, "23");
+    }
+
+    #[test]
+    fn running_breakpoints_are_installed_and_real_stops_are_preserved() {
+        let (_root, mut adapter, profile) = fixture();
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+            })
+            .unwrap();
+        adapter.execute_debug(DebugAction::Continue).unwrap();
+        adapter
+            .execute_debug(DebugAction::AddSourceBreakpoint {
+                file: "/fixture/main.c".into(),
+                line: 8,
+            })
+            .unwrap();
+        let snapshot = adapter.debug_snapshot(&[]);
+        assert_eq!(snapshot.state, SessionState::Running);
+        assert_eq!(snapshot.breakpoints[0].line, 8);
+        adapter
+            .execute_debug(DebugAction::SetBreakpointEnabled {
+                id: "1".into(),
+                enabled: false,
+            })
+            .unwrap();
+        let snapshot = adapter.debug_snapshot(&[]);
+        assert_eq!(snapshot.state, SessionState::Running);
+        assert!(!snapshot.breakpoints[0].enabled);
+        let error = adapter
+            .execute_debug(DebugAction::AddSourceBreakpoint {
+                file: "missing.c".into(),
+                line: 8,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("No source file"));
+        assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
+        adapter
+            .session
+            .client()
+            .unwrap()
+            .command("-test-break-on-interrupt")
+            .unwrap();
+        adapter
+            .execute_debug(DebugAction::RemoveBreakpoint("1".into()))
+            .unwrap();
+        let snapshot = adapter.debug_snapshot(&[]);
+        assert_eq!(snapshot.state, SessionState::Halted);
+        assert_eq!(snapshot.frames[0].line, 8);
+        assert!(snapshot.breakpoints.is_empty());
     }
 
     #[test]

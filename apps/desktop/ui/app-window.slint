@@ -104,6 +104,9 @@ export component AppWindow inherits Window {
     in-out property <[BreakpointRow]> breakpoints;
     in-out property <string> debug-log;
     in-out property <string> execution-location;
+    in-out property <int> source-execution-line;
+    callback reveal-execution-line();
+    reveal-execution-line => { source-page.reveal-execution-line(); }
     callback debug-action(int);
     callback add-breakpoint(string);
     callback remove-breakpoint(string);
@@ -396,6 +399,7 @@ export component AppWindow inherits Window {
                                 selected-tab: root.source-selected-tab;
                                 line-count: root.source-line-count;
                                 halted: root.debug-halted;
+                                execution-line: root.source-execution-line;
                                 breakpoints: root.source-breakpoints;
                                 executable-lines: root.source-executable-lines;
                                 line-hint: root.source-line-hint;
@@ -755,7 +759,7 @@ export component BreakpointWindow inherits Window {
     VerticalLayout {
         padding: 16px; spacing: 10px;
         Text { text: "断点记录"; color: Theme.text; font-size: 18px; font-weight: 700; }
-        Text { text: root.breakpoints.length == 0 ? "当前没有断点" : "待设置断点可提前管理；已设置断点请在目标暂停后操作"; color: Theme.muted; }
+        Text { text: root.breakpoints.length == 0 ? "当前没有断点" : "待设置断点可提前管理；运行中修改断点会短暂暂停目标后恢复"; color: Theme.muted; }
         ListView {
             vertical-stretch: 1;
             for bp in root.breakpoints: HorizontalLayout {

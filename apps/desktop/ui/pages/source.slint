@@ -28,6 +28,20 @@ export component SourcePage inherits VerticalLayout {
     in property <int> selected-tab;
     in property <int> line-count;
     in property <bool> halted;
+    in property <int> execution-line;
+    public function reveal-execution-line() { navigation-timer.running = true; }
+    navigation-timer := Timer {
+        interval: 0ms;
+        running: false;
+        triggered => { self.running = false; root.scroll-to-execution-line(); }
+    }
+    function scroll-to-execution-line() {
+        if root.execution-line > 0 {
+            editor.content-y = -max(0px, min(editor.content-height - editor.visible-height, (root.execution-line - 1) * gutter.line-height - editor.visible-height / 3));
+            colored.content-y = -max(0px, min(colored.content-height - colored.visible-height, (root.execution-line - 1) * gutter.line-height - colored.visible-height / 3));
+        }
+    }
+    changed highlight-lines => { root.reveal-execution-line(); }
     in property <[SourceBreakpoint]> breakpoints;
     in property <[bool]> executable-lines;
     in property <string> line-hint;
@@ -79,17 +93,18 @@ export component SourcePage inherits VerticalLayout {
             width: 62px;
             background: Theme.sidebar;
             clip: true;
-            // Match the TextEdit's font metrics and its Fluent 12px scroll padding.
-            property <length> line-height: metric.preferred-height;
+            // Measure the multiline input: a rounded single-line Text height drifts
+            // away from TextEdit after scrolling, so gutter clicks hit wrong lines.
+            property <length> line-height: metric.preferred-height / max(1, root.line-count);
             property <length> scroll-y: root.highlight-lines.length > 0 ? colored.content-y : editor.content-y;
             property <int> first-line: floor(max(0, -self.scroll-y / self.line-height));
-            metric := Text { text: "M"; font-family: root.font-family; font-size: root.font-size * 1px; visible: false; }
+            metric := TextInput { text: root.source-text; single-line: false; wrap: no-wrap; read-only: true; font-family: root.font-family; font-size: root.font-size * 1px; visible: false; }
             for n[index] in (ceil(gutter.height / gutter.line-height) + 2): Rectangle {
                 property <int> line: gutter.first-line + index + 1;
                 y: 12px + gutter.scroll-y + (self.line - 1) * gutter.line-height;
                 width: parent.width; height: gutter.line-height;
                 visible: root.selected-tab >= 0 && self.line <= root.line-count;
-                background: hit.has-hover && hit.enabled ? Theme.selection : transparent;
+                background: self.line == root.execution-line ? #080a11 : (hit.has-hover && hit.enabled ? Theme.selection : transparent);
                 animate background { duration: 140ms; }
                 if root.firmware-matches && gutter.first-line + index < root.executable-lines.length && root.executable-lines[gutter.first-line + index]: Rectangle {
                     x: 7px; y: (parent.height - 6px) / 2;
@@ -106,7 +121,19 @@ export component SourcePage inherits VerticalLayout {
                 TouchArea { enabled: !root.busy; clicked => { root.toggle-breakpoint(bp.line); } }
             }
         }
-        editor := TextEdit { visible: root.highlight-lines.length == 0; text: root.source-text; read-only: true; wrap: no-wrap; font-family: root.font-family; font-size: root.font-size * 1px; horizontal-stretch: root.highlight-lines.length == 0 ? 1 : 0; min-width: 0px; max-width: root.highlight-lines.length == 0 ? 100000px : 0px; }
+        plain := Rectangle {
+            clip: true;
+            horizontal-stretch: root.highlight-lines.length == 0 ? 1 : 0;
+            min-width: 0px; max-width: root.highlight-lines.length == 0 ? 100000px : 0px;
+            editor := TextEdit { width: parent.width; height: parent.height; visible: root.highlight-lines.length == 0; text: root.source-text; read-only: true; wrap: no-wrap; font-family: root.font-family; font-size: root.font-size * 1px; }
+            Rectangle {
+                visible: root.execution-line > 0 && root.highlight-lines.length == 0;
+                x: 12px; y: 12px + editor.content-y + (root.execution-line - 1) * gutter.line-height;
+                width: max(0px, editor.visible-width - 24px); height: gutter.line-height;
+                background: #00000055;
+                Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Theme.accent; }
+            }
+        }
         colored := ScrollView {
             visible: root.highlight-lines.length > 0;
             horizontal-stretch: root.highlight-lines.length > 0 ? 1 : 0;
@@ -118,6 +145,8 @@ export component SourcePage inherits VerticalLayout {
                 x: 12px; y: 12px + self.line-index * gutter.line-height;
                 width: colored.content-width - 24px; height: gutter.line-height;
                 visible: self.line-index < root.highlight-lines.length;
+                background: self.line-index + 1 == root.execution-line ? #080a11 : transparent;
+                if self.line-index + 1 == root.execution-line: Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Theme.accent; }
                 HorizontalLayout {
                     spacing: 0px;
                     for span in root.highlight-lines[parent.line-index].spans: Text {

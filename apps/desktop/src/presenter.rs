@@ -22,6 +22,7 @@ pub struct Presenter {
     source_documents: Vec<Document>,
     source_selected: Option<usize>,
     breakpoints: Vec<nya_domain::Breakpoint>,
+    execution_position: Option<(std::path::PathBuf, u32)>,
     executable_lines: HashMap<std::path::PathBuf, Vec<u32>>,
     watches: WatchList,
     pub acquisition: Arc<Acquisition>,
@@ -236,8 +237,21 @@ impl Presenter {
             ui.set_source_line_count(0);
         }
         self.sync_source_breakpoints(ui);
+        self.sync_execution_line(ui);
         self.sync_executable_lines(ui);
         ui.invoke_highlight_source();
+    }
+
+    fn sync_execution_line(&self, ui: &AppWindow) {
+        let line = self
+            .execution_position
+            .as_ref()
+            .and_then(|(path, line)| {
+                let document = self.source_documents.get(self.source_selected?)?;
+                (Self::source_key(&document.path) == *path).then_some(*line)
+            })
+            .unwrap_or(0);
+        ui.set_source_execution_line(line.min(i32::MAX as u32) as i32);
     }
 
     fn sync_executable_lines(&self, ui: &AppWindow) {
@@ -560,9 +574,31 @@ impl Presenter {
                         .unwrap_or_default()
                         .into(),
                 );
-                if let Some(document) = snapshot.source {
-                    self.open_source_document(ui, document);
+                let position = (snapshot.state == SessionState::Halted)
+                    .then(|| {
+                        snapshot
+                            .frames
+                            .iter()
+                            .find(|f| f.level == snapshot.selected_frame)
+                    })
+                    .flatten()
+                    .filter(|frame| !frame.file.is_empty() && frame.line > 0)
+                    .map(|frame| {
+                        (
+                            Self::source_key(std::path::Path::new(&frame.file)),
+                            frame.line,
+                        )
+                    });
+                let navigate = position.is_some() && position != self.execution_position;
+                self.execution_position = position;
+                if navigate {
+                    if let Some(document) = snapshot.source {
+                        self.open_source_document(ui, document);
+                        ui.set_current_tab(0);
+                        ui.invoke_reveal_execution_line();
+                    }
                 }
+                self.sync_execution_line(ui);
                 if matches!(
                     snapshot.state,
                     SessionState::Disconnected | SessionState::Faulted

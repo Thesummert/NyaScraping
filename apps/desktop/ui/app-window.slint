@@ -108,6 +108,14 @@ export component AppWindow inherits Window {
     callback select-frame(int);
     in-out property <int> current-tab: 0;
     in-out property <string> status: "就绪";
+    callback status-message-changed(string);
+    callback record-system-error(string);
+    callback acquisition-message-changed(string);
+    callback debug-output-changed(string);
+    callback show-system-log();
+    changed status => { root.status-message-changed(root.status); }
+    changed acquisition-status => { root.acquisition-message-changed(root.acquisition-status); }
+    changed debug-log => { root.debug-output-changed(root.debug-log); }
     in-out property <[ToolRow]> tools;
     in-out property <string> backend-summary: "尚未选择调试后端";
     in-out property <string> tool-message: "扫描 PATH 工具与已安装版本。";
@@ -468,7 +476,11 @@ export component AppWindow inherits Window {
                 padding-left: 16px;
                 padding-right: 16px;
                 spacing: 16px;
-                Text { text: root.status; color: Theme.muted; overflow: elide; horizontal-stretch: 1; }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    Text { text: root.status; color: status-hit.has-hover ? Theme.text : Theme.muted; overflow: elide; vertical-alignment: center; }
+                    status-hit := TouchArea { mouse-cursor: pointer; clicked => { root.show-system-log(); } }
+                }
                 Text { text: root.busy ? "处理中" : root.debug-state; color: Theme.accent; font-size: 12px; }
             }
         }
@@ -606,6 +618,32 @@ export component AppWindow inherits Window {
     }
 }
 
+
+export component SystemLogWindow inherits Window {
+    title: "系统日志";
+    preferred-width: 800px;
+    preferred-height: 500px;
+    min-width: 500px;
+    min-height: 300px;
+    background: Theme.background;
+    in property <string> events;
+    in property <string> debug-output;
+    callback clear-events();
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        HorizontalLayout {
+            Text { text: "系统日志"; color: Theme.text; font-size: 18px; font-weight: 700; horizontal-stretch: 1; }
+            Button { text: "清空应用事件"; clicked => { root.clear-events(); } }
+        }
+        Text { text: "应用事件按程序运行时间记录，最新事件在最上方；调试输出显示当前 GDB 会话的最近日志。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+        TabWidget {
+            vertical-stretch: 1;
+            Tab { title: "应用事件"; VerticalLayout { TextEdit { text: root.events; read-only: true; wrap: no-wrap; font-family: "monospace"; } } }
+            Tab { title: "调试输出"; VerticalLayout { TextEdit { text: root.debug-output; read-only: true; wrap: no-wrap; font-family: "monospace"; } } }
+        }
+    }
+}
 
 export component BreakpointWindow inherits Window {
     title: "断点记录";

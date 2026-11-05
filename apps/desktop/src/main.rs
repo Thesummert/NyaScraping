@@ -3,6 +3,7 @@ mod file_picker;
 mod firmware_browser;
 mod presenter;
 mod project;
+mod system_log;
 mod watch_list;
 mod waveform_view;
 
@@ -62,7 +63,11 @@ fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
                 ui.set_status("正在处理…".into());
             }
         }
-        Err(error) => ui.set_status(format!("无法提交任务：{error}").into()),
+        Err(error) => {
+            let message = format!("无法提交任务：{error}");
+            ui.invoke_record_system_error(message.as_str().into());
+            ui.set_status(message.into());
+        }
     }
 }
 
@@ -272,6 +277,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = AppWindow::new()?;
     let waveform_window = WaveformWindow::new()?;
     let breakpoint_window = BreakpointWindow::new()?;
+    let log_window = SystemLogWindow::new()?;
+    let system_log = std::rc::Rc::new(std::cell::RefCell::new(system_log::SystemLog::default()));
+    system_log.borrow_mut().record("应用", &ui.get_status());
+    log_window.set_events(system_log.borrow().text().into());
+    let log = system_log.clone();
+    let weak_log = log_window.as_weak();
+    ui.on_status_message_changed(move |message| {
+        let mut log = log.borrow_mut();
+        log.record("应用", &message);
+        if let Some(window) = weak_log.upgrade() {
+            window.set_events(log.text().into());
+        }
+    });
+    let log = system_log.clone();
+    let weak_log = log_window.as_weak();
+    ui.on_record_system_error(move |message| {
+        let mut log = log.borrow_mut();
+        log.record("应用", &message);
+        if let Some(window) = weak_log.upgrade() {
+            window.set_events(log.text().into());
+        }
+    });
+    let log = system_log.clone();
+    let weak_log = log_window.as_weak();
+    ui.on_acquisition_message_changed(move |message| {
+        let mut log = log.borrow_mut();
+        log.record("采集", &message);
+        if let Some(window) = weak_log.upgrade() {
+            window.set_events(log.text().into());
+        }
+    });
+    let weak_log = log_window.as_weak();
+    ui.on_debug_output_changed(move |output| {
+        if let Some(window) = weak_log.upgrade() {
+            window.set_debug_output(output);
+        }
+    });
+    let weak = ui.as_weak();
+    let weak_log = log_window.as_weak();
+    let log = system_log.clone();
+    ui.on_show_system_log(move || {
+        if let (Some(ui), Some(window)) = (weak.upgrade(), weak_log.upgrade()) {
+            window.set_events(log.borrow().text().into());
+            window.set_debug_output(ui.get_debug_log());
+            if let Err(error) = window.show() {
+                ui.set_status(format!("无法打开系统日志窗口：{error}").into());
+            }
+        }
+    });
+    let log = system_log.clone();
+    let weak_log = log_window.as_weak();
+    log_window.on_clear_events(move || {
+        log.borrow_mut().clear();
+        if let Some(window) = weak_log.upgrade() {
+            window.set_events("".into());
+        }
+    });
+    log_window
+        .window()
+        .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
     #[cfg(target_os = "macos")]
     set_application_icon();
     let mut application = Application::new(
@@ -594,6 +659,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         external_server: ui.get_external_server(),
                     },
                     Err(error) => {
+                        ui.invoke_record_system_error(error.as_str().into());
                         ui.set_status(error.as_str().into());
                         ui.set_settings_message(error.into());
                         ui.set_settings_tab(2);
@@ -1185,11 +1251,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let weak_window = waveform_window.as_weak();
     let weak_breakpoint_window = breakpoint_window.as_weak();
+    let weak_log_window = log_window.as_weak();
     ui.window().on_close_requested(move || {
         if let Some(window) = weak_window.upgrade() {
             let _ = window.hide();
         }
         if let Some(window) = weak_breakpoint_window.upgrade() {
+            let _ = window.hide();
+        }
+        if let Some(window) = weak_log_window.upgrade() {
             let _ = window.hide();
         }
         slint::CloseRequestResponse::HideWindow

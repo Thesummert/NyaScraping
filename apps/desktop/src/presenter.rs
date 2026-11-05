@@ -353,6 +353,22 @@ impl Presenter {
         if matches!(&event, PreparedEvent::Internal) {
             return;
         }
+        match &event {
+            PreparedEvent::Debug(snapshot, _) => {
+                if snapshot.message.starts_with("操作失败：")
+                    || snapshot.message.starts_with("调试连接异常：")
+                {
+                    ui.invoke_record_system_error(snapshot.message.as_str().into());
+                }
+                if let Some(error) = &snapshot.watch_sample_error {
+                    ui.invoke_record_system_error(format!("自动刷新已停止：{error}").into());
+                }
+            }
+            PreparedEvent::Failed(error) => {
+                ui.invoke_record_system_error(format!("操作失败：{error}").into())
+            }
+            _ => {}
+        }
         if !matches!(&event, PreparedEvent::Debug(_, false)) {
             ui.set_busy(false);
         }

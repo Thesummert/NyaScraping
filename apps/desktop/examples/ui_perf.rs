@@ -211,6 +211,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(ui.get_source_executable_lines().row_data(1).unwrap());
     ui.set_project_dialog_open(false);
     redraw(&window, &mut pixels, 2960);
+    let status_log = Rc::new(std::cell::RefCell::new(String::new()));
+    let observed_status = status_log.clone();
+    ui.on_status_message_changed(move |message| {
+        *observed_status.borrow_mut() = message.to_string()
+    });
+    ui.set_status("系统日志验证".into());
+    slint::platform::update_timers_and_animations();
+    redraw(&window, &mut pixels, 2960);
+    assert_eq!(&*status_log.borrow(), "系统日志验证");
+    let log_opened = Rc::new(std::cell::Cell::new(false));
+    let observed_open = log_opened.clone();
+    ui.on_show_system_log(move || observed_open.set(true));
+    let position = slint::LogicalPosition::new(30., 883.);
+    window.dispatch_event(WindowEvent::PointerMoved { position });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: PointerEventButton::Left,
+    });
+    assert!(
+        log_opened.get(),
+        "clicking the status bar must open the system log"
+    );
     let clicked = Rc::new(std::cell::Cell::new(0));
     let observed = clicked.clone();
     ui.on_toggle_source_breakpoint(move |line| observed.set(line));
@@ -261,6 +287,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "clicking the marker must report its source line"
         );
     }
+    let errors = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let observed_errors = errors.clone();
+    ui.on_record_system_error(move |message| {
+        observed_errors.borrow_mut().push(message.to_string())
+    });
+    presenter.apply(
+        &ui,
+        nya_application::Event::DebugUpdated {
+            snapshot: nya_domain::DebugSnapshot {
+                message: "操作失败：GDB 连接被拒绝".into(),
+                ..Default::default()
+            },
+            completes_command: true,
+        }
+        .into(),
+    );
+    ui.set_status("后续状态".into());
+    assert_eq!(&*errors.borrow(), &["操作失败：GDB 连接被拒绝"]);
+    presenter.apply(
+        &ui,
+        nya_application::Event::Failed("GDB 无法启动".into()).into(),
+    );
+    assert_eq!(errors.borrow()[1], "操作失败：GDB 无法启动");
     presenter.apply(
         &ui,
         nya_application::Event::SourceOpened(make_document("two/main.c", "other")).into(),

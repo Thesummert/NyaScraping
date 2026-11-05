@@ -3,6 +3,7 @@ mod file_picker;
 mod firmware_browser;
 mod presenter;
 mod project;
+mod source_font;
 mod system_log;
 mod tree_sitter;
 mod watch_list;
@@ -280,6 +281,116 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,overlay");
     }
     let ui = AppWindow::new()?;
+    let font = source_font::load();
+    ui.set_source_font_family(font.family.into());
+    ui.set_source_font_size(font.size);
+    let font_save_timer = std::rc::Rc::new(slint::Timer::default());
+    let timer = font_save_timer.clone();
+    let weak = ui.as_weak();
+    ui.on_source_font_changed(move || {
+        let weak = weak.clone();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(500),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    let font = source_font::SourceFont {
+                        family: ui.get_source_font_family().to_string(),
+                        size: ui.get_source_font_size(),
+                    };
+                    if let Err(error) = source_font::save(&font) {
+                        ui.set_status(format!("无法保存源码字体设置：{error}").into());
+                    }
+                }
+            },
+        );
+    });
+    let weak = ui.as_weak();
+    ui.on_apply_source_font(move || {
+        if let Some(ui) = weak.upgrade() {
+            let font = source_font::SourceFont {
+                family: ui.get_source_font_draft().to_string(),
+                size: ui.get_source_font_size_draft(),
+            }
+            .normalized();
+            ui.set_source_font_family(font.family.as_str().into());
+            ui.set_source_font_size(font.size);
+            ui.set_source_font_draft(font.family.into());
+            ui.set_source_font_size_draft(font.size);
+            ui.invoke_source_font_changed();
+            ui.set_settings_message("源码字体已应用".into());
+        }
+    });
+    {
+        use slint::winit_030::{
+            winit::event::{MouseScrollDelta, WindowEvent},
+            EventResult, WinitWindowAccessor,
+        };
+        let weak = ui.as_weak();
+        let mut control = false;
+        let mut cursor: Option<(f64, f64)> = None;
+        let mut wheel_accumulator = 0.0_f64;
+        ui.window().on_winit_window_event(move |window, event| {
+            match event {
+                WindowEvent::ModifiersChanged(modifiers) => {
+                    control = modifiers.state().control_key();
+                    if !control {
+                        wheel_accumulator = 0.0;
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    let scale = window.scale_factor() as f64;
+                    cursor = Some((position.x / scale, position.y / scale));
+                }
+                WindowEvent::CursorLeft { .. } => {
+                    cursor = None;
+                    wheel_accumulator = 0.0;
+                }
+                WindowEvent::Focused(false) => {
+                    cursor = None;
+                    control = false;
+                    wheel_accumulator = 0.0;
+                }
+                WindowEvent::MouseWheel { delta, .. } if control => {
+                    if let (Some(ui), Some(point)) = (weak.upgrade(), cursor) {
+                        let rect = (
+                            ui.get_source_editor_x(),
+                            ui.get_source_editor_y(),
+                            ui.get_source_editor_width(),
+                            ui.get_source_editor_height(),
+                        );
+                        if ui.get_current_tab() == 0
+                            && !ui.get_settings_open()
+                            && !ui.get_project_dialog_open()
+                            && !ui.get_file_dialog_open()
+                            && source_font::contains_point(point, rect)
+                        {
+                            let amount = match delta {
+                                MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                                MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
+                            };
+                            if amount != 0.0 {
+                                let steps =
+                                    source_font::wheel_steps(&mut wheel_accumulator, amount);
+                                if steps != 0 {
+                                    let size = (ui.get_source_font_size() + steps)
+                                        .clamp(source_font::MIN_SIZE, source_font::MAX_SIZE);
+                                    if size != ui.get_source_font_size() {
+                                        ui.set_source_font_size(size);
+                                        ui.invoke_source_font_changed();
+                                    }
+                                }
+                                return EventResult::PreventDefault;
+                            }
+                        }
+                    }
+                    wheel_accumulator = 0.0;
+                }
+                _ => {}
+            }
+            EventResult::Propagate
+        });
+    }
     let tree_settings = tree_sitter::load();
     ui.set_tree_sitter_executable(tree_settings.executable.into());
     ui.set_tree_sitter_config(tree_settings.config.into());
@@ -1590,7 +1701,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let weak_window = waveform_window.as_weak();
     let weak_breakpoint_window = breakpoint_window.as_weak();
     let weak_log_window = log_window.as_weak();
+    let weak_ui_for_font = ui.as_weak();
     ui.window().on_close_requested(move || {
+        if let Some(ui) = weak_ui_for_font.upgrade() {
+            let font = source_font::SourceFont {
+                family: ui.get_source_font_family().to_string(),
+                size: ui.get_source_font_size(),
+            };
+            let _ = source_font::save(&font);
+        }
         if let Some(window) = weak_window.upgrade() {
             let _ = window.hide();
         }

@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, SpinBox, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SourcePage, SourceTab, SourceBreakpoint, HighlightLine, HighlightSpan } from "pages/source.slint";
 import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
@@ -131,6 +131,16 @@ export component AppWindow inherits Window {
     in-out property <string> source-title: "尚未打开文件";
     in-out property <string> source-meta: "";
     in-out property <string> source-text: "打开一个源码文件以开始浏览。";
+    in-out property <string> source-font-family: "monospace";
+    in-out property <int> source-font-size: 14;
+    in-out property <string> source-font-draft: "monospace";
+    in-out property <int> source-font-size-draft: 14;
+    out property <length> source-editor-x: source-page.editor-x;
+    out property <length> source-editor-y: source-page.editor-y;
+    out property <length> source-editor-width: source-page.editor-width;
+    out property <length> source-editor-height: source-page.editor-height;
+    callback apply-source-font();
+    callback source-font-changed();
     in-out property <[HighlightLine]> source-highlights;
     in-out property <bool> source-highlight-enabled: true;
     in-out property <int> source-highlight-width;
@@ -269,6 +279,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "刷新率"; enabled: !root.interaction-busy; activated => { root.settings-tab = 3; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "Tree-sitter 管理"; enabled: !root.interaction-busy; activated => { root.settings-tab = 4; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "源码字体"; enabled: !root.interaction-busy; activated => { root.source-font-draft = root.source-font-family; root.source-font-size-draft = root.source-font-size; root.settings-tab = 5; root.settings-message = ""; root.settings-open = true; } }
         }
     }
     VerticalLayout {
@@ -367,7 +378,7 @@ export component AppWindow inherits Window {
                         current-index <=> root.current-tab;
                         Tab {
                             title: "源码";
-                            SourcePage {
+                            source-page := SourcePage {
                                 padding-top: 12px;
                                 busy: root.interaction-busy;
                                 tabs: root.source-tabs;
@@ -385,6 +396,8 @@ export component AppWindow inherits Window {
                                 source-title: root.source-title;
                                 metadata: root.source-meta + (root.execution-location != "" ? " · " + root.execution-location : "") + (root.source-highlight-status != "" ? " · " + root.source-highlight-status : "");
                                 source-text: root.source-text;
+                                font-family: root.source-font-family;
+                                font-size: root.source-font-size;
                                 highlight-enabled <=> root.source-highlight-enabled;
                                 highlight-lines: root.source-highlight-enabled ? root.source-highlights : [];
                                 highlight-width: root.source-highlight-width;
@@ -625,6 +638,24 @@ export component AppWindow inherits Window {
                                 Button { text: "使用 Cargo 安装"; enabled: !root.tree-sitter-busy; clicked => { root.tree-sitter-install(); } }
                             }
                             Text { text: root.tree-sitter-message; color: Theme.muted; wrap: word-wrap; }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                    }
+                    Tab {
+                        title: "源码字体";
+                        VerticalLayout {
+                            padding-top: 16px; spacing: 12px;
+                            Text { text: "源码字体"; color: Theme.text; font-size: 16px; }
+                            Text { text: "输入本机已安装的字体名称；推荐使用等宽字体。"; color: Theme.muted; wrap: word-wrap; }
+                            LineEdit { text <=> root.source-font-draft; placeholder-text: "字体名称，例如 monospace、Menlo、Consolas"; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "字号（8–48）"; color: Theme.text; vertical-alignment: center; }
+                                SpinBox { minimum: 8; maximum: 48; value <=> root.source-font-size-draft; }
+                                Button { text: "应用并保存"; clicked => { root.apply-source-font(); } }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            Text { text: "也可在源码区域按住 Ctrl 滚轮缩放；滚轮缩放会自动保存。"; color: Theme.muted; wrap: word-wrap; }
                             Rectangle { vertical-stretch: 1; }
                         }
                     }

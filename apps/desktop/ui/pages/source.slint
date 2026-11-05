@@ -15,6 +15,12 @@ export component SourcePage inherits VerticalLayout {
     in property <string> source-title;
     in property <string> metadata;
     in property <string> source-text;
+    in property <string> font-family: "monospace";
+    in property <int> font-size: 14;
+    out property <length> editor-x: editor-area.absolute-position.x + 62px;
+    out property <length> editor-y: editor-area.absolute-position.y;
+    out property <length> editor-width: max(0px, editor-area.width - 62px);
+    out property <length> editor-height: editor-area.height;
     in property <[HighlightLine]> highlight-lines;
     in-out property <bool> highlight-enabled;
     in property <int> highlight-width;
@@ -66,7 +72,7 @@ export component SourcePage inherits VerticalLayout {
         text: root.firmware-matches ? root.line-hint : "请先解析当前编译产物，查看可设置断点的行";
         color: Theme.muted; font-size: 11px; wrap: word-wrap;
     }
-    HorizontalLayout {
+    editor-area := HorizontalLayout {
         spacing: 0px;
         vertical-stretch: 1;
         gutter := Rectangle {
@@ -77,7 +83,7 @@ export component SourcePage inherits VerticalLayout {
             property <length> line-height: metric.preferred-height;
             property <length> scroll-y: root.highlight-lines.length > 0 ? colored.content-y : editor.content-y;
             property <int> first-line: floor(max(0, -self.scroll-y / self.line-height));
-            metric := Text { text: "M"; font-family: "monospace"; font-size: 14px; visible: false; }
+            metric := Text { text: "M"; font-family: root.font-family; font-size: root.font-size * 1px; visible: false; }
             for n[index] in (ceil(gutter.height / gutter.line-height) + 2): Rectangle {
                 property <int> line: gutter.first-line + index + 1;
                 y: 12px + gutter.scroll-y + (self.line - 1) * gutter.line-height;
@@ -100,13 +106,13 @@ export component SourcePage inherits VerticalLayout {
                 TouchArea { enabled: !root.busy; clicked => { root.toggle-breakpoint(bp.line); } }
             }
         }
-        editor := TextEdit { visible: root.highlight-lines.length == 0; text: root.source-text; read-only: true; wrap: no-wrap; font-family: "monospace"; font-size: 14px; horizontal-stretch: root.highlight-lines.length == 0 ? 1 : 0; min-width: 0px; max-width: root.highlight-lines.length == 0 ? 100000px : 0px; }
+        editor := TextEdit { visible: root.highlight-lines.length == 0; text: root.source-text; read-only: true; wrap: no-wrap; font-family: root.font-family; font-size: root.font-size * 1px; horizontal-stretch: root.highlight-lines.length == 0 ? 1 : 0; min-width: 0px; max-width: root.highlight-lines.length == 0 ? 100000px : 0px; }
         colored := ScrollView {
             visible: root.highlight-lines.length > 0;
             horizontal-stretch: root.highlight-lines.length > 0 ? 1 : 0;
             min-width: 0px; max-width: root.highlight-lines.length > 0 ? 100000px : 0px;
             content-height: root.highlight-lines.length * gutter.line-height + 24px;
-            content-width: max(self.visible-width, root.highlight-width * 14px + 24px);
+            content-width: max(self.visible-width, root.highlight-width * root.font-size * 2px + 24px);
             for n[index] in (ceil(self.visible-height / gutter.line-height) + 2): Rectangle {
                 property <int> line-index: gutter.first-line + index;
                 x: 12px; y: 12px + self.line-index * gutter.line-height;
@@ -115,7 +121,7 @@ export component SourcePage inherits VerticalLayout {
                 HorizontalLayout {
                     spacing: 0px;
                     for span in root.highlight-lines[parent.line-index].spans: Text {
-                        text: span.text; color: span.color; font-family: "monospace"; font-size: 14px;
+                        text: span.text; color: span.color; font-family: root.font-family; font-size: root.font-size * 1px;
                     }
                     Rectangle { horizontal-stretch: 1; }
                 }

@@ -1,6 +1,6 @@
 import { Button, ComboBox, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { SourcePage } from "pages/source.slint";
+import { SourcePage, SourceTab } from "pages/source.slint";
 import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
 import { WaveformsPage, WaveformRow } from "pages/waveforms.slint";
@@ -8,7 +8,7 @@ import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
 import { DebugPage, FrameRow, BreakpointRow } from "pages/debug.slint";
 import { DebugSettings } from "pages/debug-settings.slint";
 import { TargetRow, PackRow } from "pages/target-selector.slint";
-export { FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
+export { SourceTab, FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
 
 component PanelDivider inherits Rectangle {
     callback drag-start();
@@ -109,6 +109,11 @@ export component AppWindow inherits Window {
     in-out property <[ToolRow]> tools;
     in-out property <string> backend-summary: "尚未选择调试后端";
     in-out property <string> tool-message: "扫描 PATH 工具与已安装版本。";
+    in-out property <[SourceTab]> source-tabs;
+    in-out property <int> source-selected-tab: -1;
+    callback select-source-tab(int);
+    callback close-source-tab(int);
+    callback open-tree-source(string);
     in-out property <string> source-path;
     in-out property <string> source-title: "尚未打开文件";
     in-out property <string> source-meta: "";
@@ -161,6 +166,7 @@ export component AppWindow inherits Window {
     callback browse-source();
     callback browse-firmware();
     callback select-firmware-node(int);
+    callback select-firmware-file(int);
     callback add-firmware-variable(int);
     callback add-expression(string);
     callback remove-watch(int);
@@ -290,6 +296,8 @@ export component AppWindow inherits Window {
                     search-query <=> root.firmware-search;
                     search(query) => { root.search-firmware(query); }
                     select-node(index) => { root.select-firmware-node(index); }
+                    select-file(index) => { root.select-firmware-file(index); }
+                    open-source-file(path) => { root.open-tree-source(path); }
                     add-variable(index) => { root.add-firmware-variable(index); }
                     plot-variable(index) => { root.plot-variable(index); }
                     show-functions(show) => { root.show-functions(show); }
@@ -316,6 +324,10 @@ export component AppWindow inherits Window {
                             SourcePage {
                                 padding-top: 12px;
                                 busy: root.interaction-busy;
+                                tabs: root.source-tabs;
+                                selected-tab: root.source-selected-tab;
+                                select-tab(index) => { root.select-source-tab(index); }
+                                close-tab(index) => { root.close-source-tab(index); }
                                 path <=> root.source-path;
                                 source-title: root.source-title;
                                 metadata: root.source-meta + (root.execution-location != "" ? " · " + root.execution-location : "");

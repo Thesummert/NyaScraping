@@ -194,9 +194,7 @@ fn open_project(
     } else {
         String::new()
     };
-    ui.set_source_title("尚未打开文件".into());
-    ui.set_source_meta("".into());
-    ui.set_source_text("打开一个源码文件以开始浏览。".into());
+    presenter.clear_source_tabs(ui);
     if !project.source.is_empty() {
         match NativeTextBackend.load(std::path::Path::new(&project.source)) {
             Ok(document) => presenter.apply(
@@ -768,6 +766,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let weak = ui.as_weak();
+    let source_presenter = presenter.clone();
+    ui.on_select_source_tab(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            source_presenter
+                .lock()
+                .expect("presenter lock")
+                .select_source_tab(&ui, index);
+        }
+    });
+    let weak = ui.as_weak();
+    let source_presenter = presenter.clone();
+    ui.on_close_source_tab(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            source_presenter
+                .lock()
+                .expect("presenter lock")
+                .close_source_tab(&ui, index);
+        }
+    });
+    let weak = ui.as_weak();
+    let source_presenter = presenter.clone();
+    let source_sender = sender.clone();
+    ui.on_open_tree_source(move |path| {
+        if let Some(ui) = weak.upgrade() {
+            if ui.get_busy() || ui.get_file_dialog_open() {
+                return;
+            }
+            ui.set_current_tab(0);
+            if !source_presenter
+                .lock()
+                .expect("presenter lock")
+                .activate_source_path(&ui, path.as_str())
+            {
+                submit(
+                    &ui,
+                    &source_sender,
+                    Command::OpenSource(path.as_str().into()),
+                );
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let tree_presenter = presenter.clone();
+    ui.on_select_firmware_file(move |index| {
+        if let Some(ui) = weak.upgrade() {
+            tree_presenter
+                .lock()
+                .expect("presenter lock")
+                .select_firmware_file(&ui, index);
+        }
+    });
     let weak = ui.as_weak();
     let tree_presenter = presenter.clone();
     let callback_updates = watch_updates.clone();

@@ -9,6 +9,7 @@ export struct FirmwareTreeRow {
     expanded: bool,
     variable: bool,
     can-plot: bool,
+    source-path: string,
 }
 
 export component FirmwarePage inherits VerticalLayout {
@@ -26,6 +27,8 @@ export component FirmwarePage inherits VerticalLayout {
     callback open();
     callback browse();
     callback select-node(int);
+    callback select-file(int);
+    callback open-source-file(string);
     callback add-variable(int);
     callback plot-variable(int);
     callback show-functions(bool);
@@ -111,8 +114,8 @@ export component FirmwarePage inherits VerticalLayout {
                     property <length> drag-start-y;
                     property <length> drag-content-x;
                     property <length> drag-content-y;
-                    clicked => { root.select-node(index); }
-                    double-clicked => { if row.variable { root.add-variable(index); } }
+                    clicked => { if row.source-path != "" { root.select-file(index); } else { root.select-node(index); } }
+                    double-clicked => { if row.source-path != "" { root.open-source-file(row.source-path); } else if row.variable { root.add-variable(index); } }
                     pointer-event(event) => {
                         if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                             menu.show({ x: self.mouse-x, y: self.mouse-y });
@@ -136,6 +139,10 @@ export component FirmwarePage inherits VerticalLayout {
                                 self.drag-content-y + self.mouse-y + parent.y + tree-view.content-y - self.drag-start-y));
                         }
                     }
+                }
+                if row.source-path != "" && row.branch: TouchArea {
+                    x: 8px + row.depth * 14px; width: 18px; height: parent.height;
+                    clicked => { root.select-node(index); }
                 }
             }
         }

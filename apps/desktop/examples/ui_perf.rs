@@ -89,6 +89,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         start.elapsed().as_secs_f64() * 100.
     );
     let mut presenter = presenter::Presenter::default();
+    let make_document = |path: &str, text: &str| nya_domain::Document {
+        path: path.into(),
+        text: text.into(),
+        encoding: "UTF-8".into(),
+        bom: false,
+        line_ending: nya_domain::LineEnding::Lf,
+        mixed_endings: false,
+    };
+    presenter.apply(
+        &ui,
+        nya_application::Event::SourceOpened(make_document("one/main.c", "first")).into(),
+    );
+    presenter.apply(
+        &ui,
+        nya_application::Event::SourceOpened(make_document("two/main.c", "second")).into(),
+    );
+    assert_eq!(ui.get_source_tabs().row_count(), 2);
+    assert_eq!(ui.get_source_text(), "second");
+    presenter.select_source_tab(&ui, 0);
+    assert_eq!(ui.get_source_text(), "first");
+    assert!(presenter.activate_source_path(&ui, "two/main.c"));
+    assert_eq!(ui.get_source_text(), "second");
+    presenter.apply(
+        &ui,
+        nya_application::Event::SourceOpened(make_document("two/main.c", "updated")).into(),
+    );
+    assert_eq!(ui.get_source_tabs().row_count(), 2);
+    assert_eq!(ui.get_source_text(), "updated");
+    presenter.close_source_tab(&ui, 0);
+    assert_eq!(ui.get_source_selected_tab(), 0);
+    assert_eq!(ui.get_source_text(), "updated");
+    presenter.close_source_tab(&ui, 0);
+    assert_eq!(ui.get_source_tabs().row_count(), 0);
+    assert_eq!(ui.get_source_selected_tab(), -1);
+    println!("Source tabs, duplicate paths, switching and closing: passed");
+
     use nya_domain::firmware::*;
     let info = FirmwareDebugInfo {
         variables: (0..20000)

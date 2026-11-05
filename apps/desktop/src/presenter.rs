@@ -5,8 +5,8 @@ use crate::{
     firmware_browser::FirmwareBrowser,
     watch_list::WatchList,
     waveform_view::{self, COLORS, PLOT_WIDTH},
-    AppWindow, BreakpointRow, FirmwareTreeRow, FrameRow, PackRow, TargetRow, ToolRow, WatchRow,
-    WaveformRow,
+    AppWindow, BreakpointRow, FirmwareTreeRow, FrameRow, PackRow, SourceTab, TargetRow, ToolRow,
+    WatchRow, WaveformRow,
 };
 use nya_application::Event;
 use nya_domain::{
@@ -19,6 +19,8 @@ use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 #[derive(Default)]
 pub struct Presenter {
     browser: Option<FirmwareBrowser>,
+    source_documents: Vec<Document>,
+    source_selected: Option<usize>,
     watches: WatchList,
     pub acquisition: Arc<Acquisition>,
     last_sequence: Option<u64>,
@@ -72,7 +74,7 @@ impl From<Event> for PreparedEvent {
                 ),
                 report: firmware_report(&image),
                 details: format!(
-                    "{} 个源文件，{} 个函数条目，{} 个变量/参数。\n\n点击目录或文件可展开；双击变量添加监视。函数默认隐藏，可通过开关显示。\n\n{}",
+                    "{} 个源文件，{} 个函数条目，{} 个变量/参数。\n\n点击目录或文件旁的箭头展开；双击文件打开源码，双击变量添加监视。函数默认隐藏，可通过开关显示。\n\n{}",
                     image.debug.files.len(), image.debug.functions.len(), image.debug.variables.len(), image.debug.warnings.join("\n"),
                 ),
                 status: format!(
@@ -87,6 +89,124 @@ impl From<Event> for PreparedEvent {
 }
 
 impl Presenter {
+    fn source_key(path: &std::path::Path) -> std::path::PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn open_source_document(&mut self, ui: &AppWindow, document: Document) {
+        let key = Self::source_key(&document.path);
+        let index = self
+            .source_documents
+            .iter()
+            .position(|item| Self::source_key(&item.path) == key)
+            .unwrap_or(self.source_documents.len());
+        if index == self.source_documents.len() {
+            self.source_documents.push(document);
+        } else {
+            self.source_documents[index] = document;
+        }
+        self.source_selected = Some(index);
+        self.sync_source_tabs(ui);
+    }
+
+    pub fn activate_source_path(&mut self, ui: &AppWindow, path: &str) -> bool {
+        let key = Self::source_key(std::path::Path::new(path));
+        if let Some(index) = self
+            .source_documents
+            .iter()
+            .position(|item| Self::source_key(&item.path) == key)
+        {
+            self.source_selected = Some(index);
+            self.sync_source_tabs(ui);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn select_source_tab(&mut self, ui: &AppWindow, index: i32) {
+        if let Ok(index) = usize::try_from(index) {
+            if index < self.source_documents.len() {
+                self.source_selected = Some(index);
+                self.sync_source_tabs(ui);
+            }
+        }
+    }
+
+    pub fn close_source_tab(&mut self, ui: &AppWindow, index: i32) {
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        if index >= self.source_documents.len() {
+            return;
+        }
+        self.source_documents.remove(index);
+        self.source_selected = self.source_selected.and_then(|selected| {
+            if self.source_documents.is_empty() {
+                None
+            } else if selected == index {
+                Some(index.min(self.source_documents.len() - 1))
+            } else if selected > index {
+                Some(selected - 1)
+            } else {
+                Some(selected)
+            }
+        });
+        self.sync_source_tabs(ui);
+    }
+
+    pub fn clear_source_tabs(&mut self, ui: &AppWindow) {
+        self.source_documents.clear();
+        self.source_selected = None;
+        self.sync_source_tabs(ui);
+    }
+
+    fn sync_source_tabs(&self, ui: &AppWindow) {
+        let tabs: Vec<_> = self
+            .source_documents
+            .iter()
+            .map(|document| SourceTab {
+                name: document
+                    .path
+                    .file_name()
+                    .unwrap_or(document.path.as_os_str())
+                    .to_string_lossy()
+                    .as_ref()
+                    .into(),
+                path: document.path.to_string_lossy().as_ref().into(),
+            })
+            .collect();
+        ui.set_source_tabs(ModelRc::from(Rc::new(VecModel::from(tabs))));
+        ui.set_source_selected_tab(self.source_selected.map_or(-1, |index| index as i32));
+        if let Some(document) = self
+            .source_selected
+            .and_then(|index| self.source_documents.get(index))
+        {
+            let path = document.path.to_string_lossy();
+            ui.set_source_path(path.as_ref().into());
+            ui.set_source_title(path.as_ref().into());
+            ui.set_source_text(document.text.as_str().into());
+            ui.set_source_meta(
+                format!(
+                    "{}  ·  {:?}{}",
+                    document.encoding,
+                    document.line_ending,
+                    if document.mixed_endings {
+                        "  ·  混合换行"
+                    } else {
+                        ""
+                    }
+                )
+                .into(),
+            );
+        } else {
+            ui.set_source_path("".into());
+            ui.set_source_title("尚未打开文件".into());
+            ui.set_source_meta("".into());
+            ui.set_source_text("打开一个源码文件以开始浏览。".into());
+        }
+    }
+
     pub fn clear_firmware(&mut self, ui: &AppWindow) {
         ui.set_live_enabled(false);
         self.acquisition.stop();
@@ -298,10 +418,7 @@ impl Presenter {
                         .into(),
                 );
                 if let Some(document) = snapshot.source {
-                    ui.set_source_title(document.path.display().to_string().into());
-                    ui.set_source_path(document.path.display().to_string().into());
-                    ui.set_source_text(document.text.into());
-                    ui.set_source_meta(document.encoding.into());
+                    self.open_source_document(ui, document);
                 }
                 if matches!(
                     snapshot.state,
@@ -325,21 +442,7 @@ impl Presenter {
                 }
             }
             PreparedEvent::Source(document) => {
-                ui.set_source_title(document.path.display().to_string().into());
-                ui.set_source_meta(
-                    format!(
-                        "{}  ·  {:?}{}",
-                        document.encoding,
-                        document.line_ending,
-                        if document.mixed_endings {
-                            "  ·  混合换行"
-                        } else {
-                            ""
-                        }
-                    )
-                    .into(),
-                );
-                ui.set_source_text(document.text.into());
+                self.open_source_document(ui, document);
                 ui.set_status("源码已通过 Rust 文本后端读取".into());
             }
             PreparedEvent::Firmware(view) => {
@@ -445,6 +548,16 @@ impl Presenter {
             if structure_changed {
                 self.refresh_tree(ui);
             }
+        }
+    }
+
+    pub fn select_firmware_file(&mut self, ui: &AppWindow, index: i32) {
+        if let Some(details) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.browser.as_mut()?.select_without_toggle(index))
+        {
+            ui.set_firmware_details(details.into());
+            ui.set_firmware_selected_node(index);
         }
     }
 
@@ -1216,6 +1329,7 @@ impl Presenter {
                 expanded: row.expanded,
                 variable: row.variable,
                 can_plot: row.can_plot,
+                source_path: row.source_path.unwrap_or_default().into(),
             })
             .collect();
         // Leave enough room for the indentation and both text columns, including

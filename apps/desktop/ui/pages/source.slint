@@ -1,5 +1,10 @@
-import { Button, LineEdit, TextEdit } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+
+export struct SourceTab {
+    name: string,
+    path: string,
+}
 
 export component SourcePage inherits VerticalLayout {
     in property <bool> busy;
@@ -7,6 +12,10 @@ export component SourcePage inherits VerticalLayout {
     in property <string> source-title;
     in property <string> metadata;
     in property <string> source-text;
+    in property <[SourceTab]> tabs;
+    in property <int> selected-tab;
+    callback select-tab(int);
+    callback close-tab(int);
     callback open();
     callback browse();
     spacing: 12px;
@@ -15,6 +24,26 @@ export component SourcePage inherits VerticalLayout {
         LineEdit { text <=> root.path; placeholder-text: "输入源码文件路径…"; enabled: !root.busy; horizontal-stretch: 1; accepted => { root.open(); } }
         Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
         Button { text: "打开源码"; enabled: !root.busy; clicked => { root.open(); } }
+    }
+    if root.tabs.length > 0: ScrollView {
+        height: 36px;
+        horizontal-scrollbar-policy: as-needed;
+        vertical-scrollbar-policy: always-off;
+        content-width: max(self.visible-width, root.tabs.length * 164px);
+        HorizontalLayout {
+            spacing: 4px;
+            for tab[index] in root.tabs: Rectangle {
+                width: 160px; height: 30px;
+                background: index == root.selected-tab ? Theme.selection : Theme.panel;
+                border-radius: 6px;
+                TouchArea { clicked => { root.select-tab(index); } }
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 4px;
+                    Text { text: tab.name; color: Theme.text; font-size: 11px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                    Button { text: "×"; clicked => { root.close-tab(index); } }
+                }
+            }
+        }
     }
     Text { text: root.source-title; color: Theme.text; overflow: elide; }
     Text { text: root.metadata; color: Theme.muted; }

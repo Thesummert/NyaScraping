@@ -15,6 +15,7 @@ struct Node {
     function: bool,
     has_variables: bool,
     search_name: String,
+    source_path: Option<String>,
 }
 
 #[derive(Clone)]
@@ -39,6 +40,7 @@ pub struct BrowserRow {
     pub expanded: bool,
     pub variable: bool,
     pub can_plot: bool,
+    pub source_path: Option<String>,
 }
 
 pub struct FirmwareBrowser {
@@ -95,6 +97,7 @@ impl FirmwareBrowser {
                 ),
             );
             tree.nodes[id].search_name = file.path.to_lowercase();
+            tree.nodes[id].source_path = Some(file.path.clone());
             files.push(id);
         }
         // Keep entries lacking source locations visible without inventing a source file.
@@ -342,6 +345,7 @@ impl FirmwareBrowser {
             function: false,
             has_variables: false,
             search_name: String::new(),
+            source_path: None,
         });
         match parent {
             Some(parent) => self.nodes[parent].children.push(id),
@@ -376,6 +380,7 @@ impl FirmwareBrowser {
                 expanded: self.expanded(id),
                 variable: node.variable.is_some(),
                 can_plot: node.variable.as_ref().is_some_and(|v| v.memory.is_some()),
+                source_path: node.source_path.clone(),
             });
             if self.expanded(id) {
                 stack.extend(node.children.iter().rev().map(|id| (*id, depth + 1)));
@@ -385,10 +390,18 @@ impl FirmwareBrowser {
     }
 
     pub fn select(&mut self, row: usize) -> Option<String> {
+        self.select_with_toggle(row, true)
+    }
+
+    pub fn select_without_toggle(&mut self, row: usize) -> Option<String> {
+        self.select_with_toggle(row, false)
+    }
+
+    fn select_with_toggle(&mut self, row: usize, toggle: bool) -> Option<String> {
         let id = *self.visible.get(row)?;
         self.selected = Some(id);
         let branch = self.has_visible_children(id);
-        if branch {
+        if branch && toggle {
             if self.query.is_empty() {
                 self.nodes[id].expanded = !self.nodes[id].expanded;
             } else if !self.search_collapsed.remove(&id) {
@@ -530,6 +543,12 @@ mod tests {
         assert!(!rows.iter().any(|r| r.label == "ƒ compute"));
         let file = rows.iter().position(|r| r.label == "main.c").unwrap();
         assert!(browser.selected_variable().is_none());
+        assert_eq!(
+            rows[file].source_path.as_deref(),
+            Some("/firmware/source/main.c")
+        );
+        assert!(browser.select_without_toggle(file).is_some());
+        assert!(!browser.rows()[file].expanded);
         assert!(browser.is_branch(file));
         assert!(!browser.is_branch(usize::MAX));
         assert!(browser

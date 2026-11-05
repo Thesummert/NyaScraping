@@ -1355,7 +1355,7 @@ impl Presenter {
 
     fn refresh_watches(&self, ui: &AppWindow) {
         let acquisition = self.acquisition.state.lock().expect("acquisition lock");
-        let rows: Vec<_> = self
+        let mut rows: Vec<_> = self
             .watches
             .rows()
             .into_iter()
@@ -1383,6 +1383,7 @@ impl Presenter {
                     None
                 };
                 WatchRow {
+                    subtree_end: 0,
                     waveform,
                     can_plot: memory.is_some(),
                     plot_hint: if memory.is_some() {
@@ -1432,6 +1433,19 @@ impl Presenter {
                 }
             })
             .collect();
+        let mut ancestors: Vec<usize> = Vec::new();
+        for index in 0..rows.len() {
+            while ancestors
+                .last()
+                .is_some_and(|&parent| rows[parent].depth >= rows[index].depth)
+            {
+                rows[ancestors.pop().unwrap()].subtree_end = index as i32;
+            }
+            ancestors.push(index);
+        }
+        for index in ancestors {
+            rows[index].subtree_end = rows.len() as i32;
+        }
         drop(acquisition);
         let current = ui.get_watches();
         if let Some(model) = current.as_any().downcast_ref::<VecModel<WatchRow>>() {
@@ -1459,13 +1473,14 @@ impl Presenter {
     }
 
     fn refresh_tree(&mut self, ui: &AppWindow) {
-        let rows: Vec<_> = self
+        let mut rows: Vec<_> = self
             .browser
             .as_mut()
             .map(|b| b.rows())
             .unwrap_or_default()
             .into_iter()
             .map(|row| FirmwareTreeRow {
+                subtree_end: 0,
                 label: row.label.into(),
                 type_name: row.type_name.into(),
                 depth: row.depth as i32,
@@ -1476,6 +1491,19 @@ impl Presenter {
                 source_path: row.source_path.unwrap_or_default().into(),
             })
             .collect();
+        let mut ancestors: Vec<usize> = Vec::new();
+        for index in 0..rows.len() {
+            while ancestors
+                .last()
+                .is_some_and(|&parent| rows[parent].depth >= rows[index].depth)
+            {
+                rows[ancestors.pop().unwrap()].subtree_end = index as i32;
+            }
+            ancestors.push(index);
+        }
+        for index in ancestors {
+            rows[index].subtree_end = rows.len() as i32;
+        }
         // Leave enough room for the indentation and both text columns, including
         // wide glyphs, so scrolling exposes names instead of truncating them.
         let text_width = |text: &str| {

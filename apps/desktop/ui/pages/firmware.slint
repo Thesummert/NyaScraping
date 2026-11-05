@@ -10,6 +10,7 @@ export struct FirmwareTreeRow {
     variable: bool,
     can-plot: bool,
     source-path: string,
+    subtree-end: int,
 }
 
 export component FirmwarePage inherits VerticalLayout {
@@ -32,6 +33,63 @@ export component FirmwarePage inherits VerticalLayout {
     callback add-variable(int);
     callback plot-variable(int);
     callback show-functions(bool);
+    private property <int> animation-start: -1;
+    private property <int> animation-end: -1;
+    private property <bool> animation-visible: true;
+    private property <bool> closing: false;
+    private property <bool> opening-wait: false;
+    private property <string> closing-label;
+    function cancel-tree-animation() {
+        tree-animation.stop();
+        root.animation-start = -1;
+        root.animation-end = -1;
+        root.opening-wait = false;
+        root.closing = false;
+        root.animation-visible = true;
+    }
+    function toggle-branch(index: int) {
+        if tree-animation.running { return; }
+        if root.tree[index].expanded {
+            root.animation-start = index;
+            root.animation-end = root.tree[index].subtree-end;
+            root.closing-label = root.tree[index].label;
+            root.closing = true;
+            root.animation-visible = false;
+            tree-animation.interval = 320ms;
+            tree-animation.start();
+        } else {
+            root.animation-start = index;
+            root.animation-end = index + 1;
+            root.animation-visible = false;
+            root.select-node(index);
+            root.animation-end = root.tree[index].subtree-end;
+            root.closing = false;
+            root.opening-wait = true;
+            tree-animation.interval = 20ms;
+            tree-animation.start();
+        }
+    }
+    tree-animation := Timer {
+        interval: 20ms;
+        running: false;
+        triggered => {
+            self.stop();
+            if root.opening-wait {
+                root.opening-wait = false;
+                root.animation-visible = true;
+                self.interval = 320ms;
+                self.start();
+            } else {
+                if root.closing && root.animation-start < root.tree.length && root.tree[root.animation-start].label == root.closing-label && root.tree[root.animation-start].expanded {
+                    root.select-node(root.animation-start);
+                }
+                root.animation-start = -1;
+                root.animation-end = -1;
+                root.closing = false;
+                root.animation-visible = true;
+            }
+        }
+    }
     spacing: 10px;
     HorizontalLayout {
         Text { text: "文件树"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
@@ -51,14 +109,14 @@ export component FirmwarePage inherits VerticalLayout {
             text <=> root.search-query;
             placeholder-text: "搜索文件 / 函数名…";
             horizontal-stretch: 1;
-            edited => { root.search(self.text); }
+            edited => { root.cancel-tree-animation(); root.search(self.text); }
         }
-        Button { text: "×"; enabled: root.search-query != ""; clicked => { root.search-query = ""; root.search(""); } }
+        Button { text: "×"; enabled: root.search-query != ""; clicked => { root.cancel-tree-animation(); root.search-query = ""; root.search(""); } }
     }
     CheckBox {
         text: "显示函数";
         checked <=> root.functions-visible;
-        toggled => { root.show-functions(self.checked); }
+        toggled => { root.cancel-tree-animation(); root.show-functions(self.checked); }
     }
     Rectangle {
         min-height: 140px;
@@ -70,14 +128,20 @@ export component FirmwarePage inherits VerticalLayout {
             content-width: max(self.visible-width, root.tree-content-width);
             horizontal-scrollbar-policy: as-needed;
             for row[index] in root.tree: Rectangle {
-                height: 32px;
+                height: index > root.animation-start && index < root.animation-end && !root.animation-visible ? 1px : 32px;
+                animate height {
+                    duration: max(1ms, 280ms / max(1, root.animation-end - root.animation-start - 1));
+                    delay: 280ms * max(0, root.closing ? root.animation-end - index - 1 : index - root.animation-start - 1) / max(1, root.animation-end - root.animation-start - 1);
+                    easing: linear;
+                }
+                clip: true;
                 width: tree-view.content-width;
                 border-radius: 8px;
                 background: index == root.selected-node ? Theme.selection : (area.has-hover ? Theme.panel : transparent);
                 Text {
                     x: 8px + row.depth * 14px;
                     width: max(0px, root.tree-label-width - self.x);
-                    height: parent.height;
+                    height: 32px;
                     vertical-alignment: center;
                     text: (row.branch ? (row.expanded ? "▾ " : "▸ ") : "  ") + row.label;
                     color: index == root.selected-node ? Theme.text : Theme.muted;
@@ -87,7 +151,7 @@ export component FirmwarePage inherits VerticalLayout {
                 if row.type-name != "": Text {
                     x: root.tree-label-width;
                     width: max(0px, parent.width - self.x - 8px);
-                    height: parent.height;
+                    height: 32px;
                     text: row.type-name;
                     color: Theme.accent;
                     font-size: 12px;
@@ -114,7 +178,7 @@ export component FirmwarePage inherits VerticalLayout {
                     property <length> drag-start-y;
                     property <length> drag-content-x;
                     property <length> drag-content-y;
-                    clicked => { if row.source-path != "" { root.select-file(index); } else { root.select-node(index); } }
+                    clicked => { if row.source-path != "" { root.select-file(index); } else if row.branch { root.toggle-branch(index); } else { root.select-node(index); } }
                     double-clicked => { if row.source-path != "" { root.open-source-file(row.source-path); } else if row.variable { root.add-variable(index); } }
                     pointer-event(event) => {
                         if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
@@ -142,7 +206,7 @@ export component FirmwarePage inherits VerticalLayout {
                 }
                 if row.source-path != "" && row.branch: TouchArea {
                     x: 8px + row.depth * 14px; width: 18px; height: parent.height;
-                    clicked => { root.select-node(index); }
+                    clicked => { root.toggle-branch(index); }
                 }
             }
         }

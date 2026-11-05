@@ -15,6 +15,7 @@ export struct WatchRow {
     waveform: bool,
     can-plot: bool,
     plot-hint: string,
+    subtree-end: int,
 }
 
 export component VariablesPage inherits VerticalLayout {
@@ -41,6 +42,59 @@ export component VariablesPage inherits VerticalLayout {
     callback remove(int);
     callback toggle-waveform(int, int);
     callback toggle(int, int);
+    private property <int> animation-start: -1;
+    private property <int> animation-end: -1;
+    private property <int> closing-entry: -1;
+    private property <int> closing-node: -1;
+    private property <int> closing-revision: -1;
+    private property <bool> animation-visible: true;
+    private property <bool> closing: false;
+    private property <bool> opening-wait: false;
+    function toggle-branch(index: int) {
+        if list-animation.running { return; }
+        if root.watches[index].expanded {
+            root.animation-start = index;
+            root.animation-end = root.watches[index].subtree-end;
+            root.closing-entry = root.watches[index].entry-index;
+            root.closing-node = root.watches[index].node-index;
+            root.closing-revision = root.revision;
+            root.closing = true;
+            root.animation-visible = false;
+            list-animation.interval = 320ms;
+            list-animation.start();
+        } else {
+            root.animation-start = index;
+            root.animation-end = index + 1;
+            root.animation-visible = false;
+            root.toggle(root.watches[index].entry-index, root.watches[index].node-index);
+            root.animation-end = root.watches[index].subtree-end;
+            root.closing = false;
+            root.opening-wait = true;
+            list-animation.interval = 20ms;
+            list-animation.start();
+        }
+    }
+    list-animation := Timer {
+        interval: 20ms;
+        running: false;
+        triggered => {
+            self.stop();
+            if root.opening-wait {
+                root.opening-wait = false;
+                root.animation-visible = true;
+                self.interval = 320ms;
+                self.start();
+            } else {
+                if root.closing && root.revision == root.closing-revision {
+                    root.toggle(root.closing-entry, root.closing-node);
+                }
+                root.animation-start = -1;
+                root.animation-end = -1;
+                root.closing = false;
+                root.animation-visible = true;
+            }
+        }
+    }
     spacing: 8px;
     Text { text: "变量监视"; color: Theme.text; font-size: 15px; font-weight: 700; }
     HorizontalLayout {
@@ -104,11 +158,19 @@ export component VariablesPage inherits VerticalLayout {
         background: transparent;
         ListView {
             for watch[index] in root.watches: Rectangle {
-                height: watch.error == "" ? 32px : 50px;
+                height: index > root.animation-start && index < root.animation-end && !root.animation-visible ? 1px : (watch.error == "" ? 32px : 50px);
+                animate height {
+                    duration: max(1ms, 280ms / max(1, root.animation-end - root.animation-start - 1));
+                    delay: 280ms * max(0, root.closing ? root.animation-end - index - 1 : index - root.animation-start - 1) / max(1, root.animation-end - root.animation-start - 1);
+                    easing: linear;
+                }
+                clip: true;
                 background: area.has-hover ? Theme.panel : transparent;
                 animate background { duration: 140ms; }
                 border-radius: 8px;
-                area := TouchArea { clicked => { root.toggle(watch.entry-index, watch.node-index); } }
+                area := TouchArea { clicked => {
+                    if watch.branch { root.toggle-branch(index); }
+                } }
                 if watch.error != "": Text { y: 32px; height: 18px; width: parent.width; text: watch.error; color: #f08a80; font-size: 10px; overflow: elide; }
 
                 HorizontalLayout {

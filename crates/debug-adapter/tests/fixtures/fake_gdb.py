@@ -42,7 +42,11 @@ for line in sys.stdin:
         continue
     if command == '-test-exit':
         sys.exit(7)
-    if command.startswith('-target-select'):
+    if command == '-target-download':
+        send('+download,{section=".text",section-size="1024",total-size="1024"}')
+        send('+download,{section=".text",section-sent="512",section-size="1024",total-sent="512",total-size="1024"}')
+        send(token + '^done,address="0x8000000",load-size="1024"')
+    elif command.startswith('-target-select'):
         send(token + '^connected')
         stopped()
     elif command.startswith('-exec-continue'):

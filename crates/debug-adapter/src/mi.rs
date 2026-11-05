@@ -209,7 +209,13 @@ pub fn parse(line: &str) -> Result<Option<Record>> {
     let class = p.word();
     let data = if p.peek() == b',' {
         p.pos += 1;
-        Value::Tuple(p.fields(0, 0)?)
+        // GDB emits download status as +download,{section="...",...},
+        // with an anonymous tuple instead of the usual list of results.
+        if kind == b'+' && p.peek() == b'{' {
+            p.value(0)?
+        } else {
+            Value::Tuple(p.fields(0, 0)?)
+        }
     } else {
         Value::Tuple(vec![])
     };
@@ -446,6 +452,17 @@ impl Drop for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn download_status_tuple_is_parsed() {
+        let record = parse(r#"+download,{section=".text",section-sent="512",section-size="6668",total-sent="512",total-size="9880"}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.kind, b'+');
+        assert_eq!(record.class, "download");
+        assert_eq!(record.data.field("section"), ".text");
+        assert_eq!(record.data.field("total-sent"), "512");
+        assert!(parse(r#"+download,{section=".text""#).is_err());
+    }
     #[test]
     fn nested_lists_duplicates_and_utf8_escapes() {
         let record = parse(r#"23^done,stack=[frame={level="0",func="main",fullname="C:\\src\\a.c",line="7"},frame={level="1",func="worker"}]"#).unwrap().unwrap();

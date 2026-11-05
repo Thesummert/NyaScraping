@@ -1,4 +1,4 @@
-import { Button, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct SourceTab {
@@ -6,6 +6,8 @@ export struct SourceTab {
     path: string,
 }
 export struct SourceBreakpoint { line: int, id: string, enabled: bool, pending: bool }
+export struct HighlightSpan { text: string, color: color }
+export struct HighlightLine { spans: [HighlightSpan] }
 
 export component SourcePage inherits VerticalLayout {
     in property <bool> busy;
@@ -13,6 +15,9 @@ export component SourcePage inherits VerticalLayout {
     in property <string> source-title;
     in property <string> metadata;
     in property <string> source-text;
+    in property <[HighlightLine]> highlight-lines;
+    in-out property <bool> highlight-enabled;
+    in property <int> highlight-width;
     in property <[SourceTab]> tabs;
     in property <int> selected-tab;
     in property <int> line-count;
@@ -32,6 +37,7 @@ export component SourcePage inherits VerticalLayout {
         LineEdit { text <=> root.path; placeholder-text: "输入源码文件路径…"; enabled: !root.busy; horizontal-stretch: 1; accepted => { root.open(); } }
         Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
         Button { text: "打开源码"; enabled: !root.busy; clicked => { root.open(); } }
+        CheckBox { text: "语法高亮"; checked <=> root.highlight-enabled; }
     }
     if root.tabs.length > 0: ScrollView {
         height: 36px;
@@ -69,11 +75,12 @@ export component SourcePage inherits VerticalLayout {
             clip: true;
             // Match the TextEdit's font metrics and its Fluent 12px scroll padding.
             property <length> line-height: metric.preferred-height;
-            property <int> first-line: floor(max(0, -editor.content-y / self.line-height));
+            property <length> scroll-y: root.highlight-lines.length > 0 ? colored.content-y : editor.content-y;
+            property <int> first-line: floor(max(0, -self.scroll-y / self.line-height));
             metric := Text { text: "M"; font-family: "monospace"; font-size: 14px; visible: false; }
             for n[index] in (ceil(gutter.height / gutter.line-height) + 2): Rectangle {
                 property <int> line: gutter.first-line + index + 1;
-                y: 12px + editor.content-y + (self.line - 1) * gutter.line-height;
+                y: 12px + gutter.scroll-y + (self.line - 1) * gutter.line-height;
                 width: parent.width; height: gutter.line-height;
                 visible: root.selected-tab >= 0 && self.line <= root.line-count;
                 background: hit.has-hover && hit.enabled ? Theme.selection : transparent;
@@ -86,13 +93,33 @@ export component SourcePage inherits VerticalLayout {
                 hit := TouchArea { enabled: !root.busy; clicked => { root.toggle-breakpoint(parent.line); } }
             }
             for bp in root.breakpoints: Rectangle {
-                x: 5px; y: 12px + editor.content-y + (bp.line - 1) * gutter.line-height + (gutter.line-height - 10px) / 2;
+                x: 5px; y: 12px + gutter.scroll-y + (bp.line - 1) * gutter.line-height + (gutter.line-height - 10px) / 2;
                 width: 10px; height: 10px; border-radius: 5px;
                 background: bp.enabled ? (bp.pending ? #e9ab56 : #ef5a66) : transparent;
                 border-width: 1px; border-color: bp.enabled ? (bp.pending ? #e9ab56 : #ef5a66) : Theme.muted;
                 TouchArea { enabled: !root.busy; clicked => { root.toggle-breakpoint(bp.line); } }
             }
         }
-        editor := TextEdit { text: root.source-text; read-only: true; wrap: no-wrap; font-family: "monospace"; font-size: 14px; horizontal-stretch: 1; }
+        editor := TextEdit { visible: root.highlight-lines.length == 0; text: root.source-text; read-only: true; wrap: no-wrap; font-family: "monospace"; font-size: 14px; horizontal-stretch: root.highlight-lines.length == 0 ? 1 : 0; min-width: 0px; max-width: root.highlight-lines.length == 0 ? 100000px : 0px; }
+        colored := ScrollView {
+            visible: root.highlight-lines.length > 0;
+            horizontal-stretch: root.highlight-lines.length > 0 ? 1 : 0;
+            min-width: 0px; max-width: root.highlight-lines.length > 0 ? 100000px : 0px;
+            content-height: root.highlight-lines.length * gutter.line-height + 24px;
+            content-width: max(self.visible-width, root.highlight-width * 14px + 24px);
+            for n[index] in (ceil(self.visible-height / gutter.line-height) + 2): Rectangle {
+                property <int> line-index: gutter.first-line + index;
+                x: 12px; y: 12px + self.line-index * gutter.line-height;
+                width: colored.content-width - 24px; height: gutter.line-height;
+                visible: self.line-index < root.highlight-lines.length;
+                HorizontalLayout {
+                    spacing: 0px;
+                    for span in root.highlight-lines[parent.line-index].spans: Text {
+                        text: span.text; color: span.color; font-family: "monospace"; font-size: 14px;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
     }
 }

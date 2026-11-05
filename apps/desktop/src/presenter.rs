@@ -237,6 +237,7 @@ impl Presenter {
         }
         self.sync_source_breakpoints(ui);
         self.sync_executable_lines(ui);
+        ui.invoke_highlight_source();
     }
 
     fn sync_executable_lines(&self, ui: &AppWindow) {

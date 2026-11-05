@@ -1,6 +1,6 @@
-import { Button, CheckBox, ComboBox, ListView, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { SourcePage, SourceTab, SourceBreakpoint } from "pages/source.slint";
+import { SourcePage, SourceTab, SourceBreakpoint, HighlightLine, HighlightSpan } from "pages/source.slint";
 import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
 import { WaveformsPage, WaveformRow } from "pages/waveforms.slint";
@@ -8,7 +8,7 @@ import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
 import { DebugPage, FrameRow, BreakpointRow } from "pages/debug.slint";
 import { DebugSettings } from "pages/debug-settings.slint";
 import { TargetRow, PackRow } from "pages/target-selector.slint";
-export { SourceTab, SourceBreakpoint, FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
+export { SourceTab, SourceBreakpoint, HighlightLine, HighlightSpan, FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
 
 component PanelDivider inherits Rectangle {
     callback drag-start();
@@ -131,6 +131,11 @@ export component AppWindow inherits Window {
     in-out property <string> source-title: "尚未打开文件";
     in-out property <string> source-meta: "";
     in-out property <string> source-text: "打开一个源码文件以开始浏览。";
+    in-out property <[HighlightLine]> source-highlights;
+    in-out property <bool> source-highlight-enabled: true;
+    in-out property <int> source-highlight-width;
+    in-out property <string> source-highlight-status;
+    callback highlight-source();
     in-out property <int> source-line-count;
     in-out property <[SourceBreakpoint]> source-breakpoints;
     in-out property <[bool]> source-executable-lines;
@@ -171,6 +176,14 @@ export component AppWindow inherits Window {
     out property <bool> acquisition-uses-session: root.backend-kind == 1 || root.backend-kind == 2;
     out property <string> acquisition-source-label: root.backend-kind == 1 ? "pyOCD · 调试会话" : root.backend-kind == 2 ? "probe-rs · 调试会话" : "OpenOCD Tcl";
     callback refresh-tools();
+    in-out property <string> tree-sitter-executable;
+    in-out property <string> tree-sitter-config;
+    in-out property <string> tree-sitter-message: "尚未检测";
+    in-out property <bool> tree-sitter-busy: false;
+    callback tree-sitter-detect();
+    callback tree-sitter-save();
+    callback tree-sitter-install();
+    callback tree-sitter-languages();
     callback install-tool(int, string);
     callback select-tool(int, string);
     callback uninstall-tool(int, string);
@@ -255,6 +268,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "安装后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "刷新率"; enabled: !root.interaction-busy; activated => { root.settings-tab = 3; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "Tree-sitter 管理"; enabled: !root.interaction-busy; activated => { root.settings-tab = 4; root.settings-message = ""; root.settings-open = true; } }
         }
     }
     VerticalLayout {
@@ -369,8 +383,11 @@ export component AppWindow inherits Window {
                                 close-tab(index) => { root.close-source-tab(index); }
                                 path <=> root.source-path;
                                 source-title: root.source-title;
-                                metadata: root.source-meta + (root.execution-location != "" ? " · " + root.execution-location : "");
+                                metadata: root.source-meta + (root.execution-location != "" ? " · " + root.execution-location : "") + (root.source-highlight-status != "" ? " · " + root.source-highlight-status : "");
                                 source-text: root.source-text;
+                                highlight-enabled <=> root.source-highlight-enabled;
+                                highlight-lines: root.source-highlight-enabled ? root.source-highlights : [];
+                                highlight-width: root.source-highlight-width;
                                 open => { root.open-source(); }
                                 browse => { root.browse-source(); }
                             }
@@ -587,6 +604,27 @@ export component AppWindow inherits Window {
                                 toggled => { root.show-fps-changed(self.checked); }
                             }
                             Text { text: "统计最近一秒实际绘制的帧数。界面静止时不会持续绘制；短动画结束后数值也会降低。请持续滚动或操作至少一秒再观察。"; color: Theme.muted; wrap: word-wrap; }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                    }
+                    Tab {
+                        title: "Tree-sitter";
+                        VerticalLayout {
+                            padding-top: 16px; spacing: 12px;
+                            Text { text: "Tree-sitter 命令行工具"; color: Theme.text; font-size: 16px; }
+                            Text { text: "源码使用已配置语言的高亮规则；此处尚不支持安装语言解析器。"; color: Theme.muted; wrap: word-wrap; }
+                            Text { text: "留空时优先使用应用安装的版本，再从 PATH 查找。也可输入本机可执行文件的完整路径。"; color: Theme.muted; wrap: word-wrap; }
+                            LineEdit { text <=> root.tree-sitter-executable; placeholder-text: "可执行文件路径（留空自动检测）"; enabled: !root.tree-sitter-busy; }
+                            Text { text: "Tree-sitter 配置文件"; color: Theme.text; }
+                            LineEdit { text <=> root.tree-sitter-config; placeholder-text: "config.json 路径（留空使用默认配置）"; enabled: !root.tree-sitter-busy; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Button { text: "保存设置"; enabled: !root.tree-sitter-busy; clicked => { root.tree-sitter-save(); } }
+                                Button { text: "检测"; enabled: !root.tree-sitter-busy; clicked => { root.tree-sitter-detect(); } }
+                                Button { text: "扫描语言"; enabled: !root.tree-sitter-busy; clicked => { root.tree-sitter-languages(); } }
+                                Button { text: "使用 Cargo 安装"; enabled: !root.tree-sitter-busy; clicked => { root.tree-sitter-install(); } }
+                            }
+                            Text { text: root.tree-sitter-message; color: Theme.muted; wrap: word-wrap; }
                             Rectangle { vertical-stretch: 1; }
                         }
                     }

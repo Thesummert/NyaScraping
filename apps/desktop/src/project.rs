@@ -129,7 +129,7 @@ mod tests {
     }
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     let base = if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else if cfg!(target_os = "macos") {

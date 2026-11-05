@@ -4,6 +4,7 @@ mod firmware_browser;
 mod presenter;
 mod project;
 mod system_log;
+mod tree_sitter;
 mod watch_list;
 mod waveform_view;
 
@@ -279,6 +280,162 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,overlay");
     }
     let ui = AppWindow::new()?;
+    let tree_settings = tree_sitter::load();
+    ui.set_tree_sitter_executable(tree_settings.executable.into());
+    ui.set_tree_sitter_config(tree_settings.config.into());
+    let highlight_generation = Arc::new(AtomicU64::new(0));
+    let weak = ui.as_weak();
+    ui.on_highlight_source(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let generation = highlight_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        ui.set_source_highlights(Default::default());
+        ui.set_source_highlight_status("".into());
+        if ui.get_source_selected_tab() < 0 {
+            return;
+        }
+        let path = ui.get_source_title().to_string();
+        let text = ui.get_source_text().to_string();
+        let settings = tree_sitter::Settings {
+            executable: ui.get_tree_sitter_executable().to_string(),
+            config: ui.get_tree_sitter_config().to_string(),
+        };
+        let weak = ui.as_weak();
+        let current = highlight_generation.clone();
+        std::thread::spawn(move || {
+            let result = tree_sitter::highlight(&settings, std::path::Path::new(&path), &text);
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                if current.load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                match result {
+                    Ok(lines) => {
+                        let mut width = 0usize;
+                        let rows: Vec<_> = lines
+                            .into_iter()
+                            .map(|line| {
+                                let mut column = 0usize;
+                                let spans: Vec<_> = line
+                                    .into_iter()
+                                    .map(|span| {
+                                        let mut text = String::new();
+                                        for ch in span.text.chars() {
+                                            if ch == '\t' {
+                                                let n = 4 - column % 4;
+                                                text.push_str(&" ".repeat(n));
+                                                column += n;
+                                            } else {
+                                                text.push(ch);
+                                                column += 1;
+                                            }
+                                        }
+                                        let rgb = match span.class.split('.').next().unwrap_or("") {
+                                            "comment" => (130, 150, 135),
+                                            "keyword" | "operator" => (198, 146, 234),
+                                            "string" | "character" => (166, 206, 145),
+                                            "number" | "constant" | "boolean" => (226, 172, 120),
+                                            "function" | "method" | "constructor" => {
+                                                (130, 184, 230)
+                                            }
+                                            "type" | "namespace" => (121, 202, 192),
+                                            "property" | "field" => (226, 202, 139),
+                                            _ => (220, 225, 232),
+                                        };
+                                        HighlightSpan {
+                                            text: text.into(),
+                                            color: slint::Color::from_rgb_u8(rgb.0, rgb.1, rgb.2),
+                                        }
+                                    })
+                                    .collect();
+                                width = width.max(column);
+                                HighlightLine {
+                                    spans: slint::ModelRc::new(slint::VecModel::from(spans)),
+                                }
+                            })
+                            .collect();
+                        ui.set_source_highlight_width(width.min(100_000) as i32);
+                        ui.set_source_highlights(slint::ModelRc::new(slint::VecModel::from(rows)));
+                        ui.set_source_highlight_status("Tree-sitter 高亮".into());
+                    }
+                    Err(error) => {
+                        ui.set_source_highlight_status(format!("普通文本：{error}").into())
+                    }
+                }
+            });
+        });
+    });
+    let weak = ui.as_weak();
+    ui.on_tree_sitter_save(move || {
+        if let Some(ui) = weak.upgrade() {
+            let settings = tree_sitter::Settings {
+                executable: ui.get_tree_sitter_executable().to_string(),
+                config: ui.get_tree_sitter_config().to_string(),
+            };
+            let message = match tree_sitter::save(&settings) {
+                Ok(()) => {
+                    ui.invoke_highlight_source();
+                    "Tree-sitter 设置已保存".to_owned()
+                }
+                Err(e) => format!("无法保存设置：{e}"),
+            };
+            ui.set_tree_sitter_message(message.into());
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_tree_sitter_detect(move || {
+        if let Some(ui) = weak.upgrade() {
+            let settings = tree_sitter::Settings {
+                executable: ui.get_tree_sitter_executable().to_string(),
+                config: ui.get_tree_sitter_config().to_string(),
+            };
+            ui.set_tree_sitter_busy(true);
+            ui.set_tree_sitter_message("正在检测…".into());
+            let weak = ui.as_weak();
+            std::thread::spawn(move || {
+                let result =
+                    tree_sitter::detect(&settings).unwrap_or_else(|e| format!("检测失败：{e}"));
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_tree_sitter_busy(false);
+                    ui.set_tree_sitter_message(result.into());
+                });
+            });
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_tree_sitter_languages(move || {
+        if let Some(ui) = weak.upgrade() {
+            let settings = tree_sitter::Settings {
+                executable: ui.get_tree_sitter_executable().to_string(),
+                config: ui.get_tree_sitter_config().to_string(),
+            };
+            ui.set_tree_sitter_busy(true);
+            ui.set_tree_sitter_message("正在扫描语言解析器…".into());
+            let weak = ui.as_weak();
+            std::thread::spawn(move || {
+                let result = tree_sitter::languages(&settings).unwrap_or_else(|e| e);
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_tree_sitter_busy(false);
+                    ui.set_tree_sitter_message(result.into());
+                });
+            });
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_tree_sitter_install(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_tree_sitter_busy(true);
+            ui.set_tree_sitter_message("正在通过 Cargo 安装，可能需要数分钟…".into());
+            let weak = ui.as_weak();
+            std::thread::spawn(move || {
+                let result = tree_sitter::install().unwrap_or_else(|e| e);
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_tree_sitter_busy(false);
+                    ui.set_tree_sitter_message(result.into());
+                });
+            });
+        }
+    });
     ui.set_show_fps(fps_enabled);
     let weak_fps_ui = ui.as_weak();
     ui.on_show_fps_changed(move |enabled| {

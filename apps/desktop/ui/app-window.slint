@@ -191,6 +191,27 @@ export component AppWindow inherits Window {
             MenuItem { title: "保存项目"; enabled: !root.interaction-busy; activated => { root.save-project(); } }
         }
         Menu {
+            title: "波形";
+            MenuItem {
+                title: "显示波形页";
+                enabled: !root.interaction-busy;
+                activated => { root.current-tab = 1; }
+            }
+            MenuItem {
+                title: root.waveform-detached ? "关闭波形独立窗口" : "打开波形独立窗口";
+                enabled: !root.interaction-busy;
+                activated => { root.toggle-waveform-window(!root.waveform-detached); }
+            }
+            MenuItem {
+                title: root.acquisition-active ? "停止波形采集" : "开始波形采集";
+                enabled: !root.interaction-busy && (root.acquisition-active || (root.waveform-channels.length > 0 && (!root.acquisition-uses-session || root.debug-connected)));
+                activated => { if root.acquisition-active { root.stop-acquisition(); } else { root.start-acquisition(); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: "保存当前图表为 CSV…"; enabled: !root.interaction-busy; activated => { root.export-waveform-csv(); } }
+            MenuItem { title: "清空当前图表历史波形"; enabled: !root.interaction-busy; activated => { root.clear-waveform-history(); } }
+        }
+        Menu {
             title: "设置";
             MenuItem { title: "选择后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 0; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "安装后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }

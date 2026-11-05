@@ -279,6 +279,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let breakpoint_window = BreakpointWindow::new()?;
     let log_window = SystemLogWindow::new()?;
     let install_window = InstallProgressWindow::new()?;
+    let download_window = InstallProgressWindow::new()?;
+    download_window.set_window_title("固件下载".into());
+    download_window.set_message("正在下载固件，请稍候…".into());
+    download_window.set_can_cancel(false);
+    download_window
+        .window()
+        .on_close_requested(|| slint::CloseRequestResponse::KeepWindowShown);
     let install_cancel = Arc::new(AtomicBool::new(false));
     let install_progress: nya_debug_adapter::SharedInstallProgress = Default::default();
     let cancel = install_cancel.clone();
@@ -299,6 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let progress_timer = slint::Timer::default();
     let weak_install = install_window.as_weak();
     let progress = install_progress.clone();
+    let weak_download = download_window.as_weak();
     progress_timer.start(
         slint::TimerMode::Repeated,
         std::time::Duration::from_millis(40),
@@ -347,7 +355,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         })
                         .unwrap_or_else(|| "未知".into());
-                    window.set_details(format!("{amount} · {speed} · 预计完成：{eta}").into());
+                    let details = format!("{amount} · {speed} · 预计完成：{eta}");
+                    window.set_details(details.as_str().into());
+                    if let Some(download) = weak_download.upgrade() {
+                        download.set_phase(window.get_phase());
+                        download.set_stage(value.stage.as_str().into());
+                        download.set_determinate(value.percent.is_some());
+                        download.set_progress(value.percent.unwrap_or(0.0) / 100.0);
+                        download.set_details(details.into());
+                    }
                 }
             }
         },
@@ -541,11 +557,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_interval = live_interval.clone();
     let weak = ui.as_weak();
     let weak_install = install_window.as_weak();
+    let weak_download = download_window.as_weak();
     let worker = std::thread::spawn(move || {
         let mut last_sample = std::time::Instant::now();
         while !worker_shutdown.load(Ordering::Relaxed) {
             let pending = worker_updates.lock().expect("watch updates lock").take();
             let mut finished_install = false;
+            let mut finished_download = false;
             let event = if let Some(watches) = pending {
                 Some(application.execute(Command::UpdateWatches(watches)))
             } else {
@@ -562,6 +580,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match receiver.recv_timeout(wait) {
                     Ok(command) => {
                         finished_install = matches!(&command, Command::InstallTool { .. });
+                        finished_download =
+                            matches!(&command, Command::Debug(DebugAction::Download));
                         Some(application.execute(command))
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -612,6 +632,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if finished_install {
                 let _ = weak_install.upgrade_in_event_loop(|window| {
+                    let _ = window.hide();
+                });
+            }
+            if finished_download {
+                let _ = weak_download.upgrade_in_event_loop(|window| {
                     let _ = window.hide();
                 });
             }
@@ -767,6 +792,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let weak = ui.as_weak();
     let debug_sender = sender.clone();
+    let weak_download = download_window.as_weak();
+    let download_progress = install_progress.clone();
     ui.on_debug_action(move |kind| {
         if let Some(ui) = weak.upgrade() {
             let action = match kind {
@@ -795,7 +822,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 9 => DebugAction::Refresh,
                 _ => return,
             };
+            if kind == 8 {
+                if ui.get_busy() || ui.get_file_dialog_open() {
+                    return;
+                }
+                if let Ok(mut progress) = download_progress.lock() {
+                    *progress = nya_debug_adapter::InstallProgress {
+                        stage: "正在准备下载…".into(),
+                        ..Default::default()
+                    };
+                }
+            }
             submit(&ui, &debug_sender, Command::Debug(action));
+            if kind == 8 && ui.get_busy() {
+                if let Some(window) = weak_download.upgrade() {
+                    if let Err(error) = window.show() {
+                        ui.set_status(format!("无法打开固件下载窗口：{error}").into());
+                    }
+                }
+            }
         }
     });
     let weak = ui.as_weak();

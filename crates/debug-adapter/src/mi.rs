@@ -398,6 +398,14 @@ impl Client {
         self.command_timeout(command, Duration::from_secs(8))
     }
     pub fn command_timeout(&mut self, command: &str, timeout: Duration) -> Result<Value> {
+        self.command_timeout_observe(command, timeout, |_| {})
+    }
+    pub fn command_timeout_observe(
+        &mut self,
+        command: &str,
+        timeout: Duration,
+        mut observe: impl FnMut(&Record),
+    ) -> Result<Value> {
         self.check()?;
         let token = self.next_token;
         self.next_token += 1;
@@ -417,6 +425,7 @@ impl Client {
                 Ok(line) => {
                     if let Some(record) = parse(&line)? {
                         self.accept(&record);
+                        observe(&record);
                         if record.kind == b'^' && record.token == Some(token) {
                             if record.class == "error" {
                                 return Err(Error(record.data.field("msg").into()));

@@ -398,9 +398,48 @@ impl DebugSession for DebugAdapter {
                 self.session.message = "已复位目标".into();
             }
             DebugAction::Download => {
-                self.session
-                    .halted()?
-                    .command_timeout("-target-download", Duration::from_secs(60))?;
+                let progress = self.install_progress.clone();
+                let started = Instant::now();
+                self.session.halted()?.command_timeout_observe(
+                    "-target-download",
+                    Duration::from_secs(60),
+                    |record| {
+                        if record.kind != b'+' || record.class != "download" {
+                            return;
+                        }
+                        let done = record.data.field("total-sent").parse::<u64>().ok();
+                        let total = record
+                            .data
+                            .field("total-size")
+                            .parse::<u64>()
+                            .ok()
+                            .filter(|n| *n > 0);
+                        if let Ok(mut value) = progress.lock() {
+                            // Some section-start records omit total-sent; retain the last measurement.
+                            let done = done.or(value.downloaded);
+                            let speed = done.filter(|n| *n > 0).and_then(|n| {
+                                let seconds = started.elapsed().as_secs_f64();
+                                (seconds >= 0.1)
+                                    .then(|| (n as f64 / seconds) as u64)
+                                    .filter(|n| *n > 0)
+                            });
+                            let total = total.or(value.total);
+                            *value = crate::InstallProgress {
+                                stage: "正在向目标写入固件…".into(),
+                                downloaded: done,
+                                total,
+                                percent: done
+                                    .zip(total)
+                                    .map(|(d, t)| (d as f64 / t as f64 * 100.0).min(100.0) as f32),
+                                bytes_per_second: speed,
+                                remaining_seconds: done
+                                    .zip(total)
+                                    .zip(speed)
+                                    .map(|((d, t), s)| t.saturating_sub(d).div_ceil(s)),
+                            };
+                        }
+                    },
+                )?;
                 self.session.message = "固件下载完成".into();
             }
             DebugAction::AddBreakpoint(location) => {
@@ -985,6 +1024,10 @@ mod tests {
             adapter.execute_debug(action).unwrap();
             adapter.poll_debug().unwrap();
         }
+        let progress = adapter.install_progress.lock().unwrap().clone();
+        assert_eq!(progress.downloaded, Some(512));
+        assert_eq!(progress.total, Some(1024));
+        assert_eq!(progress.percent, Some(50.0));
         let missing = WatchRequest {
             id: "missing".into(),
             expression: "missing".into(),

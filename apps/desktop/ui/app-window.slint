@@ -741,7 +741,9 @@ export component WaveformWindow inherits Window {
 }
 
 export component InstallProgressWindow inherits Window {
-    title: "安装工具链";
+    title: root.window-title;
+    in property <string> window-title: "安装工具链";
+    in property <bool> can-cancel: true;
     width: 480px;
     height: 205px;
     background: Theme.background;
@@ -767,7 +769,7 @@ export component InstallProgressWindow inherits Window {
         Text { text: root.details; color: Theme.text; font-size: 12px; wrap: word-wrap; }
         HorizontalLayout {
             Rectangle { horizontal-stretch: 1; }
-            Button { text: root.cancelling ? "正在取消…" : "取消"; enabled: !root.cancelling; clicked => { root.cancel(); } }
+            if root.can-cancel: Button { text: root.cancelling ? "正在取消…" : "取消"; enabled: !root.cancelling; clicked => { root.cancel(); } }
         }
     }
 }

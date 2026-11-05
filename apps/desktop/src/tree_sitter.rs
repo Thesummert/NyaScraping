@@ -142,14 +142,95 @@ mod tests {
     }
 
     #[test]
-    fn highlights_the_decoded_document_using_configured_cli() {
+    fn parses_cli_table_without_line_numbers_and_preserves_lines() {
+        let html = "<!doctype HTML><table>\n<tr><td class=line-number>1</td><td class=line><span class='type builtin'>int</span> x;\n</td></tr>\n<tr><td class=line-number>2</td><td class=line>\n</td></tr>\n</table>";
+        let lines = parse_fragment(html, "int x;\n\n").unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0][0].class, "type.builtin");
+        assert_eq!(
+            lines[0].iter().map(|s| s.text.as_str()).collect::<String>(),
+            "int x;"
+        );
+        assert!(lines[1].is_empty());
+        assert!(lines[2].is_empty());
+        assert!(parse_fragment(html, "wrong source").is_err());
+        assert!(parse_fragment("<table></table>", "int x;").is_err());
+        assert!(parse_fragment("<table><td class=line>x", "x").is_err());
+    }
+
+    #[test]
+    fn removes_only_synthetic_final_newline() {
+        let html =
+            "<table><tr><td class=line-number>1</td><td class=line>int x;\n</td></tr></table>";
+        assert_eq!(parse_fragment(html, "int x;").unwrap().len(), 1);
+        assert_eq!(parse_fragment(html, "int x;\n").unwrap().len(), 2);
+        let empty = "<table><tr><td class=line>\n</td></tr></table>";
+        assert_eq!(parse_fragment(empty, "").unwrap(), vec![vec![]]);
+    }
+
+    #[test]
+    fn preserves_cli_diagnostics_on_highlight_failure() {
         let dir = tempfile::tempdir().unwrap();
         let tool = dir.path().join("tree-sitter");
-        fs::write(&tool, "#!/bin/sh\n[ \"$1\" = highlight ] || exit 1\nfor last do :; done\n[ \"$(cat \"$last\")\" = 'int x;' ] || exit 2\nprintf \"<pre><code><span class='type'>int</span> x;</code></pre>\"\n").unwrap();
+        fs::write(
+            &tool,
+            "#!/bin/sh\necho 'parser compilation failed' >&2\nexit 2\n",
+        )
+        .unwrap();
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
         let settings = Settings {
             executable: tool.to_string_lossy().into_owned(),
             config: String::new(),
+        };
+        let error = highlight(&settings, std::path::Path::new("test.c"), "int x;").unwrap_err();
+        assert!(error.contains("parser compilation failed"));
+        assert!(error.contains(tool.to_str().unwrap()));
+        assert!(error.contains('2'));
+    }
+
+    // Run explicitly on machines with the CLI and a configured C grammar.
+    #[test]
+    #[ignore = "requires tree-sitter CLI and a configured C grammar"]
+    fn highlights_with_installed_cli() {
+        let settings = Settings::default();
+        for text in [
+            "",
+            "int x;",
+            "int x;\n",
+            "int x;\n\n",
+            "/* 猫 & dog */\nint x;\n",
+        ] {
+            let lines = highlight(&settings, std::path::Path::new("test.c"), text).unwrap();
+            let reconstructed = lines
+                .iter()
+                .map(|line| line.iter().map(|s| s.text.as_str()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(reconstructed, text);
+            if text.contains("int") {
+                assert!(lines
+                    .iter()
+                    .flatten()
+                    .any(|span| span.text == "int" && span.class.starts_with("type")));
+            }
+        }
+    }
+
+    #[test]
+    fn highlights_the_decoded_document_using_configured_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = dir.path().join("tree-sitter");
+        fs::write(&tool, r#"#!/bin/sh
+[ "$1" = highlight ] && [ "$2" = --html ] && [ "$3" = --css-classes ] || exit 1
+[ "$4" = --config-path ] && [ "$5" = 'my config.json' ] || exit 3
+for last do :; done
+[ "$(cat "$last")" = 'int x;' ] || exit 2
+printf "<table><tr><td class=line-number>1</td><td class=line><span class='type'>int</span> x;\n</td></tr></table>"
+"#).unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = Settings {
+            executable: tool.to_string_lossy().into_owned(),
+            config: "my config.json".into(),
         };
         let lines = highlight(&settings, std::path::Path::new("test.c"), "int x;\n").unwrap();
         assert_eq!(lines[0][0].class, "type");
@@ -197,7 +278,42 @@ fn decode_html(text: &str) -> Result<String, String> {
     Ok(result)
 }
 
+fn extract_table_code(table: &str) -> Result<String, String> {
+    let mut code = String::new();
+    let mut rest = table;
+    while let Some(start) = rest.find("<td") {
+        rest = &rest[start + 3..];
+        let end = rest.find('>').ok_or("无效的高亮单元格")?;
+        let attributes = rest[..end].trim();
+        let content = &rest[end + 1..];
+        let (cell, tail) = content.split_once("</td>").ok_or("高亮单元格不完整")?;
+        if matches!(attributes, "class=line" | "class='line'" | "class=\"line\"") {
+            code.push_str(cell);
+        }
+        rest = tail;
+    }
+    if code.is_empty() {
+        return Err("缺少高亮内容，请检查语言解析器配置".into());
+    }
+    Ok(code)
+}
+
 fn parse_fragment(html: &str, original: &str) -> Result<Vec<Vec<Span>>, String> {
+    // CLI releases emit a full HTML table. Keep accepting fragments as well.
+    let table_code;
+    let html = if html.contains("<table>") {
+        let table = html
+            .split_once("<table>")
+            .unwrap()
+            .1
+            .split_once("</table>")
+            .ok_or("高亮表格不完整")?
+            .0;
+        table_code = format!("<pre><code>{}</code></pre>", extract_table_code(table)?);
+        table_code.as_str()
+    } else {
+        html
+    };
     let code = html
         .split_once("<pre><code>")
         .ok_or("缺少高亮内容")?
@@ -220,7 +336,7 @@ fn parse_fragment(html: &str, original: &str) -> Result<Vec<Vec<Span>>, String> 
                         .and_then(|s| s.strip_suffix("\">"))
                 })
                 .ok_or("无效的高亮类别")?;
-            stack.push(class.to_owned());
+            stack.push(class.split_whitespace().collect::<Vec<_>>().join("."));
             rest = &rest[end + 1..];
         } else if let Some(tail) = rest.strip_prefix("</span>") {
             stack.pop().ok_or("多余的高亮结束标签")?;
@@ -240,8 +356,15 @@ fn parse_fragment(html: &str, original: &str) -> Result<Vec<Vec<Span>>, String> 
     if !stack.is_empty() {
         return Err("高亮标签未闭合".into());
     }
-    let reconstructed: String = spans.iter().map(|s| s.text.as_str()).collect();
-    // The CLI omits one final newline from its HTML output.
+    let mut reconstructed: String = spans.iter().map(|s| s.text.as_str()).collect();
+    // Table output always terminates its last row, even without a source newline.
+    if reconstructed.strip_suffix('\n') == Some(original) {
+        if let Some(last) = spans.last_mut() {
+            last.text.pop();
+        }
+        reconstructed.pop();
+    }
+    // Fragment output can omit one final newline.
     if reconstructed != original && original.strip_suffix('\n') != Some(reconstructed.as_str()) {
         return Err("高亮内容与源码不一致".into());
     }
@@ -297,28 +420,34 @@ pub fn highlight(
         .tempfile()
         .map_err(|e| e.to_string())?;
     file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-    let mut command = Command::new(executable(settings));
-    command.args([
-        "highlight",
-        "--html",
-        "--layout",
-        "fragment",
-        "--style",
-        "minimal",
-    ]);
+    let executable = executable(settings);
+    let mut command = Command::new(&executable);
+    command.args(["highlight", "--html", "--css-classes"]);
     if !settings.config.trim().is_empty() {
         command.arg("--config-path").arg(settings.config.trim());
     }
     let output = command
         .arg(file.path())
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("无法启动 {}：{e}", executable.display()))?;
     if !output.status.success() || output.stdout.is_empty() {
-        return Err("Tree-sitter 未能高亮此文件，请检查语言解析器配置".into());
+        return Err(format!(
+            "Tree-sitter 高亮失败（{}，{}）：{}",
+            executable.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     if output.stdout.len() > 16 * 1024 * 1024 {
         return Err("高亮结果过大".into());
     }
     let html = std::str::from_utf8(&output.stdout).map_err(|e| e.to_string())?;
-    parse_fragment(html, text)
+    parse_fragment(html, text).map_err(|error| {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.trim().is_empty() {
+            error
+        } else {
+            format!("{error}：{}", stderr.trim())
+        }
+    })
 }

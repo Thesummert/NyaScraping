@@ -191,6 +191,8 @@ export component AppWindow inherits Window {
     in-out property <string> tree-sitter-config;
     in-out property <string> tree-sitter-message: "尚未检测";
     in-out property <bool> tree-sitter-busy: false;
+    callback tree-sitter-event(string);
+    changed tree-sitter-message => { root.tree-sitter-event(root.tree-sitter-message); }
     callback tree-sitter-detect();
     callback tree-sitter-save();
     callback tree-sitter-install();

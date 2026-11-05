@@ -422,6 +422,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 match result {
                     Ok(lines) => {
+                        ui.invoke_tree_sitter_event(
+                            format!("高亮完成：{path}（{} 行）", lines.len()).into(),
+                        );
                         let mut width = 0usize;
                         let rows: Vec<_> = lines
                             .into_iter()
@@ -470,7 +473,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ui.set_source_highlight_status("Tree-sitter 高亮".into());
                     }
                     Err(error) => {
-                        ui.set_source_highlight_status(format!("普通文本：{error}").into())
+                        ui.invoke_tree_sitter_event(format!("高亮失败：{path}：{error}").into());
+                        ui.set_source_highlight_status(format!("普通文本：{error}").into());
                     }
                 }
             });
@@ -543,6 +547,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = weak.upgrade_in_event_loop(move |ui| {
                     ui.set_tree_sitter_busy(false);
                     ui.set_tree_sitter_message(result.into());
+                    ui.invoke_highlight_source();
                 });
             });
         }
@@ -670,6 +675,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_record_system_error(move |message| {
         let mut log = log.borrow_mut();
         log.record("应用", &message);
+        if let Some(window) = weak_log.upgrade() {
+            window.set_events(log.text().into());
+        }
+    });
+    let log = system_log.clone();
+    let weak_log = log_window.as_weak();
+    ui.on_tree_sitter_event(move |message| {
+        let mut log = log.borrow_mut();
+        log.record("Tree-sitter", &message);
         if let Some(window) = weak_log.upgrade() {
             window.set_events(log.text().into());
         }

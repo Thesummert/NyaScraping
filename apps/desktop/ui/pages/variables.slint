@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, LineEdit, ListView, Switch } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct WatchRow {
@@ -128,10 +128,17 @@ export component VariablesPage inherits VerticalLayout {
                     Text { text: watch.value; color: watch.error != "" ? #f08a80 : Theme.text; width: 68px; overflow: elide; vertical-alignment: center; }
                     Rectangle {
                         width: 40px;
-                        Switch {
-                            checked: watch.waveform;
+                        Image {
+                            width: 18px;
+                            height: 18px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            source: watch.waveform ? @image-url("../assets/eye.svg") : @image-url("../assets/eye-off.svg");
+                            opacity: !watch.can-plot ? 0.35 : (eye-area.has-hover ? 0.75 : 1);
+                        }
+                        eye-area := TouchArea {
                             enabled: watch.can-plot;
-                            toggled => { root.toggle-waveform(watch.entry-index, watch.node-index); }
+                            clicked => { root.toggle-waveform(watch.entry-index, watch.node-index); }
                         }
                     }
                     Button {

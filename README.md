@@ -82,7 +82,7 @@ Windows 使用 Rust MSVC 工具链和 Visual Studio C++ Build Tools；本次尚�
 ## 实时波形
 
 1. 解析与目标上正在运行的固件一致的可执行 ELF/AXF，保留 DWARF 类型和固定内存地址。
-2. 右键左侧变量选择「加入实时波形」，或在右侧监视条目上打开「波形」小开关。两处共用通道状态，重复添加不会增加通道；最多 16 路。移除监视条目也会移除其波形通道。
+2. 右键左侧变量选择「加入实时波形」，或点击右侧监视条目的眼睛图标。两处共用通道状态，重复添加不会增加通道；最多 16 路。移除监视条目也会移除其波形通道。
 3. 使用 OpenOCD 时，可启动板卡对应的服务，例如 `openocd -f interface/stlink.cfg -f target/stm32f4x.cfg`（按实际探针和芯片替换配置）。使用 pyOCD / probe-rs 时，先在调试工具页选择后端，再在调试页连接目标，采集直接复用这条连接，不再打开第二个探针或 GDB 客户端。目标的继续/暂停由用户控制；采集器不会自动下载、复位或继续目标。
 4. 波形页会根据当前后端自动选择采集源。OpenOCD 需要填写 Tcl 地址（默认 `127.0.0.1:6666`，与 GDB 的 3333 端口不同）；pyOCD / probe-rs 显示「复用当前连接」，无需 Tcl 地址。点击「开始采集」。目标/探针需要支持运行中读取该内存；不支持时显示错误并停止，不会自动暂停 CPU。Tcl 协议与 `read_memory` 参见 [OpenOCD Tcl RPC](https://openocd.org/doc-release/html/Tcl-Scripting-API.html) 和 [内存读取命令](https://openocd.org/doc/html/General-Commands.html)。
 

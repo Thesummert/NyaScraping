@@ -61,6 +61,24 @@ cargo run -p nya-scraping
 
 Windows 使用 Rust MSVC 工具链和 Visual Studio C++ Build Tools；本次尚未在 Windows 验证桌面程序构建。
 
+## 打包发行文件
+
+先按上文获取包含子模块的源码，并在目标操作系统上安装对应构建依赖。脚本使用当前 Rust 工具链的主机架构，以锁定的依赖执行 release 构建；不进行交叉编译。macOS 和 Linux 还需要 Python 3，macOS 使用系统的 `sips`、`iconutil` 和 `ditto`。
+
+```sh
+# macOS / Linux
+./scripts/package-unix.sh
+```
+
+```powershell
+# Windows PowerShell，使用 Windows Rust 工具链
+.\scripts\package-windows.ps1
+```
+
+产物位于 `build/packages/`，名称包含版本、平台和 Rust 目标架构：Windows 为包含 `.exe` 的 ZIP，macOS 为包含 `.app` 的 ZIP，Linux 为包含可执行文件和桌面入口资源的 tar.gz。解压后 Windows 可直接运行 `.exe`，macOS 可打开 `.app`，Linux 可运行 `bin/nya-scraping`；如需 Linux 桌面菜单入口，可将包内 `bin` 和 `share` 的内容安装到 `~/.local/bin` 和 `~/.local/share`，并确保 `~/.local/bin` 在 PATH 中。
+
+这些包不包含 GDB、OpenOCD、pyOCD 或 probe-rs，需要按实际使用的后端另行安装。Linux 包依赖目标系统的图形及其他动态运行库；Windows 可能需要对应的 Microsoft Visual C++ 运行库。macOS 包未经签名或公证，分发给其他用户前需自行完成签名和公证。
+
 开发构建已开启优化并保留调试信息，软件渲染器使用更高优化级别，以减少高分屏上的重绘卡顿。首次重新构建依赖会花更长时间。源码与符号报告使用横向滚动，不随窗口宽度重新折行；文件树只在展开或折叠时更新结构，选择变量保留列表模型和滚动位置。固件文件树构建与报告格式化在后台线程完成。
 
 源码工作台可点击「浏览…」通过系统文件选择窗口打开源码，也可输入文件绝对路径后点击「打开源码」或回车，通过 `nya-text-backend` 读取文本、编码与换行信息。文本后端支持 UTF-8、UTF-16LE/BE、BOM、常见旧编码、换行归一化与保留编码的保存；也提供 `load_with_encoding` 供调用方显式选择文件编码。工具页扫描 PATH 与 NyaScrapingCore 管理的安装目录；启动时也会扫描一次。硬件操作需要另行安装对应工具和 GDB。

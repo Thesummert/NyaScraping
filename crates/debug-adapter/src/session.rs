@@ -14,6 +14,7 @@ pub(super) struct Session {
     memory_backend: Option<ToolKind>,
     state: SessionState,
     last_stop: u64,
+    context_pending: bool,
     frames: Vec<StackFrame>,
     selected_frame: u32,
     breakpoints: Vec<Breakpoint>,
@@ -21,6 +22,37 @@ pub(super) struct Session {
     log: String,
 }
 impl Session {
+    fn accept_stop(&mut self) -> bool {
+        let Some(client) = &self.client else {
+            return false;
+        };
+        if client.state != SessionState::Halted {
+            self.context_pending = false;
+            return false;
+        }
+        if self.last_stop == client.stop_generation {
+            return false;
+        }
+        self.last_stop = client.stop_generation;
+        self.selected_frame = 0;
+        self.frames = client
+            .stop
+            .as_ref()
+            .and_then(|stop| stop.get("frame"))
+            .map(stack_frame)
+            .into_iter()
+            .collect();
+        self.context_pending = true;
+        self.message = format!(
+            "目标已暂停：{}",
+            client
+                .stop
+                .as_ref()
+                .map(|s| s.field("reason"))
+                .unwrap_or("stopped")
+        );
+        true
+    }
     fn client(&mut self) -> Result<&mut Client> {
         self.client
             .as_mut()
@@ -36,6 +68,7 @@ impl Session {
     fn context(&mut self) -> Result<()> {
         if self.client()?.state != SessionState::Halted {
             self.frames.clear();
+            self.context_pending = false;
             return Ok(());
         }
         let stack = self.client()?.command("-stack-list-frames 0 63")?;
@@ -45,18 +78,10 @@ impl Session {
             .unwrap_or_default()
             .iter()
             .filter_map(|item| item.get("frame"))
-            .map(|frame| StackFrame {
-                level: frame.field("level").parse().unwrap_or(0),
-                function: frame.field("func").into(),
-                file: frame
-                    .get("fullname")
-                    .unwrap_or_else(|| frame.get("file").unwrap_or(frame))
-                    .text()
-                    .into(),
-                line: frame.field("line").parse().unwrap_or(0),
-                address: frame.field("addr").into(),
-            })
+            .map(stack_frame)
             .collect();
+        self.context_pending = false;
+        self.last_stop = self.client()?.stop_generation;
         Ok(())
     }
     fn breakpoint_list(&mut self) -> Result<()> {
@@ -347,14 +372,19 @@ impl DebugSession for DebugAdapter {
                 client.command("-gdb-set confirm off")?;
                 client.command("-gdb-set mi-async on")?;
                 client.command("-gdb-set may-call-functions off")?;
+                // Frame argument values are available in watches. Fetching them
+                // while formatting *stopped delays the initial stop notification.
+                client.command("-gdb-set print frame-arguments none")?;
                 if matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs) {
                     client.command(&format!(
                         "-interpreter-exec console {}",
                         mi::quote("maintenance set target-non-stop on")
                     ))?;
                     client.command("-gdb-set trust-readonly-sections off")?;
-                    client.command("-gdb-set code-cache off")?;
-                    client.command("-gdb-set stack-cache off")?;
+                    // GDB's stack/code caches batch unwinder reads and invalidate
+                    // on resume. Ordinary data reads still fetch live target bytes.
+                    client.command("-gdb-set code-cache on")?;
+                    client.command("-gdb-set stack-cache on")?;
                     client.command("-gdb-set mem inaccessible-by-default off")?;
                 }
                 client.command(&format!(
@@ -557,6 +587,9 @@ impl DebugSession for DebugAdapter {
                 .into();
             }
             DebugAction::SelectFrame(level) => {
+                if self.session.context_pending {
+                    self.session.context()?;
+                }
                 self.session
                     .halted()?
                     .command(&format!("-stack-select-frame {level}"))?;
@@ -588,7 +621,7 @@ impl DebugSession for DebugAdapter {
                 return Ok(false);
             };
             let changed = client.poll()?;
-            if !changed {
+            if !changed && !self.session.context_pending {
                 return Ok(false);
             }
             self.session.state = client.state;
@@ -599,22 +632,14 @@ impl DebugSession for DebugAdapter {
                 self.stop_server()?;
                 self.session.message = "目标会话已结束".into();
             } else if client.state == SessionState::Halted {
-                if self.session.last_stop != client.stop_generation {
-                    self.session.last_stop = client.stop_generation;
-                    self.session.selected_frame = 0;
+                // Publish the MI stop frame first; unwind on a later worker turn
+                // so a deep stack cannot hold back the confirmed halt state.
+                if !self.session.accept_stop() && self.session.context_pending {
                     self.session.context()?;
-                    self.session.message = format!(
-                        "目标已暂停：{}",
-                        self.session
-                            .client()?
-                            .stop
-                            .as_ref()
-                            .map(|stop| stop.field("reason"))
-                            .unwrap_or("stopped")
-                    );
                 }
             } else {
                 self.session.frames.clear();
+                self.session.context_pending = false;
             }
             Ok(true)
         })();
@@ -637,7 +662,9 @@ impl DebugSession for DebugAdapter {
         // GDB evaluates only an already-halted target. Running-target reads use
         // the independent memory sampler, which never interrupts or resumes it.
         let mut snapshot = self.debug_snapshot(watches);
-        snapshot.watch_sample = snapshot.state == SessionState::Halted && !watches.is_empty();
+        snapshot.watch_sample = snapshot.state == SessionState::Halted
+            && !snapshot.context_pending
+            && !watches.is_empty();
         snapshot
     }
 
@@ -683,6 +710,7 @@ impl DebugSession for DebugAdapter {
     }
 
     fn debug_snapshot(&mut self, watches: &[WatchRequest]) -> DebugSnapshot {
+        self.session.accept_stop();
         let state = self
             .session
             .client
@@ -690,7 +718,7 @@ impl DebugSession for DebugAdapter {
             .map(|c| c.state)
             .unwrap_or(self.session.state);
         let mut values = Vec::new();
-        if state == SessionState::Halted {
+        if state == SessionState::Halted && !self.session.context_pending {
             values = self.session.values(watches, 128, Duration::from_secs(2));
         }
         if let Some(client) = &mut self.session.client {
@@ -713,6 +741,7 @@ impl DebugSession for DebugAdapter {
             self.session.state = SessionState::Faulted;
         }
         DebugSnapshot {
+            context_pending: state == SessionState::Halted && self.session.context_pending,
             watch_sample: false,
             watch_sample_error: None,
             source: None,
@@ -724,6 +753,21 @@ impl DebugSession for DebugAdapter {
             values,
             log: self.session.log.clone(),
         }
+    }
+}
+
+fn stack_frame(frame: &Value) -> StackFrame {
+    StackFrame {
+        level: frame.field("level").parse().unwrap_or(0),
+        function: frame.field("func").into(),
+        file: frame
+            .get("fullname")
+            .or_else(|| frame.get("file"))
+            .map(Value::text)
+            .unwrap_or_default()
+            .into(),
+        line: frame.field("line").parse().unwrap_or(0),
+        address: frame.field("addr").into(),
     }
 }
 
@@ -797,6 +841,87 @@ mod tests {
             firmware,
         };
         (root, adapter, profile)
+    }
+
+    #[test]
+    fn stops_are_published_before_stack_and_watch_reads_and_stale_refreshes_are_dropped() {
+        for tool in [ToolKind::PyOcd, ToolKind::ProbeRs] {
+            let (_root, mut adapter, mut profile) = fixture();
+            profile.tool = tool;
+            adapter
+                .execute_debug(DebugAction::Connect {
+                    profile,
+                    external_server: true,
+                })
+                .unwrap();
+            let watch = WatchRequest {
+                id: "counter".into(),
+                expression: "counter".into(),
+                function: Some("compute".into()),
+            };
+            adapter.execute_debug(DebugAction::Continue).unwrap();
+            adapter
+                .session
+                .client()
+                .unwrap()
+                .command("-test-hold-context")
+                .unwrap();
+            adapter
+                .session
+                .client()
+                .unwrap()
+                .command("-test-break-on-interrupt")
+                .unwrap();
+            adapter.execute_debug(DebugAction::Pause).unwrap();
+            for _ in 0..50 {
+                adapter.poll_debug().unwrap();
+                if adapter.debug_snapshot(&[]).state == SessionState::Halted {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let fast = adapter.sample_watches(std::slice::from_ref(&watch));
+            assert_eq!(fast.state, SessionState::Halted);
+            assert!(fast.context_pending);
+            assert_eq!(fast.frames[0].function, "compute");
+            assert!(fast.values.is_empty());
+            assert!(!fast.watch_sample);
+            adapter
+                .session
+                .client()
+                .unwrap()
+                .command("-test-release-context")
+                .unwrap();
+            assert!(adapter.poll_debug().unwrap());
+            let complete = adapter.debug_snapshot(std::slice::from_ref(&watch));
+            assert!(!complete.context_pending);
+            assert_eq!(complete.frames.len(), 2);
+            assert_eq!(complete.values[0].value.display_value, "42");
+
+            // Continuing before the slow refresh must discard the pending work.
+            adapter.execute_debug(DebugAction::Continue).unwrap();
+            adapter
+                .session
+                .client()
+                .unwrap()
+                .command("-test-hold-context")
+                .unwrap();
+            adapter.execute_debug(DebugAction::Pause).unwrap();
+            for _ in 0..50 {
+                adapter.poll_debug().unwrap();
+                if adapter.debug_snapshot(&[]).state == SessionState::Halted {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            adapter.execute_debug(DebugAction::Continue).unwrap();
+            adapter.poll_debug().unwrap();
+            let running = adapter.debug_snapshot(&[watch]);
+            assert_eq!(running.state, SessionState::Running);
+            assert!(!running.context_pending);
+            assert!(running.frames.is_empty());
+            assert!(running.values.is_empty());
+        }
     }
 
     #[test]

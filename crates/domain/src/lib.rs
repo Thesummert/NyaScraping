@@ -208,6 +208,8 @@ pub struct Breakpoint {
 
 #[derive(Clone, Debug, Default)]
 pub struct DebugSnapshot {
+    /// The stop is confirmed; stack unwinding and watch evaluation follow separately.
+    pub context_pending: bool,
     pub watch_sample: bool,
     pub watch_sample_error: Option<String>,
     pub source: Option<Document>,

@@ -80,17 +80,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut presenter = presenter::Presenter::default();
     render(&window, &mut pixels);
     ui.set_current_tab(2);
-    presenter.apply(
-        &ui,
-        presenter::PreparedEvent::Debug(stopped("/fixture/main.c", 200), false),
-    );
+    let mut initial_stop = stopped("/fixture/main.c", 200);
+    initial_stop.context_pending = true;
+    presenter.apply(&ui, presenter::PreparedEvent::Debug(initial_stop, false));
     render(&window, &mut pixels);
+    assert!(
+        ui.get_debug_halted(),
+        "the UI must show a confirmed halt before details arrive"
+    );
+    assert!(!ui.get_debug_running());
     assert_eq!(ui.get_current_tab(), 0);
     assert_eq!(ui.get_source_execution_line(), 200);
     assert!(
         marker_y(&ui, &pixels).is_some(),
         "plain text must scroll to and mark line 200"
     );
+    presenter.apply(
+        &ui,
+        presenter::PreparedEvent::Debug(stopped("/fixture/main.c", 200), false),
+    );
+    assert!(ui.get_debug_halted());
 
     let clicked = Rc::new(std::cell::Cell::new(0));
     let captured = clicked.clone();

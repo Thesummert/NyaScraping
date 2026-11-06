@@ -48,7 +48,9 @@ NyaScrapingCore 当前能管理调试工具，生成烧录/擦除/复位命令�
 
 `debug-adapter::mi` 启动 `gdb --interpreter=mi2 --nx --quiet`，解析带 token 的结果、嵌套 tuple/list、C 字符串和异步运行/停止记录。stdout/stderr 读取使用有界队列和单行长度限制；命令超时使会话失效，后续轮询清理子进程。`session` 维护 GDB、调用栈、当前帧和断点；连接时复用选中后端或连接已有本机服务，只有读取实际线程状态后才报告运行/暂停。
 
-工作线程每 60 ms 空闲轮询，`DebugUpdated` 区分命令完成与异步通知，避免异步通知错误解锁忙碌界面。监视请求通过单个可覆盖槽合并，避免快速增删产生积压；每行附带列表修订号，旧快照不会填充新条目。暂停时用临时 var-object 读取值和类型并立即删除；继续执行后清除值。每轮最多 128 项、总求值时间有界，单次变量命令超时为 700 ms。文件变量按源文件限定，局部变量验证当前帧函数，结构体成员保留静态层级并按成员路径求值。
+工作线程每 60 ms 空闲轮询，`DebugUpdated` 区分命令完成与异步通知，避免异步通知错误解锁忙碌界面。收到停止记录后先用 MI 附带的顶层帧发布已暂停状态，以 `context_pending` 标明详情待补齐；后续轮询再读取完整调用栈、安装待设置断点并求值监视项。快速状态更新不等待这些远程读取，同一轮有状态事件时也不追加周期求值。恢复运行后丢弃尚未执行的暂停详情刷新。监视请求通过单个可覆盖槽合并，避免快速增删产生积压；每行附带列表修订号，旧快照不会填充新条目。暂停时用临时 var-object 读取值和类型并立即删除；继续执行后清除值。每轮最多 128 项、总求值时间有界，单次变量命令超时为 700 ms。文件变量按源文件限定，局部变量验证当前帧函数，结构体成员保留静态层级并按成员路径求值。
+
+GDB 不在格式化停止帧时自动求值函数参数。pyOCD / probe-rs 会话保留 GDB 的代码与栈缓存以合并展开调用栈时的小块读取，普通数据读取仍访问目标，`trust-readonly-sections` 保持关闭。参见 [GDB 目标数据缓存](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Caching-Target-Data.html) 和 [帧参数显示设置](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Print-Settings.html)。
 
 断点 ID 使用 GDB 返回值，支持添加和删除；调用栈最多读取 64 帧，点击切换求值上下文。本机可读源码由文本后端在工作线程打开。复位通过 `monitor reset halt`，下载通过 `-target-download`，只有暂停时可用，超时为 300 秒。成功后执行 `monitor reset halt`，刷新 GDB 寄存器/栈帧缓存并重新读取启动上下文，等待用户继续运行；写入或复位失败时不自动继续。下载不由连接动作隐式触发。断开和退出会释放客户端及自有服务端；已有外部服务不由程序终止。
 
@@ -92,7 +94,7 @@ pyOCD / probe-rs 数据源通过 `Command::ReadLiveMemory` 将合并后的读取
 
 `DebugSession::read_live_memory` 只允许已连接的 pyOCD / probe-rs 会话，用 `-data-read-memory-bytes` 读取固定地址并严格校验返回起止地址、长度及十六进制数据。每轮 500 ms 后不再调度新块，已发出的单块请求拥有独立 500 ms 超时，防止批次预算耗尽错误地使 GDB 会话失效。普通内存访问失败仅停止本次采集，不主动 detach 或暂停目标。
 
-pyOCD 通过其原生 QNonStop 支持读取；创建自有服务时禁用内存缓存。pyOCD 连接也经过 `NonStopBridge` 的原生模式，保留后端的 QNonStop 握手和 `%Stop`/`vStopped` 通知，将 GDB 上层 all-stop 语义发出的 `vCtrlC` 转成后端支持的原始 Ctrl-C，并立即确认请求。probe-rs 的 GDB stub 能在运行时处理内存包，但未声明 QNonStop，因此 `non_stop::NonStopBridge` 在单条后端 RSP 连接上转译握手、ACK、运行命令结果、停止通知与 vStopped 确认。桥接支持分片报文、校验和、有限重传、大小/队列上限，关闭时回收读线程。线程缺失的信号/单步回复补充当前线程；同组多核已停止时为 GDB 补齐停止通知。只有用户显式暂停请求转成 Ctrl-C，采样不会生成控制包。GDB 用 `maintenance set target-non-stop on` 开启底层 non-stop 协议，保持上层 all-stop 调试语义；内存读期间到达的断点/异常仍通过异步事件处理。桥接行为参考 [GDB 维护命令](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Maintenance-Commands.html) 以及 [probe-rs GDB stub](https://github.com/probe-rs/probe-rs/tree/master/probe-rs-tools/src/bin/probe-rs/cmd/gdb_server)。
+pyOCD 通过其原生 QNonStop 支持读取；创建自有服务时禁用内存缓存。pyOCD 连接也经过 `NonStopBridge` 的原生模式，保留后端的 QNonStop 握手和 `%Stop`/`vStopped` 通知，将 GDB 上层 all-stop 语义发出的 `vCtrlC` 转成后端支持的原始 Ctrl-C，并立即确认请求。probe-rs 的 GDB stub 能在运行时处理内存包，但未声明 QNonStop，因此 `non_stop::NonStopBridge` 在单条后端 RSP 连接上转译握手、ACK、运行命令结果、停止通知与 vStopped 确认。桥接分别与 GDB、后端协商无确认模式；支持时关闭后端逐包 ACK，减少小块读取的延迟，不支持时保留 ACK；全停后端在无确认模式下发送运行命令后立即向 GDB 返回 OK。桥接支持分片报文、校验和、有限重传、大小/队列上限，关闭时回收读线程。线程缺失的信号/单步回复补充当前线程；同组多核已停止时为 GDB 补齐停止通知。只有用户显式暂停请求转成 Ctrl-C，采样不会生成控制包。GDB 用 `maintenance set target-non-stop on` 开启底层 non-stop 协议，保持上层 all-stop 调试语义；内存读期间到达的断点/异常仍通过异步事件处理。桥接行为参考 [GDB 维护命令](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Maintenance-Commands.html) 以及 [probe-rs GDB stub](https://github.com/probe-rs/probe-rs/tree/master/probe-rs-tools/src/bin/probe-rs/cmd/gdb_server)。
 
 GDB `sample_watches` 只在目标已暂停时求值；运行中返回空值且不发送 interrupt/continue，应用层抑制这种空周期事件。固定地址数值变量通过采集快照填入监视列表；固定地址结构体的已展开数值成员按 DWARF 偏移采集；栈变量、位域、数组、指针或未解析表达式在运行时显示需暂停求值。用户主动写参数、暂停、断开等调试操作仍遵循原有会话语义。
 

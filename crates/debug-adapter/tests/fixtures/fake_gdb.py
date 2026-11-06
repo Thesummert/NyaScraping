@@ -19,6 +19,7 @@ download_pending = False
 reset_pending = False
 fail_download = False
 fail_reset = False
+hold_context = False
 
 def send(text):
     print(text, flush=True)
@@ -32,6 +33,13 @@ for line in sys.stdin:
     if not match:
         continue
     token, command = match.groups()
+    if command in ('-test-hold-context', '-test-release-context'):
+        hold_context = command == '-test-hold-context'
+        send(token + '^done')
+        continue
+    if hold_context and command.startswith(('-stack-list-frames', '-var-create')):
+        send(token + '^error,msg="Context read before the stop was published"')
+        continue
     if command == '-test-fail-continue':
         fail_continue = True
         send(token + '^done')

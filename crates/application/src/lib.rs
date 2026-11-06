@@ -331,6 +331,9 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
     }
 
     fn install_pending_breakpoints(&mut self) -> Option<String> {
+        if self.tools.debug_snapshot(&[]).context_pending {
+            return None;
+        }
         let mut failures = Vec::new();
         let mut installed = 0;
         let mut index = 0;
@@ -566,6 +569,28 @@ mod tests {
             Event::DebugUpdated { snapshot, .. } => snapshot,
             _ => panic!("expected debug snapshot"),
         }
+    }
+
+    #[test]
+    fn queued_breakpoints_do_not_delay_the_initial_stop_update() {
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        app.execute(Command::Debug(DebugAction::AddSourceBreakpoint {
+            file: "main.c".into(),
+            line: 12,
+        }));
+        app.tools.debug.state = nya_domain::SessionState::Halted;
+        app.tools.debug.context_pending = true;
+        app.tools.dirty = true;
+        let stopped = debug(app.poll().unwrap());
+        assert!(stopped.context_pending);
+        assert!(stopped.breakpoints[0].id.starts_with("pending:"));
+        assert!(app.tools.actions.is_empty());
+        app.tools.debug.context_pending = false;
+        app.tools.dirty = true;
+        let refreshed = debug(app.poll().unwrap());
+        assert!(!refreshed.context_pending);
+        assert_eq!(refreshed.breakpoints[0].id, "1");
+        assert_eq!(app.tools.actions.len(), 1);
     }
 
     #[test]

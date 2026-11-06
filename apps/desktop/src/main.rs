@@ -1009,27 +1009,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         let event = application.poll();
                         let interval = worker_interval.load(Ordering::Relaxed);
-                        if interval != 0
+                        // Deliver state changes before any potentially slow watch reads.
+                        if event.is_none()
+                            && interval != 0
                             && last_sample.elapsed() >= std::time::Duration::from_micros(interval)
                         {
-                            let mut sample = application.sample_watches();
-                            if let (
-                                Some(nya_application::Event::DebugUpdated {
-                                    snapshot: sampled,
-                                    ..
-                                }),
-                                Some(nya_application::Event::DebugUpdated {
-                                    snapshot: polled, ..
-                                }),
-                            ) = (&mut sample, &event)
-                            {
-                                if sampled.state == polled.state && sampled.source.is_none() {
-                                    sampled.source = polled.source.clone();
-                                }
-                            }
+                            let sample = application.sample_watches();
                             // Schedule from completion, avoiding catch-up bursts on slow probes.
                             last_sample = std::time::Instant::now();
-                            sample.or(event)
+                            sample
                         } else {
                             event
                         }

@@ -232,14 +232,21 @@ mod tests {
             let mut decoder = Decoder::default();
             let mut reads = 0;
             let mut interrupts = 0;
+            let mut no_ack = false;
             while let Some(packet) = receive(&mut socket, &mut decoder) {
                 match packet {
                     Packet::Frame(body) => {
-                        socket.write_all(b"+").unwrap();
+                        if !no_ack {
+                            socket.write_all(b"+").unwrap();
+                        }
                         match body.as_slice() {
                             b"qSupported" => socket
                                 .write_all(&frame(b'$', b"PacketSize=4000;QStartNoAckMode+"))
                                 .unwrap(),
+                            b"QStartNoAckMode" => {
+                                socket.write_all(&frame(b'$', b"OK")).unwrap();
+                                no_ack = true;
+                            }
                             b"vCont;c" => {}
                             b"qfThreadInfo" => socket.write_all(&frame(b'$', b"m1,2")).unwrap(),
                             b"m20000000,4" => {
@@ -260,6 +267,10 @@ mod tests {
                     other => panic!("unexpected packet {other:?}"),
                 }
             }
+            assert!(
+                no_ack,
+                "the bridge must negotiate no-ack with a capable backend"
+            );
             (reads, interrupts)
         });
         let mut front = TcpStream::connect(bridge.address()).unwrap();
@@ -365,14 +376,25 @@ mod tests {
             let mut running = false;
             let mut reads = 0u32;
             let mut interrupts = 0;
+            let mut no_ack = false;
             while let Some(packet) = receive(&mut socket, &mut decoder) {
                 match packet {
                     Packet::Frame(body) => {
-                        socket.write_all(b"+").unwrap();
+                        if !no_ack {
+                            socket.write_all(b"+").unwrap();
+                        }
                         let command = String::from_utf8_lossy(&body);
                         let reply = if command.starts_with("qSupported") {
-                            let non_stop = if native { ";QNonStop+" } else { "" };
+                            let non_stop = if native {
+                                ";QNonStop+;QStartNoAckMode+"
+                            } else {
+                                ""
+                            };
                             format!("PacketSize=4000;qXfer:features:read+{non_stop}").into_bytes()
+                        } else if command == "QStartNoAckMode" {
+                            assert!(native);
+                            no_ack = true;
+                            b"OK".to_vec()
                         } else if command == "QNonStop:1" || command == "vStopped" {
                             assert!(native);
                             b"OK".to_vec()
@@ -475,6 +497,8 @@ mod tests {
             "-gdb-set pagination off",
             "-gdb-set confirm off",
             "-gdb-set mi-async on",
+            "-gdb-set code-cache on",
+            "-gdb-set stack-cache on",
             "-interpreter-exec console \"maintenance set target-non-stop on\"",
         ] {
             client.command(command).unwrap();
@@ -523,6 +547,7 @@ mod tests {
 enum Kind {
     Query,
     Supported,
+    StartNoAck,
     VCont,
     Resume,
     StopReason,
@@ -532,6 +557,7 @@ struct Relay {
     front: TcpStream,
     back: TcpStream,
     no_ack: bool,
+    back_no_ack: bool,
     non_stop: bool,
     native: bool,
     queue: VecDeque<Vec<u8>>,
@@ -559,6 +585,8 @@ impl Relay {
         };
         self.pending = Some(if body.starts_with(b"qSupported") {
             Kind::Supported
+        } else if body == b"QStartNoAckMode" {
+            Kind::StartNoAck
         } else if body == b"vCont?" {
             Kind::VCont
         } else if body == b"?" {
@@ -577,7 +605,15 @@ impl Relay {
         });
         self.last_back = frame(b'$', &body);
         self.retries = 0;
-        self.back.write_all(&self.last_back).map_err(io_error)
+        self.back.write_all(&self.last_back).map_err(io_error)?;
+        if self.back_no_ack && self.pending == Some(Kind::Resume) {
+            // All-stop resumes have no reply until the target stops. In no-ack
+            // mode there is no backend ACK to trigger the synthetic non-stop OK.
+            self.pending = None;
+            self.reply(b'$', b"OK")?;
+            return self.dispatch();
+        }
+        Ok(())
     }
 
     fn front(&mut self, packet: Packet) -> Result<()> {
@@ -646,7 +682,16 @@ impl Relay {
                 self.reply(b'$', b"OK")?;
             }
             Packet::Frame(mut body) => {
-                self.back.write_all(b"+").map_err(io_error)?;
+                if !self.back_no_ack {
+                    self.back.write_all(b"+").map_err(io_error)?;
+                }
+                if self.pending == Some(Kind::StartNoAck)
+                    && (body == b"OK" || body.is_empty() || body.starts_with(b"E"))
+                {
+                    self.back_no_ack = body == b"OK";
+                    self.pending = None;
+                    return self.dispatch();
+                }
                 let stop = matches!(body.first(), Some(b'T' | b'S' | b'W' | b'X'));
                 if self.non_stop
                     && !self.native
@@ -703,6 +748,11 @@ impl Relay {
                     if self.pending == Some(Kind::Supported) {
                         let text = std::str::from_utf8(&body)
                             .map_err(|_| Error("无效的 qSupported 响应".into()))?;
+                        if !self.back_no_ack && text.split(';').any(|f| f == "QStartNoAckMode+") {
+                            // Negotiate each leg independently. Keeping the backend
+                            // in ACK mode adds delayed-ACK/Nagle waits to small reads.
+                            self.queue.push_front(b"QStartNoAckMode".to_vec());
+                        }
                         let features: Vec<_> = text
                             .split(';')
                             .filter(|f| {
@@ -749,7 +799,8 @@ impl Relay {
                     self.reply(b'$', &body)?;
                 }
             }
-            Packet::Invalid => self.back.write_all(b"-").map_err(io_error)?,
+            Packet::Invalid if !self.back_no_ack => self.back.write_all(b"-").map_err(io_error)?,
+            Packet::Invalid => return Err(Error("无确认模式下收到损坏的 RSP 报文".into())),
             Packet::Notification(body) => self.reply(b'%', &body)?,
             Packet::Nack => {
                 self.retries += 1;
@@ -786,6 +837,7 @@ fn relay(front: TcpStream, back: TcpStream, quit: Arc<AtomicBool>, native: bool)
         front,
         back,
         no_ack: false,
+        back_no_ack: false,
         non_stop: false,
         native,
         queue: VecDeque::new(),

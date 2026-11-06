@@ -69,6 +69,26 @@ export component AppWindow inherits Window {
     in-out property <bool> hardware-rendering: true;
     callback hardware-rendering-changed(bool);
     callback refresh-rate-changed();
+    in-out property <image> background-image;
+    in-out property <bool> background-active: false;
+    in-out property <int> background-opacity: 35;
+    private property <bool> background-shown: root.background-active && root.background-opacity > 0;
+    in-out property <string> background-path-draft;
+    in-out property <int> background-opacity-draft: 35;
+    in-out property <int> background-blur-draft: 8;
+    in-out property <bool> background-loading: false;
+    in-out property <image> background-preview-image;
+    in-out property <bool> background-preview-ready: false;
+    in-out property <string> background-preview-message: "选择图片以预览";
+    callback browse-background();
+    callback apply-background();
+    callback clear-background();
+    callback background-changed();
+    callback preview-background();
+    changed background-path-draft => { root.preview-background(); }
+    changed background-blur-draft => { root.preview-background(); }
+    changed settings-open => { root.preview-background(); }
+    changed settings-tab => { root.preview-background(); }
     private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
     in-out property <bool> workspace-expanded: false;
     private property <bool> file-tree-visible: true;
@@ -296,13 +316,20 @@ export component AppWindow inherits Window {
             MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "Tree-sitter 管理"; enabled: !root.interaction-busy; activated => { root.settings-tab = 4; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "源码字体"; enabled: !root.interaction-busy; activated => { root.source-font-draft = root.source-font-family; root.source-font-size-draft = root.source-font-size; root.settings-tab = 5; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "自定义背景"; enabled: !root.interaction-busy; activated => { root.settings-tab = 6; root.settings-message = ""; root.settings-open = true; } }
         }
+    }
+    if root.background-active: Image {
+        width: root.width; height: root.height;
+        source: root.background-image;
+        image-fit: cover;
+        opacity: root.background-opacity * 0.01;
     }
     VerticalLayout {
         spacing: 0px;
         Rectangle {
             height: 82px;
-            background: Theme.sidebar;
+            background: root.background-shown ? #191c2980 : Theme.sidebar;
             HorizontalLayout {
                 padding-left: 16px;
                 padding-right: 16px;
@@ -355,13 +382,14 @@ export component AppWindow inherits Window {
                 width: root.workspace-expanded ? 0px : root.left-panel-width * root.file-tree-reveal;
                 visible: !root.workspace-expanded && root.file-tree-reveal > 0;
                 clip: true;
-                background: Theme.sidebar;
+                background: root.background-shown ? #191c2980 : Theme.sidebar;
                 border-radius: 16px;
                 FirmwarePage {
                     width: root.left-panel-width;
                     height: parent.height;
                     padding: 16px;
                     busy: root.interaction-busy || root.debug-connected;
+                    custom-background: root.background-shown;
                     path <=> root.firmware-path;
                     title: root.firmware-title;
                     tree: root.firmware-tree;
@@ -412,7 +440,7 @@ export component AppWindow inherits Window {
                 }
             }
             Rectangle {
-                background: Theme.background;
+                background: root.background-shown ? transparent : Theme.background;
                 horizontal-stretch: 1;
                 VerticalLayout {
                     padding: 8px;
@@ -424,6 +452,7 @@ export component AppWindow inherits Window {
                             source-page := SourcePage {
                                 padding-top: 12px;
                                 busy: root.interaction-busy;
+                                custom-background: root.background-shown;
                                 tabs: root.source-tabs;
                                 selected-tab: root.source-selected-tab;
                                 line-count: root.source-line-count;
@@ -452,6 +481,7 @@ export component AppWindow inherits Window {
                         Tab {
                             title: "波形";
                             WaveformsPage {
+                                custom-background: root.background-shown;
                                 padding-top: 12px;
                                 detached <=> root.waveform-detached;
                                 toggle-detached(detached) => { root.toggle-waveform-window(detached); }
@@ -524,7 +554,7 @@ export component AppWindow inherits Window {
                 width: root.workspace-expanded ? 0px : root.right-panel-width;
                 visible: !root.workspace-expanded;
                 clip: true;
-                background: Theme.sidebar;
+                background: root.background-shown ? #191c2980 : Theme.sidebar;
                 border-radius: 16px;
                 VariablesPage {
                     padding: 16px;
@@ -552,7 +582,7 @@ export component AppWindow inherits Window {
         }
         Rectangle {
             height: 34px;
-            background: Theme.sidebar;
+            background: root.background-shown ? #191c2980 : Theme.sidebar;
             HorizontalLayout {
                 padding-left: 16px;
                 padding-right: 16px;
@@ -713,6 +743,59 @@ export component AppWindow inherits Window {
                             Rectangle { vertical-stretch: 1; }
                         }
                     }
+                    Tab {
+                        title: "自定义背景";
+                        VerticalLayout {
+                            padding-top: 16px; spacing: 12px;
+                            Text { text: "全局背景"; color: Theme.text; font-size: 16px; }
+                            Text { text: "选择 PNG、JPEG、WebP 或 BMP 图片；设置应用后会自动保存。"; color: Theme.muted; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                LineEdit { text <=> root.background-path-draft; placeholder-text: "背景图片路径"; horizontal-stretch: 1; enabled: !root.background-loading; }
+                                Button { text: "浏览…"; enabled: !root.background-loading && !root.file-dialog-open; clicked => { root.browse-background(); } }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "图片不透明度（0–100%）"; color: Theme.text; vertical-alignment: center; }
+                                SpinBox { minimum: 0; maximum: 100; value <=> root.background-opacity-draft; enabled: !root.background-loading; }
+                                Text { text: "高斯模糊（0–30）"; color: Theme.text; vertical-alignment: center; }
+                                SpinBox { minimum: 0; maximum: 30; value <=> root.background-blur-draft; enabled: !root.background-loading; }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Button { text: root.background-loading ? "处理中…" : "应用并保存"; enabled: !root.background-loading && !root.file-dialog-open; clicked => { root.apply-background(); } }
+                                Button { text: "恢复默认背景"; enabled: !root.file-dialog-open; clicked => { root.clear-background(); } }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            Text { text: "效果预览"; color: Theme.text; font-weight: 600; }
+                            Rectangle {
+                                min-height: 140px; vertical-stretch: 1;
+                                background: Theme.background; border-radius: 10px; clip: true;
+                                if root.background-preview-ready: Image {
+                                    width: parent.width; height: parent.height;
+                                    source: root.background-preview-image;
+                                    image-fit: cover;
+                                    opacity: root.background-opacity-draft * 0.01;
+                                }
+                                if root.background-preview-ready: Rectangle {
+                                    x: 10px; y: 10px; width: parent.width * 0.23; height: parent.height - 20px;
+                                    background: root.background-opacity-draft > 0 ? #191c2980 : Theme.sidebar;
+                                    border-radius: 6px;
+                                    Text { x: 10px; y: 10px; text: "文件树\n\n▾ 源文件\n  main.c"; color: Theme.muted; font-size: 11px; }
+                                }
+                                if root.background-preview-ready: Text {
+                                    x: parent.width * 0.28; y: 20px;
+                                    text: "源码 / 波形\n\n背景效果预览"; color: Theme.text; font-size: 12px;
+                                }
+                                if !root.background-preview-ready: Text {
+                                    text: root.background-preview-message; color: Theme.muted;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -762,6 +845,10 @@ export component SystemLogWindow inherits Window {
     min-width: 500px;
     min-height: 300px;
     background: Theme.background;
+    in property <image> background-image;
+    in property <bool> background-active;
+    in property <int> background-opacity;
+    if root.background-active: Image { width: root.width; height: root.height; source: root.background-image; image-fit: cover; opacity: root.background-opacity * 0.01; }
     in property <string> events;
     in property <string> debug-output;
     callback clear-events();
@@ -786,6 +873,10 @@ export component BreakpointWindow inherits Window {
     preferred-width: 700px;
     preferred-height: 420px;
     background: Theme.background;
+    in property <image> background-image;
+    in property <bool> background-active;
+    in property <int> background-opacity;
+    if root.background-active: Image { width: root.width; height: root.height; source: root.background-image; image-fit: cover; opacity: root.background-opacity * 0.01; }
     in property <[BreakpointRow]> breakpoints;
     in property <bool> can-edit;
     in property <bool> can-edit-pending;
@@ -814,6 +905,10 @@ export component WaveformWindow inherits Window {
     min-width: 600px;
     min-height: 480px;
     background: Theme.background;
+    in property <image> background-image;
+    in property <bool> background-active;
+    in property <int> background-opacity;
+    if root.background-active: Image { width: root.width; height: root.height; source: root.background-image; image-fit: cover; opacity: root.background-opacity * 0.01; }
     in property <[WaveformRow]> channels;
     in property <[string]> charts;
     in property <int> selected-chart;
@@ -845,6 +940,7 @@ export component WaveformWindow inherits Window {
     callback endpoint-edited(string);
     changed endpoint => { root.endpoint-edited(root.endpoint); }
     WaveformsPage {
+        custom-background: root.background-active && root.background-opacity > 0;
         padding: 12px;
         detached <=> root.detached;
         channels: root.channels;
@@ -884,6 +980,10 @@ export component InstallProgressWindow inherits Window {
     width: 480px;
     height: 205px;
     background: Theme.background;
+    in property <image> background-image;
+    in property <bool> background-active;
+    in property <int> background-opacity;
+    if root.background-active: Image { width: root.width; height: root.height; source: root.background-image; image-fit: cover; opacity: root.background-opacity * 0.01; }
     in property <string> message;
     in property <string> stage;
     in property <string> details;

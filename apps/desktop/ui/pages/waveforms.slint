@@ -15,6 +15,7 @@ export struct WaveformRow {
 }
 
 export component WaveformsPage inherits VerticalLayout {
+    in property <bool> custom-background;
     in property <[WaveformRow]> channels;
     in property <[string]> charts;
     in property <int> selected-chart;
@@ -113,7 +114,7 @@ export component WaveformsPage inherits VerticalLayout {
     }
     Rectangle {
         height: 108px;
-        background: Theme.background;
+        background: root.custom-background ? #10121b55 : Theme.background;
         ListView {
             for channel in root.channels: Rectangle {
                 height: 92px;

@@ -11,6 +11,7 @@ export struct HighlightLine { spans: [HighlightSpan] }
 
 export component SourcePage inherits VerticalLayout {
     in property <bool> busy;
+    in property <bool> custom-background;
     in-out property <string> path;
     in property <string> source-title;
     in property <string> metadata;
@@ -91,7 +92,7 @@ export component SourcePage inherits VerticalLayout {
         vertical-stretch: 1;
         gutter := Rectangle {
             width: 62px;
-            background: Theme.sidebar;
+            background: root.custom-background ? #191c2980 : Theme.sidebar;
             clip: true;
             // Measure the multiline input: a rounded single-line Text height drifts
             // away from TextEdit after scrolling, so gutter clicks hit wrong lines.

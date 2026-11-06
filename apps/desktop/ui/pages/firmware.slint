@@ -15,6 +15,7 @@ export struct FirmwareTreeRow {
 
 export component FirmwarePage inherits VerticalLayout {
     in property <bool> busy;
+    in property <bool> custom-background;
     in-out property <string> path;
     in property <string> title;
     in property <[FirmwareTreeRow]> tree;
@@ -121,7 +122,7 @@ export component FirmwarePage inherits VerticalLayout {
     Rectangle {
         min-height: 140px;
         vertical-stretch: 3;
-        background: Theme.background;
+        background: root.custom-background ? #10121b55 : Theme.background;
         border-radius: 12px;
         clip: true;
         tree-view := ListView {

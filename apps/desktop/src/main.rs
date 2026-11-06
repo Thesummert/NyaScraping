@@ -1,4 +1,5 @@
 mod acquisition;
+mod background;
 mod file_picker;
 mod firmware_browser;
 mod presenter;
@@ -297,6 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,overlay");
     }
     let ui = AppWindow::new()?;
+    background::setup(&ui);
     let font = source_font::load();
     ui.set_source_font_family(font.family.into());
     ui.set_source_font_size(font.size);
@@ -609,6 +611,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_window = SystemLogWindow::new()?;
     let install_window = InstallProgressWindow::new()?;
     let download_window = InstallProgressWindow::new()?;
+    {
+        let weak_ui = ui.as_weak();
+        let weak_waveform = waveform_window.as_weak();
+        let weak_breakpoints = breakpoint_window.as_weak();
+        let weak_log = log_window.as_weak();
+        let weak_install = install_window.as_weak();
+        let weak_download = download_window.as_weak();
+        ui.on_background_changed(move || {
+            if let Some(ui) = weak_ui.upgrade() {
+                macro_rules! update_background {
+                    ($weak:expr) => {
+                        if let Some(window) = $weak.upgrade() {
+                            window.set_background_image(ui.get_background_image());
+                            window.set_background_opacity(ui.get_background_opacity());
+                            window.set_background_active(ui.get_background_active());
+                        }
+                    };
+                }
+                update_background!(weak_waveform);
+                update_background!(weak_breakpoints);
+                update_background!(weak_log);
+                update_background!(weak_install);
+                update_background!(weak_download);
+            }
+        });
+        ui.invoke_background_changed();
+    }
     download_window.set_window_title("固件下载".into());
     download_window.set_message("正在下载固件，请稍候…".into());
     download_window.set_can_cancel(false);

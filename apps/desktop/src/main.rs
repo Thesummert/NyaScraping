@@ -92,22 +92,25 @@ fn tool_kind(index: i32) -> Option<ToolKind> {
     }
 }
 
-fn target_profile(ui: &AppWindow) -> Result<TargetProfile, String> {
-    let port = ui
-        .get_debug_port()
-        .trim()
-        .parse::<u16>()
-        .ok()
-        .filter(|p| *p != 0)
-        .ok_or("GDB 端口应为 1–65535")?;
+fn target_profile(ui: &AppWindow, standalone_flash: bool) -> Result<TargetProfile, String> {
+    let port = if standalone_flash {
+        3333
+    } else {
+        ui.get_debug_port()
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p != 0)
+            .ok_or("GDB 端口应为 1–65535")?
+    };
     if ui.get_firmware_path().trim().is_empty() {
         return Err("请选择 ELF/AXF 调试文件".into());
     }
     let interface = ui.get_debug_interface().trim().to_owned();
-    if ui.get_gdb_path().trim().is_empty() {
+    if !standalone_flash && ui.get_gdb_path().trim().is_empty() {
         return Err("请填写 GDB 路径".into());
     }
-    if !ui.get_external_server() {
+    if standalone_flash || !ui.get_external_server() {
         if tool_kind(ui.get_backend_kind()).is_none() {
             return Err("请先在选择后端页面选择调试后端".into());
         }
@@ -1057,8 +1060,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match receiver.recv_timeout(wait) {
                     Ok(command) => {
                         finished_install = matches!(&command, Command::InstallTool { .. });
-                        finished_download =
-                            matches!(&command, Command::Debug(DebugAction::Download));
+                        finished_download = matches!(
+                            &command,
+                            Command::Debug(DebugAction::Download | DebugAction::Flash { .. })
+                        );
                         finished_firmware = matches!(&command, Command::OpenFirmware(_));
                         Some(application.execute(command))
                     }
@@ -1270,20 +1275,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_debug_action(move |kind| {
         if let Some(ui) = weak.upgrade() {
             let action = match kind {
-                0 => match target_profile(&ui) {
-                    Ok(profile) => DebugAction::Connect {
-                        profile,
-                        external_server: ui.get_external_server(),
-                    },
-                    Err(error) => {
-                        ui.invoke_record_system_error(error.as_str().into());
-                        ui.set_status(error.as_str().into());
-                        ui.set_settings_message(error.into());
-                        ui.set_settings_tab(2);
-                        ui.set_settings_open(true);
-                        return;
+                0 | 8 if kind == 0 || !ui.get_debug_connected() => {
+                    match target_profile(&ui, kind == 8) {
+                        Ok(profile) => {
+                            if kind == 8 {
+                                DebugAction::Flash { profile }
+                            } else {
+                                DebugAction::Connect {
+                                    profile,
+                                    external_server: ui.get_external_server(),
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            ui.invoke_record_system_error(error.as_str().into());
+                            ui.set_status(error.as_str().into());
+                            ui.set_settings_message(error.into());
+                            ui.set_settings_tab(2);
+                            ui.set_settings_open(true);
+                            return;
+                        }
                     }
-                },
+                }
                 1 => DebugAction::Disconnect,
                 2 => DebugAction::Continue,
                 3 => DebugAction::Pause,

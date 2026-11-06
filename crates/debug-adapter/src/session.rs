@@ -477,6 +477,38 @@ impl DebugSession for DebugAdapter {
                 self.session.reset_and_halt()?;
                 self.session.message = "已复位目标".into();
             }
+            DebugAction::Flash { profile } => {
+                if self.server.is_some() || self.session.client.is_some() {
+                    return Err(Error("请先断开调试会话再直接烧录".into()));
+                }
+                if !profile.firmware.is_file() {
+                    return Err(Error("请选择存在的 ELF/AXF 固件文件".into()));
+                }
+                let progress = self.install_progress.clone();
+                if let Ok(mut value) = progress.lock() {
+                    *value = crate::InstallProgress {
+                        stage: "正在烧录固件，请稍候…".into(),
+                        ..Default::default()
+                    };
+                }
+                self.flash(&profile)?;
+                // OpenOCD's program command already verifies and resets before exit.
+                if profile.tool != ToolKind::OpenOcd {
+                    if let Ok(mut value) = progress.lock() {
+                        value.stage = "固件已写入，正在复位目标…".into();
+                    }
+                    self.reset(&profile).map_err(|error| {
+                        Error(format!("固件已写入，但复位失败，请检查目标状态：{error}"))
+                    })?;
+                }
+                if let Ok(mut value) = progress.lock() {
+                    value.stage = "固件已烧录并自动复位".into();
+                    value.percent = Some(100.0);
+                    value.remaining_seconds = Some(0);
+                }
+                self.session = Session::default();
+                self.session.message = "固件已烧录并自动复位".into();
+            }
             DebugAction::Download => {
                 self.session.halted()?;
                 let progress = self.install_progress.clone();

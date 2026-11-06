@@ -22,7 +22,7 @@ export component DebugPage inherits ScrollView {
             Text { text: "调试会话 · " + root.state-label; color: Theme.text; font-size: 18px; font-weight: 700; horizontal-stretch: 1; }
             Button { text: root.connected ? "断开" : "连接"; enabled: !root.busy; clicked => { root.action(root.connected ? 1 : 0); } }
         }
-        Text { text: "连接只加载调试符号。需要写入目标时，暂停后点击顶部「下载」。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+        Text { text: "未连接时可直接点击顶部「下载」烧录并自动复位。连接只加载调试符号；调试中请暂停后下载。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
         HorizontalLayout {
             spacing: 8px;
             breakpoint := LineEdit { placeholder-text: "断点：函数名 或 文件:行号"; horizontal-stretch: 1; enabled: root.connected && !root.busy; accepted => { root.add-breakpoint(self.text); } }

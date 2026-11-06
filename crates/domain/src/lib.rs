@@ -157,6 +157,10 @@ pub enum DebugAction {
     StepOut,
     Reset,
     Download,
+    /// Flash through the selected probe backend, then reset without attaching GDB.
+    Flash {
+        profile: TargetProfile,
+    },
     AddBreakpoint(String),
     AddSourceBreakpoint {
         file: String,

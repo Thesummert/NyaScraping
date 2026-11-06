@@ -309,6 +309,92 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn standalone_flash_resets_without_gdb_and_reports_failures() {
+        use nya_domain::{DebugAction, DebugSession, SessionState};
+        use std::os::unix::fs::PermissionsExt;
+
+        for tool in [ToolKind::OpenOcd, ToolKind::PyOcd, ToolKind::ProbeRs] {
+            for failure in ["", "flash", "reset"] {
+                // OpenOCD resets as part of its single program command.
+                if tool == ToolKind::OpenOcd && failure == "reset" {
+                    continue;
+                }
+                let fixture = Fixture::new();
+                let mut adapter = fixture.adapter();
+                let directory = fixture.0.join("probe");
+                fs::create_dir_all(&directory).unwrap();
+                let executable = directory.join(core_tool(tool).to_string());
+                fs::write(
+                    &executable,
+                    r##"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+if [ -f "$0.fail-flash" ] && [ "$1" != reset ]; then
+    echo 'fixture flash failure' >&2
+    exit 1
+fi
+if [ -f "$0.fail-reset" ] && [ "$1" = reset ]; then
+    echo 'fixture reset failure' >&2
+    exit 1
+fi
+"##,
+                )
+                .unwrap();
+                fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+                adapter.add_local(tool, "fixture", &directory).unwrap();
+                adapter.select(tool, "local:fixture").unwrap();
+                if !failure.is_empty() {
+                    fs::write(executable.with_extension(format!("fail-{failure}")), "").unwrap();
+                }
+                let firmware = fixture.0.join("firmware with spaces.elf");
+                fs::write(&firmware, "fixture").unwrap();
+                let result = adapter.execute_debug(DebugAction::Flash {
+                    profile: TargetProfile {
+                        name: "fixture".into(),
+                        tool,
+                        target: "chip".into(),
+                        interface: (tool == ToolKind::OpenOcd).then(|| "probe.cfg".into()),
+                        transport: None,
+                        gdb_port: 3333,
+                        gdb_executable: fixture.0.join("gdb-does-not-exist"),
+                        firmware,
+                    },
+                });
+                let calls = fs::read_to_string(executable.with_extension("calls")).unwrap();
+                let calls: Vec<_> = calls.lines().collect();
+                let progress = adapter.install_progress.lock().unwrap().clone();
+                if failure.is_empty() {
+                    result.unwrap();
+                    assert_eq!(progress.percent, Some(100.0));
+                    assert!(adapter.debug_snapshot(&[]).message.contains("自动复位"));
+                } else {
+                    let error = result.unwrap_err();
+                    assert!(error.0.contains(&format!("fixture {failure} failure")));
+                    assert_ne!(progress.percent, Some(100.0));
+                    if failure == "reset" {
+                        assert!(error.0.contains("固件已写入，但复位失败"));
+                    }
+                }
+                if tool == ToolKind::OpenOcd {
+                    assert_eq!(calls.len(), 1);
+                    assert!(calls[0].contains("verify reset exit"));
+                } else if failure == "flash" {
+                    assert_eq!(calls.len(), 1);
+                } else {
+                    assert_eq!(calls.len(), 2);
+                    assert!(calls[1].starts_with("reset "));
+                }
+                assert!(adapter.server.is_none());
+                assert!(adapter.session.client.is_none());
+                assert_eq!(
+                    adapter.debug_snapshot(&[]).state,
+                    SessionState::Disconnected
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn failed_openocd_connection_and_flash_include_probe_diagnostics() {
         use std::os::unix::fs::PermissionsExt;
         let fixture = Fixture::new();

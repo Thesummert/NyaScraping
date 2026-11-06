@@ -99,7 +99,8 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
                 if let DebugAction::Connect {
                     profile,
                     external_server: false,
-                } = &mut action
+                }
+                | DebugAction::Flash { profile } = &mut action
                 {
                     match self.tools.active_backend() {
                         Ok(Some(tool)) => profile.tool = tool,
@@ -775,6 +776,40 @@ mod tests {
         assert_eq!(unchanged.backend, None);
         assert!(message.contains("not installed"));
     }
+    #[test]
+    fn standalone_flash_requires_and_uses_selected_backend_without_gdb() {
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        let action = DebugAction::Flash {
+            profile: nya_domain::TargetProfile {
+                name: "fixture".into(),
+                tool: ToolKind::OpenOcd,
+                target: "chip".into(),
+                interface: None,
+                transport: None,
+                gdb_port: 3333,
+                gdb_executable: PathBuf::new(),
+                firmware: "fixture.elf".into(),
+            },
+        };
+        assert!(matches!(
+            app.execute(Command::Debug(action.clone())),
+            Event::Failed(_)
+        ));
+        assert!(app.tools.actions.is_empty());
+        app.tools.state.backend = Some(ToolKind::PyOcd);
+        assert!(matches!(
+            app.execute(Command::Debug(action)),
+            Event::DebugUpdated {
+                completes_command: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &app.tools.actions[..],
+            [DebugAction::Flash { profile }] if profile.tool == ToolKind::PyOcd
+        ));
+    }
+
     #[test]
     fn session_uses_selected_backend_and_async_events_do_not_complete_commands() {
         use nya_domain::{SessionState, TargetProfile};

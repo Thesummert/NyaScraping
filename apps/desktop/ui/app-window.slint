@@ -191,6 +191,9 @@ export component AppWindow inherits Window {
     in-out property <string> firmware-details: "选择文件树中的函数或变量，查看类型、声明位置及存储位置。";
     in-out property <bool> functions-visible: false;
     in-out property <[WatchRow]> watches;
+    in-out property <int> watch-name-width: 72;
+    in-out property <int> watch-type-width: 76;
+    in-out property <int> watch-value-width: 68;
     in-out property <[WaveformRow]> waveform-channels;
     in-out property <[string]> waveform-charts: ["图表 1"];
     in-out property <int> waveform-selected-chart: 0;
@@ -560,6 +563,9 @@ export component AppWindow inherits Window {
                 VariablesPage {
                     padding: 16px;
                     watches: root.watches;
+                    name-width: root.watch-name-width * 1px;
+                    type-width: root.watch-type-width * 1px;
+                    value-width: root.watch-value-width * 1px;
                     acquisition-active: root.acquisition-active;
                     memory-endpoint <=> root.acquisition-endpoint;
                     source-label: root.acquisition-source-label;

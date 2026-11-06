@@ -38,6 +38,28 @@ fn update_ticks(
     }
 }
 
+fn update_watch_widths(ui: &AppWindow) {
+    // Match the file tree's conservative allowance for ASCII and wide glyphs.
+    let text_width = |text: &str| {
+        text.chars().fold(0i32, |width, ch| {
+            width.saturating_add(if ch.is_ascii() { 10 } else { 16 })
+        })
+    };
+    let (mut name, mut type_name, mut value) = (72, 76, 68);
+    for row in ui.get_watches().iter() {
+        name = name.max(
+            text_width(&row.expression)
+                .saturating_add(row.depth.max(0).saturating_mul(12))
+                .saturating_add(24),
+        );
+        type_name = type_name.max(text_width(&row.type_name).saturating_add(8));
+        value = value.max(text_width(&row.value).saturating_add(8));
+    }
+    ui.set_watch_name_width(name);
+    ui.set_watch_type_width(type_name);
+    ui.set_watch_value_width(value);
+}
+
 #[derive(Default)]
 pub struct Presenter {
     browser: Option<FirmwareBrowser>,
@@ -1289,6 +1311,7 @@ impl Presenter {
                     }
                 }
             }
+            update_watch_widths(ui);
             self.last_sequence = Some(sequence);
         }
         if update_plot {
@@ -1573,10 +1596,12 @@ impl Presenter {
                         model.set_row_data(index, row);
                     }
                 }
+                update_watch_widths(ui);
                 return;
             }
         }
         ui.set_watches(ModelRc::from(Rc::new(VecModel::from(rows))));
+        update_watch_widths(ui);
     }
 
     fn refresh_tree(&mut self, ui: &AppWindow) {

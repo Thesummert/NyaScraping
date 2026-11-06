@@ -20,6 +20,9 @@ export struct WatchRow {
 
 export component VariablesPage inherits VerticalLayout {
     in property <[WatchRow]> watches;
+    in property <length> name-width: 72px;
+    in property <length> type-width: 76px;
+    in property <length> value-width: 68px;
     in property <bool> can-write;
     in property <bool> acquisition-active;
     in-out property <string> memory-endpoint;
@@ -143,21 +146,32 @@ export component VariablesPage inherits VerticalLayout {
             clicked => { root.add(expression.text); expression.text = ""; }
         }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        Text { text: "名称"; color: Theme.muted; horizontal-stretch: 1; }
-        Text { text: "类型"; color: Theme.muted; width: 76px; }
-        Text { text: "值"; color: Theme.muted; width: 68px; }
-        Text { text: "波形"; color: Theme.muted; width: 40px; }
-        Rectangle { width: 24px; background: transparent; }
-        Rectangle { width: 28px; background: transparent; }
+    Rectangle {
+        height: 20px;
+        clip: true;
+        background: transparent;
+        HorizontalLayout {
+            x: watch-view.content-x;
+            width: watch-view.content-width;
+            spacing: 6px;
+            Text { text: "名称"; color: Theme.muted; min-width: root.name-width; horizontal-stretch: 1; }
+            Text { text: "类型"; color: Theme.muted; width: root.type-width; }
+            Text { text: "值"; color: Theme.muted; width: root.value-width; }
+            Text { text: "波形"; color: Theme.muted; width: 40px; }
+            Rectangle { width: 24px; background: transparent; }
+            Rectangle { width: 28px; background: transparent; }
+        }
     }
     Rectangle { height: 1px; background: Theme.border; }
     Rectangle {
         vertical-stretch: 1;
         background: transparent;
-        ListView {
+        clip: true;
+        watch-view := ListView {
+            content-width: max(self.visible-width, root.name-width + root.type-width + root.value-width + 122px);
+            horizontal-scrollbar-policy: as-needed;
             for watch[index] in root.watches: Rectangle {
+                width: watch-view.content-width;
                 height: index > root.animation-start && index < root.animation-end && !root.animation-visible ? 1px : (watch.error == "" ? 32px : 50px);
                 animate height {
                     duration: max(1ms, 280ms / max(1, root.animation-end - root.animation-start - 1));
@@ -168,9 +182,36 @@ export component VariablesPage inherits VerticalLayout {
                 background: area.has-hover ? Theme.panel : transparent;
                 animate background { duration: 140ms; }
                 border-radius: 8px;
-                area := TouchArea { clicked => {
-                    if watch.branch { root.toggle-branch(index); }
-                } }
+                area := TouchArea {
+                    property <bool> middle-dragging: false;
+                    property <length> drag-start-x;
+                    property <length> drag-start-y;
+                    property <length> drag-content-x;
+                    property <length> drag-content-y;
+                    clicked => {
+                        if watch.branch { root.toggle-branch(index); }
+                    }
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.middle && event.kind == PointerEventKind.down {
+                            self.middle-dragging = true;
+                            self.drag-start-x = self.mouse-x + watch-view.content-x;
+                            self.drag-start-y = self.mouse-y + parent.y + watch-view.content-y;
+                            self.drag-content-x = watch-view.content-x;
+                            self.drag-content-y = watch-view.content-y;
+                        }
+                        if (event.button == PointerEventButton.middle && event.kind == PointerEventKind.up) || event.kind == PointerEventKind.cancel {
+                            self.middle-dragging = false;
+                        }
+                    }
+                    moved => {
+                        if self.middle-dragging {
+                            watch-view.content-x = min(0px, max(watch-view.visible-width - watch-view.content-width,
+                                self.drag-content-x + self.mouse-x + watch-view.content-x - self.drag-start-x));
+                            watch-view.content-y = min(0px, max(watch-view.visible-height - watch-view.content-height,
+                                self.drag-content-y + self.mouse-y + parent.y + watch-view.content-y - self.drag-start-y));
+                        }
+                    }
+                }
                 if watch.error != "": Text { y: 32px; height: 18px; width: parent.width; text: watch.error; color: #f08a80; font-size: 10px; overflow: elide; }
 
                 HorizontalLayout {
@@ -183,12 +224,12 @@ export component VariablesPage inherits VerticalLayout {
                         font-family: "monospace";
                         font-size: 12px;
                         overflow: elide;
-                        min-width: 0px;
+                        min-width: max(0px, root.name-width - watch.depth * 12px);
                         horizontal-stretch: 1;
                         vertical-alignment: center;
                     }
-                    Text { text: watch.type-name; color: Theme.accent; font-size: 12px; width: 76px; overflow: elide; vertical-alignment: center; }
-                    Text { text: watch.value; color: watch.error != "" ? #f08a80 : Theme.text; width: 68px; overflow: elide; vertical-alignment: center; }
+                    Text { text: watch.type-name; color: Theme.accent; font-size: 12px; width: root.type-width; overflow: elide; vertical-alignment: center; }
+                    Text { text: watch.value; color: watch.error != "" ? #f08a80 : Theme.text; font-size: 12px; width: root.value-width; overflow: elide; vertical-alignment: center; }
                     Rectangle {
                         width: 40px;
                         Image {

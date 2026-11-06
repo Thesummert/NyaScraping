@@ -41,6 +41,8 @@ pub struct TargetProfile {
     /// OpenOCD configuration file, or pyOCD / probe-rs chip name.
     pub target: String,
     pub interface: Option<String>,
+    /// Optional OpenOCD transport override; None uses the probe's default.
+    pub transport: Option<String>,
     pub gdb_port: u16,
     pub gdb_executable: PathBuf,
     pub firmware: PathBuf,

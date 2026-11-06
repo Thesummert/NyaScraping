@@ -15,6 +15,8 @@ pub struct Project {
     pub gdb: String,
     pub target: String,
     pub interface: String,
+    #[serde(default)]
+    pub transport_index: i32,
     pub port: String,
     pub external_server: bool,
     pub backend_kind: i32,
@@ -42,6 +44,7 @@ impl Project {
             gdb: ui.get_gdb_path().to_string(),
             target: ui.get_debug_target().to_string(),
             interface: ui.get_debug_interface().to_string(),
+            transport_index: ui.get_debug_transport_index(),
             port: ui.get_debug_port().to_string(),
             external_server: ui.get_external_server(),
             backend_kind: ui.get_backend_kind(),
@@ -95,6 +98,7 @@ mod tests {
             gdb: "gdb".into(),
             target: "chip".into(),
             interface: "probe.cfg".into(),
+            transport_index: 2,
             port: "3333".into(),
             external_server: false,
             backend_kind: 0,
@@ -114,11 +118,14 @@ mod tests {
         project.write(&path).unwrap();
         let loaded = Project::read(&path).unwrap();
         assert_eq!(loaded.target, "chip");
+        assert_eq!(loaded.transport_index, 2);
         assert_eq!(loaded.refresh_rate_index, 0);
         let mut legacy = serde_json::to_value(&loaded).unwrap();
         legacy.as_object_mut().unwrap().remove("refresh_rate_index");
+        legacy.as_object_mut().unwrap().remove("transport_index");
         let legacy: Project = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy.refresh_rate_index, 0);
+        assert_eq!(legacy.transport_index, 0);
         assert!(loaded.watches[0].waveform);
         assert_eq!(loaded.watches[0].scope.as_deref(), Some("main.c:1"));
         let mut future = loaded;

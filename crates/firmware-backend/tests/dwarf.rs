@@ -10,7 +10,12 @@ use gimli::{
 use object::{Architecture, BinaryFormat, Endianness, SectionKind};
 use std::io::Write;
 
-fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
+fn synthetic(
+    version: u16,
+    endian: RunTimeEndian,
+    compressed: bool,
+    invalid_locations: bool,
+) -> Vec<u8> {
     let encoding = Encoding {
         format: Format::Dwarf32,
         version,
@@ -173,6 +178,48 @@ fn synthetic(version: u16, endian: RunTimeEndian, compressed: bool) -> Vec<u8> {
     ] {
         declarations.get_mut(function).set(attribute, value);
     }
+    if invalid_locations {
+        for (name, in_list, bytecode) in [
+            ("unsupported_inline", false, vec![0xff]),
+            ("truncated_inline", false, vec![gimli::DW_OP_addr.0]),
+            ("unsupported_list", true, vec![0xff]),
+            ("truncated_list", true, vec![gimli::DW_OP_addr.0]),
+        ] {
+            let expression = write::Expression::raw(bytecode);
+            let location = if in_list {
+                let mut valid = write::Expression::new();
+                valid.op_reg(gimli::Register(0));
+                let list = declarations.locations.add(write::LocationList(vec![
+                    write::Location::StartLength {
+                        begin: write::Address::Constant(0x08001200),
+                        length: 4,
+                        data: valid,
+                    },
+                    write::Location::StartLength {
+                        begin: write::Address::Constant(0x08001204),
+                        length: 4,
+                        data: expression,
+                    },
+                ]));
+                A::LocationListRef(list)
+            } else {
+                A::Exprloc(expression)
+            };
+            let variable = declarations.add(
+                if in_list { function } else { root },
+                gimli::DW_TAG_variable,
+            );
+            for (attribute, value) in [
+                (gimli::DW_AT_name, A::String(name.as_bytes().to_vec())),
+                (gimli::DW_AT_type, A::UnitRef(int)),
+                (gimli::DW_AT_decl_file, A::FileIndex(Some(file))),
+                (gimli::DW_AT_decl_line, A::Udata(12)),
+                (gimli::DW_AT_location, location),
+            ] {
+                declarations.get_mut(variable).set(attribute, value);
+            }
+        }
+    }
     let mut dwarf = write::Dwarf::new();
     let unit_id = dwarf.units.add(declarations);
     let mut definitions = write::Unit::new(encoding, write::LineProgram::none());
@@ -328,7 +375,7 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
         let image = NativeFirmwareBackend
             .parse(
                 Path::new("synthetic.axf"),
-                &synthetic(version, endian, compressed),
+                &synthetic(version, endian, compressed, false),
             )
             .unwrap();
         let info = image.debug;
@@ -442,6 +489,51 @@ fn cross_unit_specifications_types_constants_big_endian_and_compressed_dwarf() {
             .as_ref()
             .unwrap()
             .contains("递归"));
+    }
+}
+
+#[test]
+fn invalid_variable_locations_preserve_source_types_functions_and_other_variables() {
+    for version in [4, 5] {
+        let image = NativeFirmwareBackend
+            .parse(
+                Path::new("invalid-locations.elf"),
+                &synthetic(version, RunTimeEndian::Little, false, true),
+            )
+            .unwrap();
+        let info = image.debug;
+        assert_eq!(info.warnings.len(), 4, "{:?}", info.warnings);
+        assert!(!info.executable_lines.is_empty());
+        let function = info
+            .functions
+            .iter()
+            .find(|f| f.name == "calculate" && !f.ranges.is_empty())
+            .unwrap();
+        let declaration = function.declaration.as_ref().unwrap();
+        assert_eq!(info.files[declaration.file].path, "C:/project/src/main.cpp");
+        assert_eq!(declaration.line, Some(27));
+        for name in [
+            "unsupported_inline",
+            "truncated_inline",
+            "unsupported_list",
+            "truncated_list",
+        ] {
+            let variable = info.variables.iter().find(|v| v.name == name).unwrap();
+            assert!(matches!(variable.location, VariableLocation::Unavailable));
+            assert_eq!(variable.type_name.as_deref(), Some("int"));
+            assert_eq!(variable.byte_size, Some(4));
+            assert_eq!(variable.scalar_type, Some(ScalarType::Signed));
+            let declaration = variable.declaration.as_ref().unwrap();
+            assert_eq!(info.files[declaration.file].path, "C:/project/src/main.cpp");
+            assert_eq!(declaration.line, Some(12));
+            assert_eq!(variable.function.is_some(), name.ends_with("_list"));
+            assert!(info.warnings.iter().any(|warning| warning.contains(name)));
+        }
+        let healthy = info.variables.iter().find(|v| v.name == "voltage").unwrap();
+        assert!(matches!(
+            healthy.location,
+            VariableLocation::Address(0x20000200)
+        ));
     }
 }
 

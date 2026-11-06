@@ -1,4 +1,4 @@
-import { Button, CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { TargetSelector, TargetRow, PackRow } from "target-selector.slint";
 import { ConfigSelector } from "config-selector.slint";
@@ -15,6 +15,7 @@ export component DebugSettings inherits ScrollView {
     in property <string> target-message;
     in-out property <string> target-search;
     in-out property <string> interface;
+    in-out property <int> transport-index;
     in property <[TargetRow]> probes;
     in property <string> probe-message;
     in-out property <string> probe-search;
@@ -78,6 +79,16 @@ export component DebugSettings inherits ScrollView {
             Text { text: "GDB 端口"; color: Theme.muted; width: 60px; vertical-alignment: center; }
             LineEdit { text <=> root.port; enabled: !root.busy && !root.connected; width: 90px; }
             CheckBox { text: "连接已有本机 GDB 服务"; checked <=> root.external-server; enabled: !root.busy && !root.connected; }
+        }
+        if root.backend-kind == 0: HorizontalLayout {
+            spacing: 8px;
+            Text { text: "传输方式"; color: Theme.muted; width: 60px; vertical-alignment: center; }
+            ComboBox {
+                model: ["自动（J-Link 使用 SWD）", "SWD", "JTAG", "HLA SWD", "HLA JTAG"];
+                current-index <=> root.transport-index;
+                enabled: !root.busy && !root.connected && !root.external-server;
+                horizontal-stretch: 1;
+            }
         }
         Rectangle { vertical-stretch: 1; }
     }

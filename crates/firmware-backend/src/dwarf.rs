@@ -167,6 +167,7 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
             owners.insert(node.key, owner);
         }
     }
+    let mut unavailable_locations = 0usize;
     for node in &ctx.nodes {
         if !matches!(
             node.tag,
@@ -210,10 +211,24 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
                         .unwrap_or_default(),
                     _ => "<常量块>".into(),
                 });
+        let name = ctx
+            .string(node.key, gimli::DW_AT_name)?
+            .unwrap_or_else(|| "<匿名变量>".into());
+        // A location expression is optional metadata. Unsupported opcodes or
+        // malformed location lists must not discard source files and other DIEs.
+        let location = ctx.location(node.key).unwrap_or_else(|error| {
+            unavailable_locations += 1;
+            if unavailable_locations <= 10 {
+                let (unit, offset) = node.key;
+                info.warnings.push(format!(
+                    "DWARF 变量“{name}”位置不可用（编译单元 {unit}，DIE {:#x}）：{error}",
+                    offset.0
+                ));
+            }
+            VariableLocation::Unavailable
+        });
         info.variables.push(DebugVariable {
-            name: ctx
-                .string(node.key, gimli::DW_AT_name)?
-                .unwrap_or_else(|| "<匿名变量>".into()),
+            name,
             type_name: ty.as_ref().map(|t| t.0.clone()),
             byte_size: ty.and_then(|t| t.1),
             scalar_type: ctx.scalar_type(node.key, &mut Vec::new())?,
@@ -227,9 +242,15 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
             } else {
                 VariableKind::Global
             },
-            location: ctx.location(node.key)?,
+            location,
             constant,
         });
+    }
+    if unavailable_locations > 10 {
+        info.warnings.push(format!(
+            "另有 {} 个 DWARF 变量位置不可用；已保留源码位置、类型及其他有效调试信息。",
+            unavailable_locations - 10
+        ));
     }
     Ok(info)
 }

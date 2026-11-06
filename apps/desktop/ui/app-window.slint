@@ -118,6 +118,7 @@ export component AppWindow inherits Window {
     callback remove-pack(string);
     callback install-pack(string);
     in-out property <string> debug-interface;
+    in-out property <int> debug-transport-index: 0;
     in-out property <[TargetRow]> probes;
     in-out property <string> probe-message;
     in-out property <string> probe-search;
@@ -666,6 +667,7 @@ export component AppWindow inherits Window {
                             remove-pack(path) => { root.remove-pack(path); }
                             install-pack(part) => { root.install-pack(part); }
                             interface <=> root.debug-interface;
+                            transport-index <=> root.debug-transport-index;
                             probes: root.probes;
                             probe-message: root.probe-message;
                             probe-search <=> root.probe-search;

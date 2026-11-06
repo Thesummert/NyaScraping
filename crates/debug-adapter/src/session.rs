@@ -755,6 +755,7 @@ mod tests {
             tool: ToolKind::OpenOcd,
             target: "test".into(),
             interface: None,
+            transport: None,
             gdb_port: 3333,
             gdb_executable: gdb,
             firmware,

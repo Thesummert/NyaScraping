@@ -1,4 +1,5 @@
 pub use nya_scraping_core::manager::{InstallProgress, SharedInstallProgress};
+mod diagnostics;
 pub mod live_memory;
 mod mi;
 mod non_stop;
@@ -35,6 +36,7 @@ fn options(profile: &TargetProfile) -> GdbServerOptions {
     GdbServerOptions {
         target: profile.target.clone(),
         interface: profile.interface.clone(),
+        transport: profile.transport.clone(),
         port: profile.gdb_port,
     }
 }
@@ -77,14 +79,12 @@ impl DebugAdapter {
         let mut command =
             operation_command(tool, &executable, &options(profile), &operation).map_err(error)?;
         self.configure_packs(profile.tool, &mut command)?;
+        let mut diagnostics = diagnostics::Diagnostics::capture(&mut command)?;
         let status = command.status().map_err(error)?;
         if status.success() {
             Ok(())
         } else {
-            Err(Error(format!(
-                "{} exited with {status}",
-                profile.tool.name()
-            )))
+            Err(diagnostics.failure(format!("{} exited with {status}", profile.tool.name())))
         }
     }
 }
@@ -236,9 +236,10 @@ impl DebugBackend for DebugAdapter {
             command.args(["-O", "cache.enable_memory=false"]);
         }
         self.configure_packs(profile.tool, &mut command)?;
+        let mut diagnostics = diagnostics::Diagnostics::capture(&mut command)?;
         self.server = Some(
             RunningGdbServer::start(command, profile.gdb_port, Duration::from_secs(10))
-                .map_err(error)?,
+                .map_err(|error| diagnostics.failure(error))?,
         );
         Ok(())
     }
@@ -304,6 +305,51 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_openocd_connection_and_flash_include_probe_diagnostics() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let mut adapter = fixture.adapter();
+        let executable = adapter
+            .manager
+            .data_dir
+            .join("openocd/1.0/xpack-openocd-1.0/bin/openocd");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'Error: Selected transport is not supported by the device\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        adapter.manager.select(Tool::OpenOcd, "1.0").unwrap();
+        let firmware = fixture.0.join("firmware.elf");
+        fs::write(&firmware, "fixture").unwrap();
+        let profile = TargetProfile {
+            name: "J-Link".into(),
+            tool: ToolKind::OpenOcd,
+            target: "target/stm32h7x.cfg".into(),
+            interface: Some("interface/jlink.cfg".into()),
+            transport: None,
+            gdb_port: std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port(),
+            gdb_executable: "gdb".into(),
+            firmware,
+        };
+        let connection_error = adapter.start_server(&profile).unwrap_err();
+        assert!(connection_error
+            .0
+            .contains("Selected transport is not supported"));
+        assert!(adapter.server.is_none());
+        let flash_error = adapter.flash(&profile).unwrap_err();
+        assert!(flash_error
+            .0
+            .contains("Selected transport is not supported"));
     }
 
     #[test]

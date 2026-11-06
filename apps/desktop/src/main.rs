@@ -118,6 +118,18 @@ fn target_profile(ui: &AppWindow) -> Result<TargetProfile, String> {
         } else {
             Some(interface)
         },
+        transport: if ui.get_backend_kind() == 0 {
+            match ui.get_debug_transport_index() {
+                0 => None,
+                1 => Some("swd".into()),
+                2 => Some("jtag".into()),
+                3 => Some("hla_swd".into()),
+                4 => Some("hla_jtag".into()),
+                _ => return Err("请选择有效的 OpenOCD 传输方式".into()),
+            }
+        } else {
+            None
+        },
         gdb_port: port,
         gdb_executable: ui.get_gdb_path().trim().into(),
         firmware: ui.get_firmware_path().trim().into(),
@@ -173,6 +185,7 @@ fn open_project(
     ui.set_gdb_path(project.gdb.into());
     ui.set_debug_target(project.target.into());
     ui.set_debug_interface(project.interface.into());
+    ui.set_debug_transport_index(project.transport_index);
     ui.set_debug_port(project.port.into());
     ui.set_external_server(project.external_server);
     ui.set_acquisition_endpoint(project.acquisition_endpoint.into());

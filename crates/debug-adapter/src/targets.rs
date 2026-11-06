@@ -451,6 +451,7 @@ mod tests {
         let options = GdbServerOptions {
             target: target.name.clone(),
             interface: Some(probe.name.clone()),
+            transport: None,
             port: 3333,
         };
         for command in [

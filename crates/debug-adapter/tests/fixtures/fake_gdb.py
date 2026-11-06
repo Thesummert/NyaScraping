@@ -19,6 +19,7 @@ download_pending = False
 reset_pending = False
 fail_download = False
 fail_reset = False
+fail_interrupt = False
 hold_context = False
 
 def send(text):
@@ -64,7 +65,14 @@ for line in sys.stdin:
         fail_reset = True
         send(token + '^done')
         continue
+    if command == '-test-fail-interrupt':
+        fail_interrupt = True
+        send(token + '^done')
+        continue
     if command == '-target-download':
+        if state != "stopped":
+            send(token + '^error,msg="Cannot download while target is running"')
+            continue
         download_pending = True
         if fail_download:
             send(token + '^error,msg="Flash programming failed"')
@@ -87,6 +95,9 @@ for line in sys.stdin:
         send(token + '^running')
         send('*running,thread-id="all"')
     elif command.startswith(('-exec-interrupt', '-exec-step', '-exec-next', '-exec-finish')):
+        if command.startswith('-exec-interrupt') and fail_interrupt:
+            send(token + '^error,msg="Target interrupt failed"')
+            continue
         state = "stopped"
         send(token + '^done')
         if command.startswith('-exec-interrupt') and not break_on_interrupt:

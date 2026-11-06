@@ -288,7 +288,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "步入"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(5); } }
             MenuItem { title: "步出"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(6); } }
             MenuItem { title: "复位目标"; enabled: root.debug-halted && !root.interaction-busy; activated => { root.debug-action(7); } }
-            MenuItem { title: "下载固件"; enabled: (!root.debug-connected || root.debug-halted) && !root.interaction-busy; activated => { root.debug-action(8); } }
+            MenuItem { title: "下载固件"; enabled: (!root.debug-connected || root.debug-halted || root.debug-running) && !root.interaction-busy; activated => { root.debug-action(8); } }
             MenuSeparator { }
             MenuItem { title: "断点记录…"; enabled: !root.interaction-busy; activated => { root.show-breakpoints(); } }
         }
@@ -380,7 +380,7 @@ export component AppWindow inherits Window {
                         spacing: 8px;
                         Text { text: "● " + root.debug-state; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
                         Button { text: root.debug-connected ? "断开" : "连接"; enabled: !root.interaction-busy; clicked => { root.debug-action(root.debug-connected ? 1 : 0); } }
-                        Button { text: "下载"; enabled: (!root.debug-connected || root.debug-halted) && !root.interaction-busy; clicked => { root.debug-action(8); } }
+                        Button { text: "下载"; enabled: (!root.debug-connected || root.debug-halted || root.debug-running) && !root.interaction-busy; clicked => { root.debug-action(8); } }
                     }
                 }
             }

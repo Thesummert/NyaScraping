@@ -510,7 +510,7 @@ impl DebugSession for DebugAdapter {
                 self.session.message = "固件已烧录并自动复位".into();
             }
             DebugAction::Download => {
-                self.session.halted()?;
+                self.session.client()?.poll()?;
                 let progress = self.install_progress.clone();
                 if let Ok(mut value) = progress.lock() {
                     *value = crate::InstallProgress {
@@ -518,6 +518,21 @@ impl DebugSession for DebugAdapter {
                         ..Default::default()
                     };
                 }
+                if self.session.client()?.state == SessionState::Running {
+                    if let Ok(mut value) = progress.lock() {
+                        value.stage = "正在自动暂停目标，准备烧录…".into();
+                    }
+                    self.session.client()?.command("-exec-interrupt --all")?;
+                    let started = Instant::now();
+                    while self.session.client()?.state == SessionState::Running {
+                        if started.elapsed() >= Duration::from_secs(3) {
+                            return Err(Error("等待目标暂停超时，未下载固件".into()));
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                        self.session.client()?.poll()?;
+                    }
+                }
+                self.session.halted()?;
                 let started = Instant::now();
                 let result = self.session.halted()?.command_timeout_observe(
                     "-target-download",
@@ -1347,6 +1362,59 @@ mod tests {
             assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
             adapter.execute_debug(DebugAction::Disconnect).unwrap();
         }
+    }
+
+    #[test]
+    fn running_target_download_automatically_stops_then_flashes_and_resets() {
+        for tool in [ToolKind::OpenOcd, ToolKind::PyOcd, ToolKind::ProbeRs] {
+            let (_root, mut adapter, mut profile) = fixture();
+            profile.tool = tool;
+            adapter
+                .execute_debug(DebugAction::Connect {
+                    profile,
+                    external_server: true,
+                })
+                .unwrap();
+            adapter.execute_debug(DebugAction::Continue).unwrap();
+            assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
+            adapter.execute_debug(DebugAction::Download).unwrap();
+            let snapshot = adapter.debug_snapshot(&[]);
+            assert_eq!(snapshot.state, SessionState::Halted);
+            assert!(snapshot.message.contains("已下载并复位"));
+            assert_eq!(
+                adapter.install_progress.lock().unwrap().percent,
+                Some(100.0)
+            );
+            adapter.execute_debug(DebugAction::Continue).unwrap();
+            assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
+            adapter.execute_debug(DebugAction::Disconnect).unwrap();
+        }
+    }
+
+    #[test]
+    fn running_target_download_aborts_if_interrupt_fails() {
+        let (_root, mut adapter, profile) = fixture();
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+            })
+            .unwrap();
+        adapter.execute_debug(DebugAction::Continue).unwrap();
+        adapter
+            .session
+            .client()
+            .unwrap()
+            .command("-test-fail-interrupt")
+            .unwrap();
+        adapter.install_progress.lock().unwrap().percent = Some(100.0);
+        let error = adapter.execute_debug(DebugAction::Download).unwrap_err();
+        assert!(error.0.contains("Target interrupt failed"));
+        assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
+        assert_ne!(
+            adapter.install_progress.lock().unwrap().percent,
+            Some(100.0)
+        );
     }
 
     #[test]

@@ -22,8 +22,7 @@ NyaScraping/
 ├── backends/
 │   └── NyaScrapingCore/         # Git 子模块，保持独立开发
 ├── docs/                        # 架构、界面与实施路线
-├── examples/                    # 目标配置设计样例
-└── .github/workflows/           # Rust/Slint/桥接与原生后端检查
+└── examples/                    # 目标配置设计样例
 ```
 
 详细设计见 [架构说明](docs/architecture.md) 和 [界面与实施路线](docs/roadmap.md)。

@@ -71,12 +71,15 @@ export component AppWindow inherits Window {
     callback refresh-rate-changed();
     private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
     in-out property <bool> workspace-expanded: false;
+    private property <bool> file-tree-visible: true;
+    private property <float> file-tree-reveal: root.file-tree-visible ? 1 : 0;
+    animate file-tree-reveal { duration: 240ms; easing: ease-out; }
     private property <length> left-panel-width: 280px;
     private property <length> right-panel-width: 330px;
     private property <length> drag-panel-width;
     changed width => {
-        root.left-panel-width = min(root.left-panel-width, max(260px, root.width - 40px - 360px - 330px));
-        root.right-panel-width = min(root.right-panel-width, max(330px, root.width - 40px - 360px - root.left-panel-width));
+        root.left-panel-width = min(root.left-panel-width, max(260px, root.width - 54px - 360px - 330px));
+        root.right-panel-width = min(root.right-panel-width, max(330px, root.width - 54px - 360px - root.left-panel-width));
     }
     in-out property <bool> debug-connected: false;
     in-out property <bool> debug-halted: false;
@@ -282,6 +285,7 @@ export component AppWindow inherits Window {
         }
         Menu {
             title: "视图";
+            MenuItem { title: root.file-tree-visible ? "隐藏文件树" : "显示文件树"; enabled: !root.interaction-busy && !root.workspace-expanded; activated => { root.file-tree-visible = !root.file-tree-visible; } }
             MenuItem { title: root.workspace-expanded ? "恢复三栏布局" : "扩大源码 / 波形区域"; enabled: !root.interaction-busy; activated => { root.workspace-expanded = !root.workspace-expanded; } }
         }
         Menu {
@@ -348,12 +352,14 @@ export component AppWindow inherits Window {
             padding: 10px;
             spacing: 0px;
             left-panel := Rectangle {
-                width: root.workspace-expanded ? 0px : root.left-panel-width;
-                visible: !root.workspace-expanded;
+                width: root.workspace-expanded ? 0px : root.left-panel-width * root.file-tree-reveal;
+                visible: !root.workspace-expanded && root.file-tree-reveal > 0;
                 clip: true;
                 background: Theme.sidebar;
                 border-radius: 16px;
                 FirmwarePage {
+                    width: root.left-panel-width;
+                    height: parent.height;
                     padding: 16px;
                     busy: root.interaction-busy || root.debug-connected;
                     path <=> root.firmware-path;
@@ -376,12 +382,33 @@ export component AppWindow inherits Window {
                     browse => { root.browse-firmware(); }
                 }
             }
-            PanelDivider {
-                width: root.workspace-expanded ? 0px : 10px;
+            Rectangle {
+                width: root.workspace-expanded ? 0px : 24px;
                 visible: !root.workspace-expanded;
-                drag-start => { root.drag-panel-width = left-panel.width; }
-                drag(delta) => {
-                    root.left-panel-width = max(260px, min(root.drag-panel-width + delta, root.width - 40px - 360px - right-panel.width));
+                background: transparent;
+                Rectangle {
+                    x: 2px; y: 16px; width: 20px; height: 32px;
+                    border-radius: 6px;
+                    background: tree-toggle.has-hover ? Theme.panel : Theme.sidebar;
+                    Text {
+                        text: root.file-tree-visible ? "◀" : "▶";
+                        color: tree-toggle.has-hover ? Theme.text : Theme.muted;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    tree-toggle := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.file-tree-visible = !root.file-tree-visible; }
+                    }
+                }
+                PanelDivider {
+                    x: 7px; y: 48px; width: 10px; height: parent.height - 48px;
+                    visible: root.file-tree-visible && root.file-tree-reveal >= 1;
+                    drag-start => { root.drag-panel-width = left-panel.width; }
+                    drag(delta) => {
+                        root.left-panel-width = max(260px, min(root.drag-panel-width + delta, root.width - 54px - 360px - right-panel.width));
+                    }
                 }
             }
             Rectangle {
@@ -490,7 +517,7 @@ export component AppWindow inherits Window {
                 visible: !root.workspace-expanded;
                 drag-start => { root.drag-panel-width = right-panel.width; }
                 drag(delta) => {
-                    root.right-panel-width = max(330px, min(root.drag-panel-width - delta, root.width - 40px - 360px - left-panel.width));
+                    root.right-panel-width = max(330px, min(root.drag-panel-width - delta, root.width - 54px - 360px - root.left-panel-width));
                 }
             }
             right-panel := Rectangle {

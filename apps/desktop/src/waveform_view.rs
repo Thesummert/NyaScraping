@@ -1,7 +1,14 @@
-use slint::{Image, Rgb8Pixel, SharedPixelBuffer};
-
 pub const PLOT_WIDTH: usize = 800;
 const HEIGHT: usize = 400;
+// Subpixel coordinates without floating-point formatting in the frame loop.
+// Keep the Path viewbox in waveforms.slint in sync with these dimensions.
+const PATH_SCALE: f64 = 16.0;
+
+#[derive(Debug, PartialEq)]
+pub struct PlotPath {
+    pub commands: String,
+    pub color: [u8; 3],
+}
 pub const COLORS: [[u8; 3]; 6] = [
     [104, 216, 202],
     [255, 191, 105],
@@ -51,71 +58,98 @@ impl Scale {
     }
 }
 
-pub fn render(
+type Trace = (Vec<Option<(f64, f64)>>, [u8; 3]);
+
+#[derive(Default)]
+pub struct PlotRenderer {
+    previous: Option<(Vec<Trace>, f64, f64)>,
+}
+
+impl PlotRenderer {
+    /// Keep the existing native paths when the envelope inputs match.
+    pub fn render_if_changed(
+        &mut self,
+        traces: &[(&[Option<(f64, f64)>], [u8; 3])],
+        zoom: f64,
+        window_seconds: f64,
+    ) -> Option<Vec<PlotPath>> {
+        if self
+            .previous
+            .as_ref()
+            .is_some_and(|(previous, z, seconds)| {
+                *z == zoom
+                    && *seconds == window_seconds
+                    && previous.len() == traces.len()
+                    && previous
+                        .iter()
+                        .zip(traces)
+                        .all(|((a, ac), (b, bc))| a.as_slice() == *b && ac == bc)
+            })
+        {
+            return None;
+        }
+        let paths = render_paths(traces, zoom, window_seconds);
+        let (previous, z, seconds) = self.previous.get_or_insert_with(Default::default);
+        previous.resize_with(traces.len(), || (Vec::new(), [0; 3]));
+        for ((cached_bins, cached_color), (bins, color)) in previous.iter_mut().zip(traces) {
+            cached_bins.clear();
+            cached_bins.extend_from_slice(bins);
+            *cached_color = *color;
+        }
+        *z = zoom;
+        *seconds = window_seconds;
+        Some(paths)
+    }
+}
+
+fn render_paths(
     traces: &[(&[Option<(f64, f64)>], [u8; 3])],
     zoom: f64,
     window_seconds: f64,
-) -> Image {
-    let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(PLOT_WIDTH as u32, HEIGHT as u32);
-    let pixels = buffer.make_mut_slice();
-    for (i, pixel) in pixels.iter_mut().enumerate() {
-        let (x, y) = (i % PLOT_WIDTH, i / PLOT_WIDTH);
-        *pixel = if y.is_multiple_of(100) || x.is_multiple_of(200) {
-            Rgb8Pixel {
-                r: 43,
-                g: 52,
-                b: 64,
-            }
-        } else {
-            Rgb8Pixel {
-                r: 17,
-                g: 22,
-                b: 30,
-            }
-        };
-    }
-    for &(bins, color) in traces {
-        let Some(scale) = Scale::from_bins(bins, zoom) else {
-            continue;
-        };
-        let y_of = |value: f64| scale.y(value);
-        let pixel = Rgb8Pixel {
-            r: color[0],
-            g: color[1],
-            b: color[2],
-        };
-        let mut previous: Option<(usize, f64)> = None;
-        for (x, bin) in bins.iter().take(PLOT_WIDTH).enumerate() {
-            if let Some((low, high)) = bin {
-                let y1 = y_of(*high);
-                let y2 = y_of(*low);
-                let draw = |pixels: &mut [Rgb8Pixel], column: usize, a: f64, b: f64| {
-                    let low = a.min(b).max(0.0);
-                    let high = a.max(b).min((HEIGHT - 1) as f64);
-                    if low <= high {
-                        for row in low as usize..=high as usize {
-                            pixels[row * PLOT_WIDTH + column] = pixel;
-                        }
+) -> Vec<PlotPath> {
+    let max_gap = ((PLOT_WIDTH as f64 * 0.5 / window_seconds).ceil() as usize).max(1);
+    traces
+        .iter()
+        .map(|&(bins, color)| {
+            let mut commands = String::with_capacity(bins.len().min(PLOT_WIDTH) * 24);
+            let mut envelope = String::new();
+            if let Some(scale) = Scale::from_bins(bins, zoom) {
+                let mut previous: Option<usize> = None;
+                for (x, bin) in bins.iter().take(PLOT_WIDTH).enumerate() {
+                    let Some((low, high)) = bin else { continue };
+                    let top = scale.y(*high);
+                    let bottom = scale.y(*low);
+                    let y1 = (top * PATH_SCALE).round() as i32;
+                    let y2 = (bottom * PATH_SCALE).round() as i32;
+                    let middle = ((top / 2.0 + bottom / 2.0) * PATH_SCALE).round() as i32;
+                    let path_x = (x as f64 * PATH_SCALE) as i32;
+                    // A vertical segment preserves each bin's min/max, including narrow spikes.
+                    // Join bin centers only across the same short gaps as the old rasterizer.
+                    if previous.is_none_or(|px| x - px > max_gap) {
+                        append_point(&mut commands, 'M', path_x, middle);
                     }
-                };
-                draw(pixels, x, y1, y2);
-                let middle = (y1 + y2) / 2.0;
-                if let Some((px, py)) = previous {
-                    if x - px <= ((PLOT_WIDTH as f64 * 0.5 / window_seconds).ceil() as usize).max(1)
-                    {
-                        let mut last_y = py;
-                        for column in px + 1..=x {
-                            let y = py + (middle - py) * (column - px) as f64 / (x - px) as f64;
-                            draw(pixels, column, last_y, y);
-                            last_y = y;
-                        }
+                    // The first zero-length segment also displays isolated samples
+                    // with the Path's round line cap.
+                    append_point(&mut commands, 'L', path_x, middle);
+                    if y1 != y2 {
+                        append_point(&mut envelope, 'M', path_x, y1);
+                        append_point(&mut envelope, 'L', path_x, y2);
                     }
+                    previous = Some(x);
                 }
-                previous = Some((x, middle));
             }
-        }
-    }
-    Image::from_rgb8(buffer)
+            commands.push_str(&envelope);
+            PlotPath { commands, color }
+        })
+        .collect()
+}
+
+fn append_point(commands: &mut String, command: char, x: i32, y: i32) {
+    let mut buffer = itoa::Buffer::new();
+    commands.push(command);
+    commands.push_str(buffer.format(x));
+    commands.push(' ');
+    commands.push_str(buffer.format(y));
 }
 
 pub fn format_value(value: f64) -> String {
@@ -132,6 +166,45 @@ pub fn format_value(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_preserve_spikes_and_break_long_gaps() {
+        let spikes = render_paths(&[(&[Some((0.0, 100.0))], COLORS[0])], 1.0, 5.0);
+        assert_eq!(spikes[0].commands, "M0 3192L0 3192M0 638L0 5746");
+        let bins = [Some((0.0, 0.0)), None, Some((0.0, 0.0))];
+        let long = render_paths(&[(&bins, COLORS[0])], 1.0, 3600.0);
+        assert_eq!(long[0].commands, "M0 3192L0 3192M32 3192L32 3192");
+        let short = render_paths(&[(&bins, COLORS[0])], 1.0, 0.05);
+        assert_eq!(short[0].commands, "M0 3192L0 3192L32 3192");
+    }
+
+    #[test]
+    fn cached_plot_invalidates_on_data_color_scale_window_and_channel_changes() {
+        let mut renderer = PlotRenderer::default();
+        let mut bins = vec![Some((0.0, 1.0)); PLOT_WIDTH];
+        assert!(renderer
+            .render_if_changed(&[(&bins, COLORS[0])], 1.0, 5.0)
+            .is_some());
+        assert!(renderer
+            .render_if_changed(&[(&bins, COLORS[0])], 1.0, 5.0)
+            .is_none());
+        bins[400] = Some((-100.0, 100.0));
+        assert!(renderer
+            .render_if_changed(&[(&bins, COLORS[0])], 1.0, 5.0)
+            .is_some());
+        assert!(renderer
+            .render_if_changed(&[(&bins, COLORS[1])], 1.0, 5.0)
+            .is_some());
+        assert!(renderer
+            .render_if_changed(&[(&bins, COLORS[1])], 2.0, 5.0)
+            .is_some());
+        assert!(renderer
+            .render_if_changed(&[(&bins, COLORS[1])], 2.0, 10.0)
+            .is_some());
+        let blank = renderer.render_if_changed(&[], 2.0, 10.0).unwrap();
+        assert!(blank.is_empty());
+        assert!(renderer.render_if_changed(&[], 2.0, 10.0).is_none());
+    }
 
     #[test]
     fn ticks_match_drawn_scale_and_zoom() {

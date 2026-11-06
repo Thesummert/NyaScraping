@@ -3,12 +3,12 @@ import { Theme } from "theme.slint";
 import { SourcePage, SourceTab, SourceBreakpoint, HighlightLine, HighlightSpan } from "pages/source.slint";
 import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
-import { WaveformsPage, WaveformRow } from "pages/waveforms.slint";
+import { WaveformsPage, WaveformRow, WaveformPath } from "pages/waveforms.slint";
 import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
 import { DebugPage, FrameRow, BreakpointRow } from "pages/debug.slint";
 import { DebugSettings } from "pages/debug-settings.slint";
 import { TargetRow, PackRow } from "pages/target-selector.slint";
-export { SourceTab, SourceBreakpoint, HighlightLine, HighlightSpan, FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow }
+export { SourceTab, SourceBreakpoint, HighlightLine, HighlightSpan, FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow, WaveformPath }
 
 component PanelDivider inherits Rectangle {
     callback drag-start();
@@ -193,7 +193,7 @@ export component AppWindow inherits Window {
     in-out property <[WaveformRow]> waveform-channels;
     in-out property <[string]> waveform-charts: ["图表 1"];
     in-out property <int> waveform-selected-chart: 0;
-    in-out property <image> waveform-plot;
+    in-out property <[WaveformPath]> waveform-paths;
     in-out property <[string]> waveform-axis-channels;
     in-out property <int> waveform-axis-index;
     in-out property <[string]> waveform-y-ticks: ["—", "—", "—", "—", "—"];
@@ -488,7 +488,7 @@ export component AppWindow inherits Window {
                                 channels: root.waveform-channels;
                                 charts: root.waveform-charts;
                                 selected-chart: root.waveform-selected-chart;
-                                plot: root.waveform-plot;
+                                paths: root.waveform-paths;
                                 axis-channels: root.waveform-axis-channels;
                                 axis-index: root.waveform-axis-index;
                                 y-ticks: root.waveform-y-ticks;
@@ -688,13 +688,13 @@ export component AppWindow inherits Window {
                                 current-index <=> root.refresh-rate-index;
                                 selected => { root.refresh-rate-changed(); }
                             }
-                            Text { text: "控制变量和波形界面的更新频率，不改变后端采样频率。"; color: Theme.muted; wrap: word-wrap; }
+                            Text { text: "控制变量界面的更新频率；波形绘制最高 60 帧/秒，不改变后端采样频率。"; color: Theme.muted; wrap: word-wrap; }
                             CheckBox {
                                 text: "启用硬件渲染（重启后生效）";
                                 checked <=> root.hardware-rendering;
                                 toggled => { root.hardware-rendering-changed(self.checked); }
                             }
-                            Text { text: "启用后使用 GPU 加速界面绘制；关闭后使用软件渲染。若 GPU 无法启动，可设置 SLINT_BACKEND=winit-software 启动并修改此设置。"; color: Theme.muted; wrap: word-wrap; }
+                            Text { text: "启用后使用 GPU 绘制波形曲线和界面；关闭后使用软件渲染。若 GPU 无法启动，可设置 SLINT_BACKEND=winit-software 启动并修改此设置。"; color: Theme.muted; wrap: word-wrap; }
                             CheckBox {
                                 text: "显示每秒绘制帧数（重启后生效）";
                                 checked <=> root.show-fps;
@@ -912,7 +912,7 @@ export component WaveformWindow inherits Window {
     in property <[WaveformRow]> channels;
     in property <[string]> charts;
     in property <int> selected-chart;
-    in property <image> plot;
+    in property <[WaveformPath]> paths;
     in property <[string]> axis-channels;
     in property <int> axis-index;
     in property <[string]> y-ticks;
@@ -946,7 +946,7 @@ export component WaveformWindow inherits Window {
         channels: root.channels;
         charts: root.charts;
         selected-chart: root.selected-chart;
-        plot: root.plot;
+        paths: root.paths;
         axis-channels: root.axis-channels;
         axis-index: root.axis-index;
         y-ticks: root.y-ticks;

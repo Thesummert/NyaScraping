@@ -2854,6 +2854,7 @@ name = "nya-scraping"
 version = "0.1.0"
 dependencies = [
  "image",
+ "itoa",
  "nya-application",
  "nya-debug-adapter",
  "nya-domain",

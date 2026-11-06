@@ -6,7 +6,7 @@ use crate::{
     watch_list::WatchList,
     waveform_view::{self, COLORS, PLOT_WIDTH},
     AppWindow, BreakpointRow, FirmwareTreeRow, FrameRow, PackRow, SourceBreakpoint, SourceTab,
-    TargetRow, ToolRow, WatchRow, WaveformRow,
+    TargetRow, ToolRow, WatchRow, WaveformPath, WaveformRow,
 };
 use nya_application::Event;
 use nya_domain::{
@@ -14,7 +14,29 @@ use nya_domain::{
     TargetCatalog, ToolKind, ToolState, WatchRequest,
 };
 use slint::{Model, ModelRc, VecModel};
-use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+const PLOT_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+
+fn plot_due(last: Option<Instant>, now: Instant, force: bool) -> bool {
+    force || last.is_none_or(|last| now.duration_since(last) >= PLOT_INTERVAL)
+}
+
+fn update_ticks(
+    model: ModelRc<slint::SharedString>,
+    ticks: Vec<slint::SharedString>,
+) -> Option<ModelRc<slint::SharedString>> {
+    if model.iter().eq(ticks.iter().cloned()) {
+        None
+    } else {
+        Some(ModelRc::from(Rc::new(VecModel::from(ticks))))
+    }
+}
 
 #[derive(Default)]
 pub struct Presenter {
@@ -28,6 +50,8 @@ pub struct Presenter {
     pub acquisition: Arc<Acquisition>,
     last_sequence: Option<u64>,
     last_plot_sequence: Option<u64>,
+    last_plot_at: Option<Instant>,
+    plot_renderer: waveform_view::PlotRenderer,
     watch_revision: u64,
     sample_count: u64,
     chart_assignments: HashMap<usize, usize>,
@@ -1114,10 +1138,22 @@ impl Presenter {
     }
 
     pub fn refresh_acquisition(&mut self, ui: &AppWindow) {
+        self.refresh_acquisition_inner(ui, false);
+    }
+
+    pub fn refresh_acquisition_tick(&mut self, ui: &AppWindow) {
+        // Lower configured rates already pace the plot. Avoid skipping every other
+        // frame at 60 Hz because of timer precision and event-loop jitter.
+        self.refresh_acquisition_inner(ui, !matches!(ui.get_refresh_rate_index(), 2..=5));
+    }
+
+    fn refresh_acquisition_inner(&mut self, ui: &AppWindow, throttle: bool) {
+        let now = Instant::now();
         let state = self.acquisition.state.lock().expect("acquisition lock");
         let sequence = state.sequence;
         let update_values = self.last_sequence != Some(sequence);
         let update_plot = self.last_plot_sequence != Some(sequence)
+            && (!throttle || plot_due(self.last_plot_at, now, self.last_plot_sequence.is_none()))
             && (ui.get_current_tab() == 1
                 || ui.get_waveform_detached()
                 || self.last_plot_sequence.is_none());
@@ -1217,7 +1253,7 @@ impl Presenter {
                 values.push((row.entry, row.node, value));
             }
         }
-        // Release the sampler before rasterization or Slint model updates.
+        // Release the sampler before preparing paths or updating Slint models.
         drop(state);
         ui.set_acquisition_active(active);
         ui.set_acquisition_status(status.into());
@@ -1277,17 +1313,21 @@ impl Presenter {
             ui.set_waveform_axis_index(axis_index as i32);
             let zoom = self.waveform_y_zoom.unwrap_or(1.0);
             let seconds = self.waveform_window_seconds.unwrap_or(5.0);
+            let axis_scale = traces
+                .get(axis_index)
+                .and_then(|(bins, _)| waveform_view::Scale::from_bins(bins, zoom));
             let ticks: Vec<slint::SharedString> = (0..5)
                 .map(|i| {
-                    traces
-                        .get(axis_index)
-                        .and_then(|(bins, _)| waveform_view::Scale::from_bins(bins, zoom))
+                    axis_scale
+                        .as_ref()
                         .map(|scale| scale.tick(i))
                         .unwrap_or_else(|| "—".into())
                         .into()
                 })
                 .collect();
-            ui.set_waveform_y_ticks(ModelRc::from(Rc::new(VecModel::from(ticks))));
+            if let Some(ticks) = update_ticks(ui.get_waveform_y_ticks(), ticks) {
+                ui.set_waveform_y_ticks(ticks);
+            }
             let times: Vec<slint::SharedString> = (0..5)
                 .map(|i| {
                     format!(
@@ -1297,7 +1337,9 @@ impl Presenter {
                     .into()
                 })
                 .collect();
-            ui.set_waveform_time_ticks(ModelRc::from(Rc::new(VecModel::from(times))));
+            if let Some(times) = update_ticks(ui.get_waveform_time_ticks(), times) {
+                ui.set_waveform_time_ticks(times);
+            }
             ui.set_waveform_zoom_label(
                 format!(
                     "时窗 {} s · 纵轴 {:.2}×",
@@ -1306,7 +1348,32 @@ impl Presenter {
                 )
                 .into(),
             );
-            ui.set_waveform_plot(waveform_view::render(&traces, zoom, seconds));
+            if let Some(paths) = self
+                .plot_renderer
+                .render_if_changed(&traces, zoom, seconds)
+            {
+                let paths: Vec<_> = paths
+                    .into_iter()
+                    .map(|path| WaveformPath {
+                        commands: path.commands.into(),
+                        tint: slint::Color::from_rgb_u8(path.color[0], path.color[1], path.color[2]),
+                    })
+                    .collect();
+                let existing = ui.get_waveform_paths();
+                if let Some(model) = existing
+                    .as_any()
+                    .downcast_ref::<VecModel<WaveformPath>>()
+                    .filter(|model| model.row_count() == paths.len())
+                {
+                    for (index, path) in paths.into_iter().enumerate() {
+                        if model.row_data(index).as_ref() != Some(&path) {
+                            model.set_row_data(index, path);
+                        }
+                    }
+                } else {
+                    ui.set_waveform_paths(ModelRc::from(Rc::new(VecModel::from(paths))));
+                }
+            }
             let rows: Vec<_> = plots
                 .into_iter()
                 .enumerate()
@@ -1357,12 +1424,15 @@ impl Presenter {
                 .filter(|m| m.row_count() == rows.len())
             {
                 for (index, row) in rows.into_iter().enumerate() {
-                    model.set_row_data(index, row);
+                    if model.row_data(index).as_ref() != Some(&row) {
+                        model.set_row_data(index, row);
+                    }
                 }
             } else {
                 ui.set_waveform_channels(ModelRc::from(Rc::new(VecModel::from(rows))));
             }
             self.last_plot_sequence = Some(sequence);
+            self.last_plot_at = Some(now);
         }
     }
 
@@ -1633,4 +1703,24 @@ fn firmware_report(image: &FirmwareImage) -> String {
 
 fn csv_field(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod plot_tests {
+    use super::*;
+
+    #[test]
+    fn plot_frames_are_coalesced_but_interactions_are_immediate() {
+        let now = Instant::now();
+        assert!(plot_due(None, now, false));
+        for milliseconds in 0..17 {
+            assert!(!plot_due(
+                Some(now),
+                now + Duration::from_millis(milliseconds),
+                false
+            ));
+        }
+        assert!(plot_due(Some(now), now + PLOT_INTERVAL, false));
+        assert!(plot_due(Some(now), now, true));
+    }
 }

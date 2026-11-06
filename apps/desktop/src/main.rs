@@ -259,7 +259,7 @@ fn sync_waveform_window(ui: &AppWindow, window: &WaveformWindow) {
     window.set_channels(ui.get_waveform_channels());
     window.set_charts(ui.get_waveform_charts());
     window.set_selected_chart(ui.get_waveform_selected_chart());
-    window.set_plot(ui.get_waveform_plot());
+    window.set_paths(ui.get_waveform_paths());
     window.set_axis_channels(ui.get_waveform_axis_channels());
     window.set_axis_index(ui.get_waveform_axis_index());
     window.set_y_ticks(ui.get_waveform_y_ticks());
@@ -1948,7 +1948,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     presenter
                         .lock()
                         .expect("presenter lock")
-                        .refresh_acquisition(&ui);
+                        .refresh_acquisition_tick(&ui);
                     if ui.get_waveform_detached() {
                         if let Some(window) = weak_window.upgrade() {
                             sync_waveform_window(&ui, &window);

@@ -14,12 +14,49 @@ export struct WaveformRow {
     chart-index: int,
 }
 
+export struct WaveformPath {
+    commands: string,
+    tint: color,
+}
+
+export component WaveformPlot inherits Rectangle {
+    in property <[WaveformPath]> paths;
+    background: #11161e;
+    clip: true;
+    for index in 4: Rectangle {
+        x: parent.width * index / 4;
+        width: 1px;
+        height: parent.height;
+        background: #2b3440;
+    }
+    for index in 4: Rectangle {
+        y: parent.height * index / 4;
+        height: 1px;
+        width: parent.width;
+        background: #2b3440;
+    }
+    for trace in root.paths: Path {
+        width: parent.width;
+        height: parent.height;
+        // 800 x 400 with 1/16-pixel coordinates prepared by waveform_view.rs.
+        viewbox-width: 12800;
+        viewbox-height: 6400;
+        fit: fill;
+        clip: true;
+        commands: trace.commands;
+        stroke: trace.tint;
+        stroke-width: 1px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
 export component WaveformsPage inherits VerticalLayout {
     in property <bool> custom-background;
     in property <[WaveformRow]> channels;
     in property <[string]> charts;
     in property <int> selected-chart;
-    in property <image> plot;
+    in property <[WaveformPath]> paths;
     in property <[string]> axis-channels;
     in property <int> axis-index;
     in property <[string]> y-ticks;
@@ -79,9 +116,9 @@ export component WaveformsPage inherits VerticalLayout {
                 text: tick; color: Theme.muted; font-size: 10px; horizontal-alignment: right;
             }
         }
-        Rectangle {
+        WaveformPlot {
             horizontal-stretch: 1;
-            Image { source: root.plot; width: parent.width; height: parent.height; image-fit: fill; }
+            paths: root.paths;
             menu := ContextMenuArea {
                 Menu {
                     MenuItem { title: "导出当前图表为 CSV…"; activated => { root.export-csv(); } }

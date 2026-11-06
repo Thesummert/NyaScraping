@@ -140,6 +140,22 @@ impl Session {
         }
         Ok(())
     }
+
+    fn reset_and_halt(&mut self) -> Result<()> {
+        self.halted()?.command(&format!(
+            "-interpreter-exec console {}",
+            mi::quote("monitor reset halt")
+        ))?;
+        // A monitor reset changes registers behind GDB's back. Invalidate both
+        // its cached registers and frames before querying the reset context.
+        self.client()?.command(&format!(
+            "-interpreter-exec console {}",
+            mi::quote("maintenance flush register-cache")
+        ))?;
+        self.thread_state()?;
+        self.selected_frame = 0;
+        self.context()
+    }
     fn validate_scope(&self, watch: &WatchRequest) -> Result<()> {
         if let Some(function) = &watch.function {
             let current = self
@@ -349,8 +365,12 @@ impl DebugSession for DebugAdapter {
                     self.start_server(&profile)?;
                 }
                 let mut endpoint = std::net::SocketAddr::from(([127, 0, 0, 1], profile.gdb_port));
-                if profile.tool == ToolKind::ProbeRs {
-                    let bridge = match NonStopBridge::start(endpoint) {
+                if matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs) {
+                    let bridge = match if profile.tool == ToolKind::PyOcd {
+                        NonStopBridge::start_native(endpoint)
+                    } else {
+                        NonStopBridge::start(endpoint)
+                    } {
                         Ok(bridge) => bridge,
                         Err(error) => {
                             let _ = self.stop_server();
@@ -424,21 +444,22 @@ impl DebugSession for DebugAdapter {
                 self.session.message = "已请求暂停，等待目标停止".into();
             }
             DebugAction::Reset => {
-                self.session.halted()?.command(&format!(
-                    "-interpreter-exec console {}",
-                    mi::quote("monitor reset halt")
-                ))?;
-                self.session.thread_state()?;
-                self.session.selected_frame = 0;
-                self.session.context()?;
+                self.session.reset_and_halt()?;
                 self.session.message = "已复位目标".into();
             }
             DebugAction::Download => {
+                self.session.halted()?;
                 let progress = self.install_progress.clone();
+                if let Ok(mut value) = progress.lock() {
+                    *value = crate::InstallProgress {
+                        stage: "正在准备下载固件…".into(),
+                        ..Default::default()
+                    };
+                }
                 let started = Instant::now();
-                self.session.halted()?.command_timeout_observe(
+                let result = self.session.halted()?.command_timeout_observe(
                     "-target-download",
-                    Duration::from_secs(60),
+                    Duration::from_secs(300),
                     |record| {
                         if record.kind != b'+' || record.class != "download" {
                             return;
@@ -461,12 +482,12 @@ impl DebugSession for DebugAdapter {
                             });
                             let total = total.or(value.total);
                             *value = crate::InstallProgress {
-                                stage: "正在向目标写入固件…".into(),
+                                stage: "正在传输固件并等待目标完成烧录…".into(),
                                 downloaded: done,
                                 total,
                                 percent: done
                                     .zip(total)
-                                    .map(|(d, t)| (d as f64 / t as f64 * 100.0).min(100.0) as f32),
+                                    .map(|(d, t)| (d as f64 / t as f64 * 100.0).min(99.0) as f32),
                                 bytes_per_second: speed,
                                 remaining_seconds: done
                                     .zip(total)
@@ -476,7 +497,22 @@ impl DebugSession for DebugAdapter {
                         }
                     },
                 )?;
-                self.session.message = "固件下载完成".into();
+                // Flash algorithms use target RAM and registers. Continuing
+                // directly from their final state can fault or run old code.
+                self.session.reset_and_halt().map_err(|error| {
+                    Error(format!("固件已写入，但复位失败，请检查目标状态：{error}"))
+                })?;
+                if let Ok(mut value) = progress.lock() {
+                    // GDB's progress total can include non-loadable debug
+                    // sections; the final load-size is the actual byte count.
+                    let size = result.field("load-size").parse::<u64>().ok();
+                    value.stage = "固件已下载并复位，等待继续运行".into();
+                    value.downloaded = size.or(value.downloaded);
+                    value.total = size.or(value.total);
+                    value.percent = Some(100.0);
+                    value.remaining_seconds = Some(0);
+                }
+                self.session.message = "固件已下载并复位，点击继续运行".into();
             }
             DebugAction::AddBreakpoint(location) => {
                 if location.trim().is_empty() {
@@ -1107,9 +1143,9 @@ mod tests {
             adapter.poll_debug().unwrap();
         }
         let progress = adapter.install_progress.lock().unwrap().clone();
-        assert_eq!(progress.downloaded, Some(512));
+        assert_eq!(progress.downloaded, Some(1024));
         assert_eq!(progress.total, Some(1024));
-        assert_eq!(progress.percent, Some(50.0));
+        assert_eq!(progress.percent, Some(100.0));
         let missing = WatchRequest {
             id: "missing".into(),
             expression: "missing".into(),
@@ -1131,6 +1167,54 @@ mod tests {
             adapter.debug_snapshot(&[watch]).state,
             SessionState::Disconnected
         );
+    }
+
+    #[test]
+    fn download_resets_flash_context_and_flushes_cached_frames_before_continue() {
+        for tool in [ToolKind::OpenOcd, ToolKind::PyOcd, ToolKind::ProbeRs] {
+            let (_root, mut adapter, mut profile) = fixture();
+            profile.tool = tool;
+            adapter
+                .execute_debug(DebugAction::Connect {
+                    profile,
+                    external_server: true,
+                })
+                .unwrap();
+            adapter.execute_debug(DebugAction::SelectFrame(1)).unwrap();
+            adapter.execute_debug(DebugAction::Download).unwrap();
+            let snapshot = adapter.debug_snapshot(&[]);
+            assert_eq!(snapshot.state, SessionState::Halted);
+            assert_eq!(snapshot.selected_frame, 0);
+            assert!(snapshot.message.contains("已下载并复位"));
+            adapter.execute_debug(DebugAction::Continue).unwrap();
+            assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
+            adapter.execute_debug(DebugAction::Disconnect).unwrap();
+        }
+    }
+
+    #[test]
+    fn download_and_reset_failures_never_report_success_or_resume() {
+        for (failure, expected) in [
+            ("-test-fail-download", "Flash programming failed"),
+            ("-test-fail-reset", "固件已写入，但复位失败"),
+        ] {
+            let (_root, mut adapter, profile) = fixture();
+            adapter
+                .execute_debug(DebugAction::Connect {
+                    profile,
+                    external_server: true,
+                })
+                .unwrap();
+            adapter.install_progress.lock().unwrap().percent = Some(100.0);
+            adapter.session.client().unwrap().command(failure).unwrap();
+            let error = adapter.execute_debug(DebugAction::Download).unwrap_err();
+            assert!(error.0.contains(expected));
+            assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Halted);
+            assert_ne!(
+                adapter.install_progress.lock().unwrap().percent,
+                Some(100.0)
+            );
+        }
     }
 
     #[test]

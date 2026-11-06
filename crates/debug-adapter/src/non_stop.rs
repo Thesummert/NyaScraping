@@ -1,7 +1,8 @@
-//! Single-connection non-stop facade for probe-rs' all-stop GDB stub.
+//! Single-connection non-stop compatibility for debugger GDB stubs.
 //! probe-rs accepts memory packets while running, but does not advertise QNonStop.
 //! Terminate packet acknowledgements here and translate execution replies to
-//! stop notifications. Never open a second probe session or synthesize a resume.
+//! stop notifications. pyOCD already supports non-stop; only adapt vCtrlC to its
+//! raw interrupt handler. Never open a second probe session or synthesize a resume.
 use nya_domain::{Error, Result};
 use std::{
     collections::VecDeque,
@@ -25,6 +26,14 @@ pub struct NonStopBridge {
 
 impl NonStopBridge {
     pub fn start(backend: SocketAddr) -> Result<Self> {
+        Self::start_mode(backend, false)
+    }
+
+    pub fn start_native(backend: SocketAddr) -> Result<Self> {
+        Self::start_mode(backend, true)
+    }
+
+    fn start_mode(backend: SocketAddr, native: bool) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(io_error)?;
         listener.set_nonblocking(true).map_err(io_error)?;
         let address = listener.local_addr().map_err(io_error)?;
@@ -38,7 +47,7 @@ impl NonStopBridge {
                             if let Ok(back) =
                                 TcpStream::connect_timeout(&backend, Duration::from_millis(500))
                             {
-                                let _ = relay(front, back, stop.clone());
+                                let _ = relay(front, back, stop.clone(), native);
                             }
                         }
                         break;
@@ -72,7 +81,7 @@ impl Drop for NonStopBridge {
 }
 
 fn io_error(e: std::io::Error) -> Error {
-    Error(format!("probe-rs non-stop 桥接：{e}"))
+    Error(format!("GDB non-stop 桥接：{e}"))
 }
 
 #[derive(Debug)]
@@ -81,6 +90,7 @@ enum Packet {
     Nack,
     Interrupt,
     Frame(Vec<u8>),
+    Notification(Vec<u8>),
     Invalid,
 }
 
@@ -117,7 +127,12 @@ impl Decoder {
                 .ok()
                 .and_then(|s| u8::from_str_radix(s, 16).ok());
             return Ok(Some(if received == Some(checksum) {
-                Packet::Frame(frame[1..len - 3].to_vec())
+                let body = frame[1..len - 3].to_vec();
+                if frame[0] == b'%' {
+                    Packet::Notification(body)
+                } else {
+                    Packet::Frame(body)
+                }
             } else {
                 Packet::Invalid
             }));
@@ -198,7 +213,7 @@ mod tests {
     fn response(stream: &mut TcpStream, decoder: &mut Decoder) -> Vec<u8> {
         loop {
             match receive(stream, decoder) {
-                Some(Packet::Frame(body)) => return body,
+                Some(Packet::Frame(body) | Packet::Notification(body)) => return body,
                 Some(Packet::Ack) => {}
                 other => panic!("unexpected RSP response: {other:?}"),
             }
@@ -279,9 +294,16 @@ mod tests {
         front.write_all(&frame(b'$', b"vCont;t")).unwrap();
         assert_eq!(response(&mut front, &mut decoder), b"OK");
         assert_eq!(response(&mut front, &mut decoder), b"Stop:T02thread:1;");
+        for expected in [b"T02thread:2;".as_slice(), b"OK"] {
+            front.write_all(&frame(b'$', b"vStopped")).unwrap();
+            assert_eq!(response(&mut front, &mut decoder), expected);
+        }
+        front.write_all(&frame(b'$', b"vCtrlC")).unwrap();
+        assert_eq!(response(&mut front, &mut decoder), b"OK");
+        assert_eq!(response(&mut front, &mut decoder), b"Stop:T02thread:1;");
         drop(front);
         drop(bridge);
-        assert_eq!(server.join().unwrap(), (2, 1));
+        assert_eq!(server.join().unwrap(), (2, 2));
     }
 
     #[test]
@@ -325,8 +347,14 @@ mod tests {
             eprintln!("real GDB non-stop test skipped: requires arm-none-eabi-gdb or NYA_TEST_GDB");
             return;
         }
+        for native in [false, true] {
+            real_gdb_pause_and_reads(&gdb, native);
+        }
+    }
+
+    fn real_gdb_pause_and_reads(gdb: &str, native: bool) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let bridge = NonStopBridge::start(listener.local_addr().unwrap()).unwrap();
+        let bridge = NonStopBridge::start_mode(listener.local_addr().unwrap(), native).unwrap();
         let server = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             socket
@@ -336,13 +364,18 @@ mod tests {
             let xml = target_xml();
             let mut running = false;
             let mut reads = 0u32;
+            let mut interrupts = 0;
             while let Some(packet) = receive(&mut socket, &mut decoder) {
                 match packet {
                     Packet::Frame(body) => {
                         socket.write_all(b"+").unwrap();
                         let command = String::from_utf8_lossy(&body);
                         let reply = if command.starts_with("qSupported") {
-                            b"PacketSize=4000;qXfer:features:read+".to_vec()
+                            let non_stop = if native { ";QNonStop+" } else { "" };
+                            format!("PacketSize=4000;qXfer:features:read+{non_stop}").into_bytes()
+                        } else if command == "QNonStop:1" || command == "vStopped" {
+                            assert!(native);
+                            b"OK".to_vec()
                         } else if let Some(range) =
                             command.strip_prefix("qXfer:features:read:target.xml:")
                         {
@@ -369,6 +402,9 @@ mod tests {
                             b"vCont;c;s".to_vec()
                         } else if command.starts_with("vCont;c") {
                             running = true;
+                            if native {
+                                socket.write_all(&frame(b'$', b"OK")).unwrap();
+                            }
                             continue;
                         } else if let Some(range) = command.strip_prefix('m') {
                             let (address, size) = range.split_once(',').unwrap();
@@ -379,7 +415,12 @@ mod tests {
                                 reads += 1;
                                 if reads == 2 {
                                     running = false;
-                                    socket.write_all(&frame(b'$', b"T05thread:1;")).unwrap();
+                                    let packet = if native {
+                                        frame(b'%', b"Stop:T05thread:1;")
+                                    } else {
+                                        frame(b'$', b"T05thread:1;")
+                                    };
+                                    socket.write_all(&packet).unwrap();
                                 }
                                 reads
                                     .to_le_bytes()
@@ -412,20 +453,24 @@ mod tests {
                     }
                     Packet::Ack => {}
                     Packet::Interrupt => {
-                        // In all-stop-on-non-stop mode an actual breakpoint may
-                        // prompt GDB to stop remaining threads; reads never do.
-                        assert!(
-                            !running,
-                            "memory sampling must not interrupt a running target"
-                        );
-                        socket.write_all(&frame(b'$', b"S02")).unwrap();
+                        if running {
+                            assert_eq!(reads, 0, "sampling must not interrupt a running core");
+                            interrupts += 1;
+                            running = false;
+                        }
+                        let packet = if native {
+                            frame(b'%', b"Stop:T02thread:1;")
+                        } else {
+                            frame(b'$', b"T02thread:1;")
+                        };
+                        socket.write_all(&packet).unwrap();
                     }
                     _ => {}
                 }
             }
-            reads
+            (reads, interrupts)
         });
-        let mut client = Client::spawn(Path::new(&gdb)).unwrap();
+        let mut client = Client::spawn(Path::new(gdb)).unwrap();
         for command in [
             "-gdb-set pagination off",
             "-gdb-set confirm off",
@@ -437,6 +482,18 @@ mod tests {
         client
             .command(&format!("-target-select remote {}", bridge.address()))
             .unwrap();
+        client.command("-exec-continue").unwrap();
+        client.command("-exec-interrupt --all").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while client.state != SessionState::Halted {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "explicit pause must reach GDB"
+            );
+            client.poll().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(client.stop.as_ref().unwrap().field("signal-name"), "SIGINT");
         client.command("-exec-continue").unwrap();
         for value in [1, 2] {
             let response = client
@@ -458,7 +515,7 @@ mod tests {
         }
         drop(client);
         drop(bridge);
-        assert_eq!(server.join().unwrap(), 2);
+        assert_eq!(server.join().unwrap(), (2, 1));
     }
 }
 
@@ -476,6 +533,7 @@ struct Relay {
     back: TcpStream,
     no_ack: bool,
     non_stop: bool,
+    native: bool,
     queue: VecDeque<Vec<u8>>,
     pending: Option<Kind>,
     last_front: Vec<u8>,
@@ -506,6 +564,7 @@ impl Relay {
         } else if body == b"?" {
             Kind::StopReason
         } else if self.non_stop
+            && !self.native
             && (body.starts_with(b"vCont;c")
                 || body.starts_with(b"vCont;s")
                 || body.starts_with(b"vCont;C")
@@ -524,7 +583,8 @@ impl Relay {
     fn front(&mut self, packet: Packet) -> Result<()> {
         match packet {
             Packet::Frame(body) => {
-                if body.starts_with(b"Hg")
+                if !self.native
+                    && body.starts_with(b"Hg")
                     && body.len() > 2
                     && body[2..] != *b"0"
                     && body[2..] != *b"-1"
@@ -539,8 +599,12 @@ impl Relay {
                     self.no_ack = true;
                 } else if body == b"QNonStop:1" || body == b"QNonStop:0" {
                     self.non_stop = body.ends_with(b"1");
-                    self.reply(b'$', b"OK")?;
-                } else if self.non_stop && body == b"vStopped" {
+                    if self.native {
+                        self.queue.push_back(body);
+                    } else {
+                        self.reply(b'$', b"OK")?;
+                    }
+                } else if self.non_stop && !self.native && body == b"vStopped" {
                     self.stops.pop_front();
                     let response = self
                         .stops
@@ -548,7 +612,9 @@ impl Relay {
                         .cloned()
                         .unwrap_or_else(|| b"OK".to_vec());
                     self.reply(b'$', &response)?;
-                } else if self.non_stop && body.starts_with(b"vCont;t") {
+                } else if self.non_stop
+                    && (body == b"vCtrlC" || (!self.native && body.starts_with(b"vCont;t")))
+                {
                     // Only an explicit GDB pause becomes an interrupt.
                     self.back.write_all(&[3]).map_err(io_error)?;
                     self.reply(b'$', b"OK")?;
@@ -567,6 +633,7 @@ impl Relay {
             }
             Packet::Nack => self.front.write_all(&self.last_front).map_err(io_error)?,
             Packet::Ack => {}
+            Packet::Notification(_) => return Err(Error("GDB 发来了意外的通知报文".into())),
         }
         self.dispatch()
     }
@@ -582,6 +649,7 @@ impl Relay {
                 self.back.write_all(b"+").map_err(io_error)?;
                 let stop = matches!(body.first(), Some(b'T' | b'S' | b'W' | b'X'));
                 if self.non_stop
+                    && !self.native
                     && matches!(body.first(), Some(b'S' | b'T'))
                     && !body.windows(7).any(|w| w == b"thread:")
                 {
@@ -595,7 +663,7 @@ impl Relay {
                     body.extend_from_slice(&self.current_thread);
                     body.push(b';');
                 }
-                if self.non_stop && stop && self.pending != Some(Kind::StopReason) {
+                if self.non_stop && !self.native && stop && self.pending != Some(Kind::StopReason) {
                     if self.stops.len() >= 64 {
                         return Err(Error("RSP 停止事件超出限制".into()));
                     }
@@ -638,20 +706,27 @@ impl Relay {
                         let features: Vec<_> = text
                             .split(';')
                             .filter(|f| {
-                                !f.starts_with("QNonStop") && !f.starts_with("QStartNoAckMode")
+                                (self.native || !f.starts_with("QNonStop"))
+                                    && !f.starts_with("QStartNoAckMode")
                             })
                             .collect();
-                        body = format!("{};QNonStop+;QStartNoAckMode+", features.join(";"))
+                        let non_stop = if self.native { "" } else { ";QNonStop+" };
+                        body = format!("{}{non_stop};QStartNoAckMode+", features.join(";"))
                             .into_bytes();
                     } else if self.pending == Some(Kind::VCont)
+                        && !self.native
                         && !body.split(|b| *b == b';').any(|s| s == b"t")
                     {
                         body.extend_from_slice(b";t");
                     }
-                    if self.last_back.starts_with(b"$qC#") && body.starts_with(b"QC") {
+                    if !self.native
+                        && self.last_back.starts_with(b"$qC#")
+                        && body.starts_with(b"QC")
+                    {
                         self.current_thread = body[2..].to_vec();
-                    } else if (self.last_back.starts_with(b"$qfThreadInfo#")
-                        || self.last_back.starts_with(b"$qsThreadInfo#"))
+                    } else if !self.native
+                        && (self.last_back.starts_with(b"$qfThreadInfo#")
+                            || self.last_back.starts_with(b"$qsThreadInfo#"))
                         && body.starts_with(b"m")
                     {
                         if self.last_back.starts_with(b"$qfThreadInfo#") {
@@ -675,6 +750,7 @@ impl Relay {
                 }
             }
             Packet::Invalid => self.back.write_all(b"-").map_err(io_error)?,
+            Packet::Notification(body) => self.reply(b'%', &body)?,
             Packet::Nack => {
                 self.retries += 1;
                 if self.retries > 2 {
@@ -688,7 +764,7 @@ impl Relay {
     }
 }
 
-fn relay(front: TcpStream, back: TcpStream, quit: Arc<AtomicBool>) -> Result<()> {
+fn relay(front: TcpStream, back: TcpStream, quit: Arc<AtomicBool>, native: bool) -> Result<()> {
     for socket in [&front, &back] {
         socket.set_nodelay(true).map_err(io_error)?;
         socket
@@ -711,6 +787,7 @@ fn relay(front: TcpStream, back: TcpStream, quit: Arc<AtomicBool>) -> Result<()>
         back,
         no_ack: false,
         non_stop: false,
+        native,
         queue: VecDeque::new(),
         pending: None,
         last_front: Vec::new(),

@@ -15,6 +15,10 @@ live_counter = 0
 fail_continue = False
 memory_reads = 0
 break_on_memory = False
+download_pending = False
+reset_pending = False
+fail_download = False
+fail_reset = False
 
 def send(text):
     print(text, flush=True)
@@ -44,7 +48,19 @@ for line in sys.stdin:
         continue
     if command == '-test-exit':
         sys.exit(7)
+    if command == '-test-fail-download':
+        fail_download = True
+        send(token + '^done')
+        continue
+    if command == '-test-fail-reset':
+        fail_reset = True
+        send(token + '^done')
+        continue
     if command == '-target-download':
+        download_pending = True
+        if fail_download:
+            send(token + '^error,msg="Flash programming failed"')
+            continue
         send('+download,{section=".text",section-size="1024",total-size="1024"}')
         send('+download,{section=".text",section-sent="512",section-size="1024",total-sent="512",total-size="1024"}')
         send(token + '^done,address="0x8000000",load-size="1024"')
@@ -52,6 +68,9 @@ for line in sys.stdin:
         send(token + '^connected')
         stopped()
     elif command.startswith('-exec-continue'):
+        if download_pending or reset_pending:
+            send(token + '^error,msg="Flash context must be reset and register cache flushed before continuing"')
+            continue
         if fail_continue:
             send(token + '^error,msg="Continue failed"')
             continue
@@ -69,6 +88,9 @@ for line in sys.stdin:
     elif command == '-thread-info':
         send(token + '^done,threads=[{id="1",state="' + state + '"}],current-thread-id="1"')
     elif command.startswith('-stack-list-frames'):
+        if reset_pending:
+            send(token + '^error,msg="Stale register cache after reset"')
+            continue
         send(token + '^done,stack=[frame={level="0",func="compute",fullname="/fixture/main.c",line="8",addr="0x8000010"},frame={level="1",func="main",fullname="/fixture/main.c",line="20",addr="0x8000000"}]')
     elif command.startswith('-stack-select-frame'):
         frame = int(command.split()[-1])
@@ -127,6 +149,17 @@ for line in sys.stdin:
             send('98765^done,value="unrelated result"')
             send(token + '^done,name="var1",numchild="0",type="int",value="' + values.get(current_expression, str(live_counter) if current_expression == 'live_counter' else ('42' if frame == 0 else '7')) + '"')
     elif command.startswith('-interpreter-exec'):
+        if 'monitor reset halt' in command:
+            if fail_reset:
+                send(token + '^error,msg="Target reset failed"')
+                continue
+            reset_pending = True
+        elif 'maintenance flush register-cache' in command:
+            if not reset_pending:
+                send(token + '^error,msg="Unexpected register cache flush"')
+                continue
+            reset_pending = False
+            download_pending = False
         state = "stopped"
         send(token + '^done')
         stopped()

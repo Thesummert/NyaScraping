@@ -178,6 +178,38 @@ fn synthetic(
     ] {
         declarations.get_mut(function).set(attribute, value);
     }
+    // A reader-backed operation must display its own bytes, not this large
+    // shared .debug_info buffer. This also covers compressed debug sections.
+    declarations
+        .get_mut(root)
+        .set(gimli::DW_AT_producer, A::String(vec![b'x'; 8192]));
+    let mut register = write::Expression::new();
+    register.op_reg(gimli::Register(0));
+    let mut entry = write::Expression::new();
+    entry.op_entry_value(register);
+    let mut implicit = write::Expression::new();
+    implicit.op_implicit_value(vec![0x12, 0x34].into_boxed_slice());
+    let mut typed = write::Expression::new();
+    typed.op_const_type(int, vec![0x56, 0x78].into_boxed_slice());
+    let mut large = write::Expression::new();
+    large.op_implicit_value(vec![0xa5; 256].into_boxed_slice());
+    for (name, expression) in [
+        ("entry_value", entry),
+        ("implicit_value", implicit),
+        ("typed_literal", typed),
+        ("large_implicit", large),
+    ] {
+        let variable = declarations.add(root, gimli::DW_TAG_variable);
+        declarations
+            .get_mut(variable)
+            .set(gimli::DW_AT_name, A::String(name.as_bytes().to_vec()));
+        declarations
+            .get_mut(variable)
+            .set(gimli::DW_AT_type, A::UnitRef(int));
+        declarations
+            .get_mut(variable)
+            .set(gimli::DW_AT_location, A::Exprloc(expression));
+    }
     if invalid_locations {
         for (name, in_list, bytecode) in [
             ("unsupported_inline", false, vec![0xff]),
@@ -660,4 +692,53 @@ fn clang_dwarf5_optimized_inlining_indexed_strings_addresses_and_locations() {
     assert!(matches!(global.location, VariableLocation::Address(_)));
     assert!(global.declaration.is_some());
     assert!(info.files.iter().all(|f| !f.path.contains("/Users/")));
+}
+
+#[test]
+fn expression_previews_are_bounded_to_the_active_bytes_and_progress_is_monotonic() {
+    for (version, endian, compressed) in [
+        (4, RunTimeEndian::Little, false),
+        (5, RunTimeEndian::Big, true),
+    ] {
+        let mut progress = Vec::new();
+        let image = NativeFirmwareBackend
+            .parse_with_progress(
+                Path::new("expressions.elf"),
+                &synthetic(version, endian, compressed, false),
+                &mut |value| progress.push(value),
+            )
+            .unwrap();
+        assert!(
+            image.debug.warnings.is_empty(),
+            "{:?}",
+            image.debug.warnings
+        );
+        for (name, operation, payload) in [
+            ("entry_value", "EntryValue", "[50]"),
+            ("implicit_value", "ImplicitValue", "[12, 34]"),
+            ("typed_literal", "TypedLiteral", "[56, 78]"),
+            ("large_implicit", "ImplicitValue", "256 bytes"),
+        ] {
+            let variable = image
+                .debug
+                .variables
+                .iter()
+                .find(|v| v.name == name)
+                .unwrap();
+            let VariableLocation::Expression(text) = &variable.location else {
+                panic!("expected expression for {name}");
+            };
+            assert!(text.contains(operation) && text.contains(payload), "{text}");
+            assert!(
+                text.len() < 400,
+                "{name} must not dump its backing DWARF section"
+            );
+        }
+        assert!(progress.iter().all(|p| (0.0..=1.0).contains(&p.fraction)));
+        assert!(progress.windows(2).all(|p| p[0].fraction <= p[1].fraction));
+        assert!(progress
+            .iter()
+            .any(|p| p.stage == "解析变量、类型与成员" && p.total > 0));
+        assert_eq!(progress.last().unwrap().stage, "整理符号与调试信息");
+    }
 }

@@ -1,5 +1,5 @@
 //! Embedded DWARF 2–5. No source-file access or target execution is required.
-use crate::{error, MAX_FILE_BYTES, MAX_RECORDS};
+use crate::{error, ParseProgress, MAX_FILE_BYTES, MAX_RECORDS};
 use gimli::{AttributeValue as Value, Reader};
 use nya_domain::{firmware::*, Result};
 use object::{Object, ObjectSection};
@@ -35,7 +35,11 @@ struct Context {
     files: Vec<HashMap<u64, usize>>,
 }
 
-pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
+pub fn parse(
+    file: &object::File<'_>,
+    progress: &mut dyn FnMut(ParseProgress),
+) -> Result<FirmwareDebugInfo> {
+    progress(ParseProgress::new("加载 DWARF 调试节", 0.1, 0.0, 0, 0));
     let endian = if file.is_little_endian() {
         gimli::RunTimeEndian::Little
     } else {
@@ -83,6 +87,13 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
         ctx.units.push(ctx.dwarf.unit(header).map_err(error)?);
     }
     for (index, unit) in ctx.units.iter().enumerate() {
+        progress(ParseProgress::new(
+            "建立 DWARF 条目索引",
+            0.15,
+            0.15,
+            index,
+            ctx.units.len(),
+        ));
         let mut entries = unit.entries();
         let mut depth = 0isize;
         let mut parents = Vec::new();
@@ -109,8 +120,9 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
         }
     }
     let mut info = FirmwareDebugInfo::default();
+    progress(ParseProgress::new("读取源码文件表", 0.3, 0.0, 0, 0));
     ctx.read_files(&mut info)?;
-    if let Err(error) = ctx.read_executable_lines(&mut info) {
+    if let Err(error) = ctx.read_executable_lines(&mut info, progress) {
         info.executable_lines.clear();
         info.warnings
             .push(format!("DWARF 可执行行信息不可用：{error}"));
@@ -123,7 +135,16 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
             .push("包含 split DWARF；外部 .dwo/.dwp 文件尚未加载，信息可能不完整。".into());
     }
     let mut owners = HashMap::new();
-    for node in &ctx.nodes {
+    for (index, node) in ctx.nodes.iter().enumerate() {
+        if index % 256 == 0 {
+            progress(ParseProgress::new(
+                "解析函数与作用域",
+                0.45,
+                0.1,
+                index,
+                ctx.nodes.len(),
+            ));
+        }
         let owner = node.parent.and_then(|p| owners.get(&p).copied().flatten());
         if matches!(
             node.tag,
@@ -168,7 +189,16 @@ pub fn parse(file: &object::File<'_>) -> Result<FirmwareDebugInfo> {
         }
     }
     let mut unavailable_locations = 0usize;
-    for node in &ctx.nodes {
+    for (index, node) in ctx.nodes.iter().enumerate() {
+        if index % 256 == 0 {
+            progress(ParseProgress::new(
+                "解析变量、类型与成员",
+                0.55,
+                0.4,
+                index,
+                ctx.nodes.len(),
+            ));
+        }
         if !matches!(
             node.tag,
             gimli::DW_TAG_variable | gimli::DW_TAG_formal_parameter | gimli::DW_TAG_constant
@@ -389,7 +419,11 @@ impl Context {
         Ok(())
     }
 
-    fn read_executable_lines(&self, info: &mut FirmwareDebugInfo) -> Result<()> {
+    fn read_executable_lines(
+        &self,
+        info: &mut FirmwareDebugInfo,
+        progress: &mut dyn FnMut(ParseProgress),
+    ) -> Result<()> {
         let mut locations = Vec::new();
         let mut rows_seen = 0usize;
         let mut paths: HashMap<_, _> = info
@@ -399,6 +433,13 @@ impl Context {
             .map(|(i, file)| (file.path.clone(), i))
             .collect();
         for (index, unit) in self.units.iter().enumerate() {
+            progress(ParseProgress::new(
+                "读取可执行源码行",
+                0.32,
+                0.13,
+                index,
+                self.units.len(),
+            ));
             let Some(program) = &unit.line_program else {
                 continue;
             };
@@ -793,7 +834,23 @@ impl Context {
                 }
                 _ => {}
             }
-            parts.push(format!("{op:?}"));
+            // Reader Debug includes the entire shared DWARF backing section,
+            // even when the operation owns only a one-byte subexpression.
+            // Display the active bytes with a bounded preview instead.
+            parts.push(match op {
+                gimli::Operation::EntryValue { expression } => format!(
+                    "EntryValue {{ expression: {} }}",
+                    expression_bytes(expression)?
+                ),
+                gimli::Operation::ImplicitValue { data } => {
+                    format!("ImplicitValue {{ data: {} }}", expression_bytes(data)?)
+                }
+                gimli::Operation::TypedLiteral { base_type, value } => format!(
+                    "TypedLiteral {{ base_type: {base_type:?}, value: {} }}",
+                    expression_bytes(value)?
+                ),
+                _ => format!("{op:?}"),
+            });
         }
         Ok((
             if parts.len() == 1 { address } else { None },
@@ -833,6 +890,18 @@ impl Context {
             return Ok(VariableLocation::List(entries));
         }
         Ok(VariableLocation::Unavailable)
+    }
+}
+
+fn expression_bytes(mut reader: R) -> Result<String> {
+    const PREVIEW_BYTES: usize = 64;
+    let length = reader.len();
+    reader.truncate(length.min(PREVIEW_BYTES)).map_err(error)?;
+    let bytes = reader.to_slice().map_err(error)?;
+    if length > PREVIEW_BYTES {
+        Ok(format!("{:02x?}… ({length} bytes)", bytes.as_ref()))
+    } else {
+        Ok(format!("{:02x?}", bytes.as_ref()))
     }
 }
 

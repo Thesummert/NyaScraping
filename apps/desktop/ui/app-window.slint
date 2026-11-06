@@ -52,6 +52,12 @@ export component AppWindow inherits Window {
     default-font-size: 14px;
 
     in-out property <bool> busy: false;
+    in-out property <bool> firmware-parsing: false;
+    in-out property <string> firmware-parse-path;
+    in-out property <string> firmware-parse-stage;
+    in-out property <string> firmware-parse-details;
+    in-out property <float> firmware-parse-progress;
+    callback begin-firmware-parse(string);
     in-out property <bool> file-dialog-open: false;
     in-out property <bool> project-dialog-open: true;
     in-out property <[string]> project-history;
@@ -89,7 +95,7 @@ export component AppWindow inherits Window {
     changed background-blur-draft => { root.preview-background(); }
     changed settings-open => { root.preview-background(); }
     changed settings-tab => { root.preview-background(); }
-    private property <bool> interaction-busy: root.busy || root.file-dialog-open || root.project-dialog-open || root.settings-open;
+    private property <bool> interaction-busy: root.busy || root.firmware-parsing || root.file-dialog-open || root.project-dialog-open || root.settings-open;
     in-out property <bool> workspace-expanded: false;
     private property <bool> file-tree-visible: true;
     private property <float> file-tree-reveal: root.file-tree-visible ? 1 : 0;
@@ -840,6 +846,34 @@ export component AppWindow inherits Window {
                     Button { text: "浏览项目文件…"; enabled: !root.busy && !root.file-dialog-open; clicked => { root.browse-project(); } }
                 }
                 Text { text: root.status; color: Theme.muted; wrap: word-wrap; }
+            }
+        }
+    }
+    if root.firmware-parsing: Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height;
+        background: #000a;
+        TouchArea { }
+        Rectangle {
+            width: min(480px, root.width - 48px); height: 230px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Theme.sidebar; border-radius: 16px;
+            VerticalLayout {
+                padding: 24px; spacing: 14px;
+                Text { text: "正在解析编译产物"; color: Theme.text; font-size: 18px; font-weight: 700; }
+                Text { text: root.firmware-parse-path; color: Theme.muted; font-size: 11px; overflow: elide; }
+                Text { text: root.firmware-parse-stage; color: Theme.text; font-size: 13px; }
+                Rectangle {
+                    height: 8px; background: Theme.border; border-radius: 4px; clip: true;
+                    Rectangle {
+                        x: 0px; y: 0px;
+                        width: parent.width * root.firmware-parse-progress;
+                        height: parent.height; background: Theme.accent; border-radius: 4px;
+                    }
+                }
+                HorizontalLayout {
+                    Text { text: root.firmware-parse-details; color: Theme.muted; font-size: 12px; horizontal-stretch: 1; }
+                    Text { text: round(root.firmware-parse-progress * 100) + "%"; color: Theme.accent; font-size: 12px; }
+                }
             }
         }
     }

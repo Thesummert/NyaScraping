@@ -101,7 +101,7 @@ pub struct FirmwareView {
     report: String,
     details: String,
     status: String,
-    browser: FirmwareBrowser,
+    pub(crate) browser: FirmwareBrowser,
     executable_lines: HashMap<std::path::PathBuf, Vec<u32>>,
 }
 
@@ -109,15 +109,18 @@ fn executable_lines(
     info: &nya_domain::firmware::FirmwareDebugInfo,
 ) -> HashMap<std::path::PathBuf, Vec<u32>> {
     let mut result: HashMap<std::path::PathBuf, Vec<u32>> = HashMap::new();
+    // Resolve each source path once, rather than once for every executable line.
+    let paths: Vec<_> = info
+        .files
+        .iter()
+        .map(|file| Presenter::source_key(std::path::Path::new(&file.path)))
+        .collect();
     for location in &info.executable_lines {
         if let (Some(file), Some(line)) = (
-            info.files.get(location.file),
+            paths.get(location.file),
             location.line.and_then(|n| u32::try_from(n).ok()),
         ) {
-            result
-                .entry(Presenter::source_key(std::path::Path::new(&file.path)))
-                .or_default()
-                .push(line);
+            result.entry(file.clone()).or_default().push(line);
         }
     }
     for lines in result.values_mut() {
@@ -430,7 +433,7 @@ impl Presenter {
             }
             _ => {}
         }
-        if !matches!(&event, PreparedEvent::Debug(_, false)) {
+        if !matches!(&event, PreparedEvent::Debug(_, false)) && !ui.get_firmware_parsing() {
             ui.set_busy(false);
         }
         match event {
@@ -1371,15 +1374,16 @@ impl Presenter {
                 )
                 .into(),
             );
-            if let Some(paths) = self
-                .plot_renderer
-                .render_if_changed(&traces, zoom, seconds)
-            {
+            if let Some(paths) = self.plot_renderer.render_if_changed(&traces, zoom, seconds) {
                 let paths: Vec<_> = paths
                     .into_iter()
                     .map(|path| WaveformPath {
                         commands: path.commands.into(),
-                        tint: slint::Color::from_rgb_u8(path.color[0], path.color[1], path.color[2]),
+                        tint: slint::Color::from_rgb_u8(
+                            path.color[0],
+                            path.color[1],
+                            path.color[2],
+                        ),
                     })
                     .collect();
                 let existing = ui.get_waveform_paths();

@@ -16,6 +16,26 @@ pub const MAX_RECORDS: usize = 200_000;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeFirmwareBackend;
 
+#[derive(Clone, Debug)]
+pub struct ParseProgress {
+    pub stage: &'static str,
+    /// Overall progress in the range 0–1; stages reserve room for UI preparation.
+    pub fraction: f32,
+    pub completed: usize,
+    pub total: usize,
+}
+
+impl ParseProgress {
+    pub fn new(stage: &'static str, start: f32, span: f32, completed: usize, total: usize) -> Self {
+        Self {
+            stage,
+            fraction: start + span * completed as f32 / total.max(1) as f32,
+            completed,
+            total,
+        }
+    }
+}
+
 fn error(error: impl std::fmt::Display) -> Error {
     Error(format!("Compiled file: {error}"))
 }
@@ -40,6 +60,22 @@ impl NativeFirmwareBackend {
     /// Extensions are deliberately ignored: AXF/OUT commonly contain ELF.
     /// Raw BIN/HEX have no object header and are not accepted by this inspector.
     pub fn parse(&self, path: &Path, bytes: &[u8]) -> Result<FirmwareImage> {
+        self.parse_with_progress(path, bytes, &mut |_| {})
+    }
+
+    pub fn parse_with_progress(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        progress: &mut dyn FnMut(ParseProgress),
+    ) -> Result<FirmwareImage> {
+        progress(ParseProgress::new(
+            "读取 ELF 段、节和符号表",
+            0.05,
+            0.0,
+            0,
+            0,
+        ));
         if bytes.len() as u64 > MAX_FILE_BYTES {
             return Err(error("file exceeds 128 MiB"));
         }
@@ -103,9 +139,11 @@ impl NativeFirmwareBackend {
         }
         symbols.sort_by(|a, b| a.address.cmp(&b.address).then(a.name.cmp(&b.name)));
         let mut debug = if has_debug_info {
-            dwarf::parse(&file).unwrap_or_else(|error| nya_domain::firmware::FirmwareDebugInfo {
-                warnings: vec![format!("DWARF 解析失败：{error}")],
-                ..Default::default()
+            dwarf::parse(&file, progress).unwrap_or_else(|error| {
+                nya_domain::firmware::FirmwareDebugInfo {
+                    warnings: vec![format!("DWARF 解析失败：{error}")],
+                    ..Default::default()
+                }
             })
         } else {
             nya_domain::firmware::FirmwareDebugInfo {
@@ -172,6 +210,7 @@ impl NativeFirmwareBackend {
                     .into(),
             );
         }
+        progress(ParseProgress::new("整理符号与调试信息", 0.95, 0.0, 0, 0));
         Ok(FirmwareImage {
             path: path.to_owned(),
             file_size,
@@ -190,8 +229,13 @@ impl NativeFirmwareBackend {
     }
 }
 
-impl FirmwareBackend for NativeFirmwareBackend {
-    fn load(&self, path: &Path) -> Result<FirmwareImage> {
+impl NativeFirmwareBackend {
+    pub fn load_with_progress(
+        &self,
+        path: &Path,
+        progress: &mut dyn FnMut(ParseProgress),
+    ) -> Result<FirmwareImage> {
+        progress(ParseProgress::new("读取编译产物", 0.0, 0.0, 0, 0));
         let file = File::open(path).map_err(error)?;
         let metadata = file.metadata().map_err(error)?;
         if !metadata.is_file() {
@@ -204,7 +248,13 @@ impl FirmwareBackend for NativeFirmwareBackend {
         file.take(MAX_FILE_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(error)?;
-        self.parse(path, &bytes)
+        self.parse_with_progress(path, &bytes, progress)
             .map_err(|e| Error(format!("{}: {e}", path.display())))
+    }
+}
+
+impl FirmwareBackend for NativeFirmwareBackend {
+    fn load(&self, path: &Path) -> Result<FirmwareImage> {
+        self.load_with_progress(path, &mut |_| {})
     }
 }

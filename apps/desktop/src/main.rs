@@ -2,6 +2,7 @@ mod acquisition;
 mod background;
 mod file_picker;
 mod firmware_browser;
+mod firmware_loading;
 mod presenter;
 mod project;
 mod source_font;
@@ -16,7 +17,6 @@ use nya_domain::{
     firmware::FirmwareBackend, DebugAction, TargetProfile, TextBackend, ToolKind, ToolRegistry,
     WatchRequest,
 };
-use nya_firmware_backend::NativeFirmwareBackend;
 use nya_text_backend::NativeTextBackend;
 use slint::ComponentHandle;
 use std::sync::{
@@ -56,6 +56,12 @@ fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
         }
         _ => None,
     };
+    let parsing_firmware = if let Command::OpenFirmware(path) = &command {
+        ui.invoke_begin_firmware_parse(path.to_string_lossy().as_ref().into());
+        true
+    } else {
+        false
+    };
     match sender.try_send(command) {
         Ok(()) => {
             ui.set_busy(true);
@@ -67,6 +73,9 @@ fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
             }
         }
         Err(error) => {
+            if parsing_firmware {
+                firmware_loading::finish(ui);
+            }
             let message = format!("无法提交任务：{error}");
             ui.invoke_record_system_error(message.as_str().into());
             ui.set_status(message.into());
@@ -142,31 +151,37 @@ fn sync_watches(updates: &WatchUpdates, presenter: &presenter::Presenter) {
     *updates.lock().expect("watch updates lock") = Some(presenter.watch_requests());
 }
 
-fn open_project(
-    ui: &AppWindow,
+struct PreparedProject {
+    project: project::Project,
+    path: std::path::PathBuf,
+    firmware: Option<presenter::PreparedEvent>,
+    source: Option<nya_domain::Result<nya_domain::Document>>,
+}
+
+fn prepare_project(
     path: &std::path::Path,
-    presenter: &mut presenter::Presenter,
-    updates: &WatchUpdates,
-) -> Result<(), String> {
+    backend: &firmware_loading::ProgressBackend,
+) -> Result<PreparedProject, String> {
     let project = project::Project::read(path)?;
     let firmware = if project.firmware.is_empty() {
         None
     } else {
         Some(
-            NativeFirmwareBackend
+            backend
                 .load(std::path::Path::new(&project.firmware))
                 .map_err(|e| format!("无法打开项目固件：{e}"))?,
         )
     };
-    let browser = firmware.as_ref().map(|image| {
-        firmware_browser::FirmwareBrowser::new(
-            &image.debug,
-            image.little_endian,
-            image.kind == "Executable",
-        )
+    backend.preparing_view();
+    let firmware = firmware.map(|image| {
+        presenter::PreparedEvent::from(nya_application::Event::FirmwareOpened(Box::new(image)))
+    });
+    let browser = firmware.as_ref().and_then(|event| match event {
+        presenter::PreparedEvent::Firmware(view) => Some(&view.browser),
+        _ => None,
     });
     let mut checked = watch_list::WatchList::default();
-    let missing = checked.restore(&project.watches, browser.as_ref());
+    let missing = checked.restore(&project.watches, browser);
     if missing != 0 {
         return Err(format!(
             "{missing} 个变量无法在当前固件中唯一匹配或恢复波形，请检查项目使用的固件"
@@ -179,6 +194,28 @@ fn open_project(
             .select(tool, &project.backend_version)
             .map_err(|e| format!("无法选择项目后端：{e}"))?;
     }
+    let source = (!project.source.is_empty())
+        .then(|| NativeTextBackend.load(std::path::Path::new(&project.source)));
+    Ok(PreparedProject {
+        project,
+        path: path.into(),
+        firmware,
+        source,
+    })
+}
+
+fn apply_project(
+    ui: &AppWindow,
+    prepared: PreparedProject,
+    presenter: &mut presenter::Presenter,
+    updates: &WatchUpdates,
+) {
+    let PreparedProject {
+        project,
+        path,
+        firmware,
+        source,
+    } = prepared;
     ui.set_backend_kind(project.backend_kind);
     ui.set_firmware_path(project.firmware.clone().into());
     ui.set_source_path(project.source.clone().into());
@@ -201,12 +238,7 @@ fn open_project(
         presenter.clear_firmware(ui);
     }
     if let Some(firmware) = firmware {
-        presenter.apply(
-            ui,
-            presenter::PreparedEvent::from(nya_application::Event::FirmwareOpened(Box::new(
-                firmware,
-            ))),
-        );
+        presenter.apply(ui, firmware);
     }
     let missing = presenter.restore_watches(ui, &project.watches);
     sync_watches(updates, presenter);
@@ -216,8 +248,8 @@ fn open_project(
         String::new()
     };
     presenter.clear_source_tabs(ui);
-    if !project.source.is_empty() {
-        match NativeTextBackend.load(std::path::Path::new(&project.source)) {
+    if let Some(source) = source {
+        match source {
             Ok(document) => presenter.apply(
                 ui,
                 presenter::PreparedEvent::from(nya_application::Event::SourceOpened(document)),
@@ -227,11 +259,10 @@ fn open_project(
     }
     ui.set_project_path(path.to_string_lossy().as_ref().into());
     ui.set_project_dialog_open(false);
-    if let Err(error) = project::remember(path) {
+    if let Err(error) = project::remember(&path) {
         warning.push_str(&format!("；历史记录保存失败：{error}"));
     }
     ui.set_status(format!("项目已打开{warning}").into());
-    Ok(())
 }
 
 fn save_project(ui: &AppWindow, path: &std::path::Path, presenter: &presenter::Presenter) {
@@ -854,7 +885,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = DebugAdapter::new()?;
     adapter.set_install_cancel(install_cancel.clone());
     adapter.set_install_progress(install_progress.clone());
-    let mut application = Application::new(adapter, NativeTextBackend, NativeFirmwareBackend);
+    let (firmware_backend, firmware_progress_timer) = firmware_loading::setup(&ui);
+    let mut application = Application::new(adapter, NativeTextBackend, firmware_backend.clone());
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = shutdown.clone();
     // A bounded queue prevents repeated UI actions from accumulating indefinitely.
@@ -885,20 +917,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let weak = ui.as_weak();
     let project_presenter = presenter.clone();
     let project_updates = watch_updates.clone();
+    let project_backend = firmware_backend.clone();
     ui.on_open_project(move |path| {
         if let Some(ui) = weak.upgrade() {
             if ui.get_debug_connected() || ui.get_busy() {
                 return;
             }
-            let mut presenter = project_presenter.lock().expect("presenter lock");
-            match open_project(
-                &ui,
-                std::path::Path::new(path.as_str()),
-                &mut presenter,
-                &project_updates,
-            ) {
-                Ok(()) => ui.invoke_refresh_tools(),
-                Err(error) => ui.set_status(format!("项目打开失败：{error}").into()),
+            ui.invoke_begin_firmware_parse(path.clone());
+            let weak = ui.as_weak();
+            let presenter = project_presenter.clone();
+            let updates = project_updates.clone();
+            let backend = project_backend.clone();
+            let path = std::path::PathBuf::from(path.as_str());
+            if let Err(error) = std::thread::Builder::new()
+                .name("open-project".into())
+                .spawn(move || {
+                    let result = prepare_project(&path, &backend);
+                    let _ = weak.upgrade_in_event_loop(move |ui| match result {
+                        Ok(project) => {
+                            apply_project(
+                                &ui,
+                                project,
+                                &mut presenter.lock().expect("presenter lock"),
+                                &updates,
+                            );
+                            firmware_loading::finish(&ui);
+                            ui.invoke_refresh_tools();
+                        }
+                        Err(error) => {
+                            firmware_loading::finish(&ui);
+                            ui.set_status(format!("项目打开失败：{error}").into());
+                        }
+                    });
+                })
+            {
+                firmware_loading::finish(&ui);
+                ui.set_status(format!("无法创建项目加载任务：{error}").into());
             }
         }
     });
@@ -986,6 +1040,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let pending = worker_updates.lock().expect("watch updates lock").take();
             let mut finished_install = false;
             let mut finished_download = false;
+            let mut finished_firmware = false;
             let event = if let Some(watches) = pending {
                 Some(application.execute(Command::UpdateWatches(watches)))
             } else {
@@ -1004,6 +1059,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         finished_install = matches!(&command, Command::InstallTool { .. });
                         finished_download =
                             matches!(&command, Command::Debug(DebugAction::Download));
+                        finished_firmware = matches!(&command, Command::OpenFirmware(_));
                         Some(application.execute(command))
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -1050,6 +1106,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = window.hide();
                 });
             }
+            if finished_firmware {
+                firmware_backend.preparing_view();
+            }
             let event = presenter::PreparedEvent::from(event);
             let sync = matches!(&event, presenter::PreparedEvent::Firmware(_));
             let updates = worker_updates.clone();
@@ -1061,6 +1120,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         presenter.apply(&ui, event);
                         if sync {
                             sync_watches(&updates, &presenter);
+                        }
+                        if finished_firmware {
+                            ui.set_firmware_parse_progress(1.0);
+                            firmware_loading::finish(&ui);
                         }
                     }
                 })
@@ -1965,6 +2028,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = ui.run();
     install_cancel.store(true, Ordering::SeqCst);
     progress_timer.stop();
+    firmware_progress_timer.stop();
     waveform_timer.stop();
     breakpoint_timer.stop();
     acquisition.shutdown();
@@ -1998,5 +2062,73 @@ mod sampling_tests {
         }
         assert!(sampling_interval_micros(-1, "1").is_err());
         assert!(sampling_interval_micros(11, "1").is_err());
+    }
+}
+
+#[cfg(test)]
+mod project_loading_tests {
+    use super::*;
+
+    #[test]
+    fn project_preparation_validates_firmware_and_saved_watches_before_applying() {
+        let dir = tempfile::tempdir().unwrap();
+        let firmware = dir.path().join("firmware.elf");
+        std::fs::write(
+            &firmware,
+            include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf4.axf"),
+        )
+        .unwrap();
+        let path = dir.path().join("project.nyaproj");
+        let mut project = project::Project {
+            format: 1,
+            firmware: firmware.to_string_lossy().into_owned(),
+            source: dir.path().join("missing.c").to_string_lossy().into_owned(),
+            gdb: "gdb".into(),
+            target: "".into(),
+            interface: "".into(),
+            transport_index: 0,
+            port: "3333".into(),
+            external_server: true,
+            backend_kind: -1,
+            backend_version: "".into(),
+            acquisition_endpoint: "".into(),
+            refresh_rate_index: 0,
+            live_interval_index: 5,
+            live_custom_hz: "10".into(),
+            watches: Vec::new(),
+        };
+        project.write(&path).unwrap();
+        let backend = firmware_loading::ProgressBackend::default();
+        let prepared = prepare_project(&path, &backend).unwrap();
+        assert!(matches!(
+            prepared.firmware,
+            Some(presenter::PreparedEvent::Firmware(_))
+        ));
+        assert!(
+            prepared.source.unwrap().is_err(),
+            "missing source is a recoverable warning"
+        );
+
+        project.watches.push(watch_list::SavedWatch {
+            expression: "missing_variable".into(),
+            scope: Some("missing_scope".into()),
+            function: None,
+            waveform: false,
+            waveform_members: Vec::new(),
+        });
+        project.write(&path).unwrap();
+        assert!(
+            matches!(prepare_project(&path, &backend), Err(error) if error.contains("1 个变量无法"))
+        );
+        project.watches.clear();
+        project.firmware = dir
+            .path()
+            .join("missing.elf")
+            .to_string_lossy()
+            .into_owned();
+        project.write(&path).unwrap();
+        assert!(
+            matches!(prepare_project(&path, &backend), Err(error) if error.contains("无法打开项目固件"))
+        );
     }
 }

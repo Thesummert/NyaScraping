@@ -3,6 +3,7 @@ mod background;
 mod file_picker;
 mod firmware_browser;
 mod firmware_loading;
+mod firmware_watch;
 mod presenter;
 mod project;
 mod source_font;
@@ -2038,7 +2039,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.invoke_refresh_rate_changed();
 
     ui.invoke_refresh_tools();
+    let firmware_watch = firmware_watch::setup(&ui);
     let result = ui.run();
+    drop(firmware_watch);
     install_cancel.store(true, Ordering::SeqCst);
     progress_timer.stop();
     firmware_progress_timer.stop();

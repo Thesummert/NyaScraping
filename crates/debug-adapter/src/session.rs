@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 pub(super) struct Session {
     pub client: Option<Client>,
+    firmware: Option<std::path::PathBuf>,
     bridge: Option<NonStopBridge>,
     memory_backend: Option<ToolKind>,
     state: SessionState,
@@ -417,6 +418,7 @@ impl DebugSession for DebugAdapter {
                     return Err(error);
                 }
                 self.session.client = Some(client);
+                self.session.firmware = Some(profile.firmware);
                 self.session.memory_backend = Some(profile.tool);
                 if let Err(error) = self
                     .session
@@ -533,6 +535,18 @@ impl DebugSession for DebugAdapter {
                     }
                 }
                 self.session.halted()?;
+                // GDB may retain the old object file after a compiler replaces it.
+                // Reopen it before downloading to load the new bytes and symbols.
+                let firmware = self
+                    .session
+                    .firmware
+                    .clone()
+                    .ok_or_else(|| Error("调试会话缺少固件路径，请重新连接".into()))?;
+                self.session.halted()?.command(&format!(
+                    "-file-exec-and-symbols {}",
+                    mi::quote(&firmware.to_string_lossy())
+                ))?;
+                self.session.breakpoint_list()?;
                 let started = Instant::now();
                 let result = self.session.halted()?.command_timeout_observe(
                     "-target-download",
@@ -1411,6 +1425,32 @@ mod tests {
         let error = adapter.execute_debug(DebugAction::Download).unwrap_err();
         assert!(error.0.contains("Target interrupt failed"));
         assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Running);
+        assert_ne!(
+            adapter.install_progress.lock().unwrap().percent,
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn download_reopens_rebuilt_firmware_and_rejects_missing_files() {
+        let (_root, mut adapter, profile) = fixture();
+        let firmware = profile.firmware.clone();
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+            })
+            .unwrap();
+        adapter.execute_debug(DebugAction::Continue).unwrap();
+        fs::write(&firmware, b"new compiled firmware").unwrap();
+        adapter.execute_debug(DebugAction::Download).unwrap();
+        assert_eq!(
+            adapter.install_progress.lock().unwrap().percent,
+            Some(100.0)
+        );
+        fs::remove_file(&firmware).unwrap();
+        let error = adapter.execute_debug(DebugAction::Download).unwrap_err();
+        assert!(error.0.contains("Cannot load firmware file"));
         assert_ne!(
             adapter.install_progress.lock().unwrap().percent,
             Some(100.0)

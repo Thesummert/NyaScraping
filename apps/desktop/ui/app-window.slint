@@ -67,6 +67,9 @@ export component AppWindow inherits Window {
     callback browse-project();
     callback save-project();
     in-out property <bool> settings-open: false;
+    in-out property <bool> firmware-update-open: false;
+    in-out property <string> firmware-update-path;
+    callback respond-firmware-update(bool);
     in-out property <int> settings-tab: 0;
     in-out property <string> settings-message;
     in-out property <int> refresh-rate-index: 0;
@@ -95,7 +98,7 @@ export component AppWindow inherits Window {
     changed background-blur-draft => { root.preview-background(); }
     changed settings-open => { root.preview-background(); }
     changed settings-tab => { root.preview-background(); }
-    private property <bool> interaction-busy: root.busy || root.firmware-parsing || root.file-dialog-open || root.project-dialog-open || root.settings-open;
+    private property <bool> interaction-busy: root.busy || root.firmware-parsing || root.file-dialog-open || root.project-dialog-open || root.settings-open || root.firmware-update-open;
     in-out property <bool> workspace-expanded: false;
     private property <bool> file-tree-visible: true;
     private property <float> file-tree-reveal: root.file-tree-visible ? 1 : 0;
@@ -846,6 +849,42 @@ export component AppWindow inherits Window {
                     Button { text: "浏览项目文件…"; enabled: !root.busy && !root.file-dialog-open; clicked => { root.browse-project(); } }
                 }
                 Text { text: root.status; color: Theme.muted; wrap: word-wrap; }
+            }
+        }
+    }
+    firmware-update-overlay := Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height;
+        property <float> reveal: root.firmware-update-open ? 1 : 0;
+        animate reveal { duration: 240ms; easing: ease-out; }
+        visible: root.firmware-update-open || self.reveal > 0;
+        background: #000a;
+        TouchArea { }
+        Rectangle {
+            width: min(560px, root.width - 48px); height: 280px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 + (1 - firmware-update-overlay.reveal) * 24px;
+            background: Theme.sidebar; border-radius: 20px;
+            VerticalLayout {
+                padding: 24px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: "固件文件已更新"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-stretch: 1; }
+                    Button { text: "关闭"; clicked => { root.respond-firmware-update(false); } }
+                }
+                Text { text: "检测到当前固件发生变化，是否下载新的固件？"; color: Theme.text; wrap: word-wrap; }
+                Rectangle {
+                    background: Theme.panel; border-radius: 8px;
+                    vertical-stretch: 1;
+                    ScrollView {
+                        x: 12px; y: 10px; width: parent.width - 24px; height: parent.height - 20px;
+                        Text { text: root.firmware-update-path; color: Theme.muted; wrap: word-wrap; }
+                    }
+                }
+                Text { text: "下载完成后将自动复位目标。"; color: Theme.muted; font-size: 12px; }
+                HorizontalLayout {
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "暂不下载"; clicked => { root.respond-firmware-update(false); } }
+                    Button { text: "下载新固件"; clicked => { root.respond-firmware-update(true); } }
+                }
             }
         }
     }

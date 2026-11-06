@@ -2,6 +2,8 @@
 """Deterministic MI peer: no probe, network, ptrace, or installed debugger required."""
 import re
 import sys
+import json
+from pathlib import Path
 
 state = "stopped"
 frame = 0
@@ -21,6 +23,8 @@ fail_download = False
 fail_reset = False
 fail_interrupt = False
 hold_context = False
+loaded_firmware = None
+loaded_bytes = None
 
 def send(text):
     print(text, flush=True)
@@ -69,7 +73,18 @@ for line in sys.stdin:
         fail_interrupt = True
         send(token + '^done')
         continue
-    if command == '-target-download':
+    if command.startswith('-file-exec-and-symbols '):
+        try:
+            loaded_firmware = Path(json.loads(command.split(' ', 1)[1]))
+            loaded_bytes = loaded_firmware.read_bytes()
+        except (OSError, ValueError):
+            send(token + '^error,msg="Cannot load firmware file"')
+            continue
+        send(token + '^done')
+    elif command == '-target-download':
+        if loaded_firmware is None or loaded_bytes != loaded_firmware.read_bytes():
+            send(token + '^error,msg="Firmware symbols must be reloaded before download"')
+            continue
         if state != "stopped":
             send(token + '^error,msg="Cannot download while target is running"')
             continue

@@ -1,5 +1,6 @@
 import { Button, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { ConnectionButton } from "../components/connection-button.slint";
 
 export struct FrameRow { level: int, label: string, selected: bool }
 export struct BreakpointRow { id: string, label: string, enabled: bool, pending: bool }
@@ -20,7 +21,7 @@ export component DebugPage inherits ScrollView {
         spacing: 8px;
         HorizontalLayout {
             Text { text: "调试会话 · " + root.state-label; color: Theme.text; font-size: 18px; font-weight: 700; horizontal-stretch: 1; }
-            Button { text: root.connected ? "断开" : "连接"; enabled: !root.busy; clicked => { root.action(root.connected ? 1 : 0); } }
+            ConnectionButton { connected: root.connected; busy: root.busy; action(kind) => { root.action(kind); } }
         }
         Text { text: "可直接点击顶部「下载」烧录并自动复位，无需手动暂停。已连接且运行中的目标会在烧录前自动暂停。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
         HorizontalLayout {

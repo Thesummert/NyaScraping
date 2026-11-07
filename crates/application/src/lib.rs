@@ -99,6 +99,7 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
                 if let DebugAction::Connect {
                     profile,
                     external_server: false,
+                    ..
                 }
                 | DebugAction::Flash { profile } = &mut action
                 {
@@ -629,6 +630,7 @@ mod tests {
         let snapshot = debug(app.execute(Command::Debug(DebugAction::Connect {
             profile,
             external_server: true,
+            reset: false,
         })));
         assert_eq!(snapshot.state, SessionState::Halted);
         assert_eq!(snapshot.breakpoints[0].id, id);
@@ -827,7 +829,8 @@ mod tests {
         assert!(matches!(
             app.execute(Command::Debug(DebugAction::Connect {
                 profile: profile.clone(),
-                external_server: false
+                external_server: false,
+                reset: false,
             })),
             Event::Failed(_)
         ));
@@ -836,6 +839,7 @@ mod tests {
         match app.execute(Command::Debug(DebugAction::Connect {
             profile,
             external_server: false,
+            reset: false,
         })) {
             Event::DebugUpdated {
                 snapshot,

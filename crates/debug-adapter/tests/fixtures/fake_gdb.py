@@ -25,6 +25,10 @@ fail_interrupt = False
 hold_context = False
 loaded_firmware = None
 loaded_bytes = None
+options_path = Path(sys.argv[0]).with_suffix('.options')
+options = json.loads(options_path.read_text()) if options_path.exists() else {}
+command_log = Path(sys.argv[0]).with_suffix('.commands') if options else None
+fail_reset = options.get('fail_reset', False)
 
 def send(text):
     print(text, flush=True)
@@ -38,6 +42,9 @@ for line in sys.stdin:
     if not match:
         continue
     token, command = match.groups()
+    if command_log is not None:
+        with command_log.open('a') as log:
+            log.write(command + '\n')
     if command in ('-test-hold-context', '-test-release-context'):
         hold_context = command == '-test-hold-context'
         send(token + '^done')
@@ -97,7 +104,11 @@ for line in sys.stdin:
         send(token + '^done,address="0x8000000",load-size="1024"')
     elif command.startswith('-target-select'):
         send(token + '^connected')
-        stopped()
+        if options.get('running', False):
+            state = 'running'
+            send('*running,thread-id="all"')
+        else:
+            stopped()
     elif command.startswith('-exec-continue'):
         if download_pending or reset_pending:
             send(token + '^error,msg="Flash context must be reset and register cache flushed before continuing"')

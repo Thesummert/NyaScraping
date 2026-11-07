@@ -1,0 +1,101 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export component ConnectionButton inherits HorizontalLayout {
+    in property <bool> busy;
+    in property <bool> connected;
+    callback action(int);
+    private property <int> focused-option: -1;
+    spacing: 2px;
+
+    function select-connection(index: int) {
+        menu.close();
+        if !root.busy && !root.connected {
+            root.action(index == 0 ? 10 : 0);
+        }
+    }
+
+    Button {
+        text: root.connected ? "断开" : "连接";
+        enabled: !root.busy;
+        clicked => { root.action(root.connected ? 1 : 0); }
+    }
+    Rectangle {
+        width: 24px;
+        min-height: 32px;
+        Button {
+            text: "▾";
+            min-width: 24px;
+            enabled: !root.busy && !root.connected;
+            accessible-label: "选择连接方式";
+            clicked => {
+                root.focused-option = -1;
+                menu.show();
+            }
+        }
+        menu := PopupWindow {
+            x: parent.width - self.width;
+            y: parent.height + 4px;
+            width: 232px;
+            height: 80px;
+            close-policy: close-on-click-outside;
+            forward-focus: menu-focus;
+
+            Rectangle {
+                background: Theme.panel;
+                border-color: Theme.border;
+                border-width: 1px;
+                border-radius: 8px;
+
+                menu-focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Escape || event.text == Key.Tab {
+                            menu.close();
+                            return accept;
+                        }
+                        if event.text == Key.DownArrow {
+                            root.focused-option = min(1, root.focused-option + 1);
+                            return accept;
+                        }
+                        if event.text == Key.UpArrow {
+                            root.focused-option = max(0, root.focused-option - 1);
+                            return accept;
+                        }
+                        if event.text == Key.Return && root.focused-option >= 0 {
+                            root.select-connection(root.focused-option);
+                            return accept;
+                        }
+                        return reject;
+                    }
+
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 4px;
+                        for title[index] in ["Reset 连接（复位并暂停）", "直接连接"]: Rectangle {
+                            height: 32px;
+                            border-radius: 4px;
+                            background: option-area.has-hover || root.focused-option == index ? Theme.selection : transparent;
+                            animate background { duration: 100ms; }
+                            accessible-role: button;
+                            accessible-label: title;
+                            accessible-enabled: !root.busy && !root.connected;
+                            accessible-action-default => { root.select-connection(index); }
+                            Text {
+                                x: 10px;
+                                width: parent.width - 20px;
+                                text: title;
+                                color: Theme.text;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            option-area := TouchArea {
+                                enabled: !root.busy && !root.connected;
+                                clicked => { root.select-connection(index); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

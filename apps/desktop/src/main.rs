@@ -1276,7 +1276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_debug_action(move |kind| {
         if let Some(ui) = weak.upgrade() {
             let action = match kind {
-                0 | 8 if kind == 0 || !ui.get_debug_connected() => {
+                0 | 8 | 10 if kind != 8 || !ui.get_debug_connected() => {
                     match target_profile(&ui, kind == 8) {
                         Ok(profile) => {
                             if kind == 8 {
@@ -1285,6 +1285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 DebugAction::Connect {
                                     profile,
                                     external_server: ui.get_external_server(),
+                                    reset: kind == 10,
                                 }
                             }
                         }

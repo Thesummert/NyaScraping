@@ -148,6 +148,8 @@ pub enum DebugAction {
     Connect {
         profile: TargetProfile,
         external_server: bool,
+        /// Reset and halt after attaching; otherwise preserve the target state.
+        reset: bool,
     },
     Disconnect,
     Continue,

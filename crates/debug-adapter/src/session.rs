@@ -168,6 +168,17 @@ impl Session {
     }
 
     fn reset_and_halt(&mut self) -> Result<()> {
+        if self.client()?.state == SessionState::Running {
+            self.client()?.command("-exec-interrupt --all")?;
+            let start = Instant::now();
+            while self.client()?.state == SessionState::Running {
+                self.client()?.poll()?;
+                if start.elapsed() > Duration::from_secs(3) {
+                    return Err(Error("等待目标暂停超时，未复位目标".into()));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         self.halted()?.command(&format!(
             "-interpreter-exec console {}",
             mi::quote("monitor reset halt")
@@ -356,6 +367,7 @@ impl DebugSession for DebugAdapter {
             DebugAction::Connect {
                 profile,
                 external_server,
+                reset,
             } => {
                 if self.session.client.is_some() {
                     return Err(Error("调试会话已存在，请先断开".into()));
@@ -420,11 +432,15 @@ impl DebugSession for DebugAdapter {
                 self.session.client = Some(client);
                 self.session.firmware = Some(profile.firmware);
                 self.session.memory_backend = Some(profile.tool);
-                if let Err(error) = self
-                    .session
-                    .thread_state()
-                    .and_then(|()| self.session.context())
-                {
+                if let Err(error) = self.session.thread_state().and_then(|()| {
+                    if reset {
+                        self.session
+                            .reset_and_halt()
+                            .map_err(|error| Error(format!("Reset 连接失败：{error}")))
+                    } else {
+                        self.session.context()
+                    }
+                }) {
                     self.session.client = None;
                     self.session.bridge = None;
                     self.session.memory_backend = None;
@@ -434,7 +450,12 @@ impl DebugSession for DebugAdapter {
                 self.session.breakpoint_list()?;
                 self.session.last_stop = self.session.client()?.stop_generation;
                 self.session.client()?.changed = false;
-                self.session.message = "调试目标已连接".into();
+                self.session.message = if reset {
+                    "调试目标已连接，已复位并暂停"
+                } else {
+                    "调试目标已连接"
+                }
+                .into();
             }
             DebugAction::Disconnect => {
                 if let Some(client) = self.session.client.as_mut() {
@@ -476,6 +497,7 @@ impl DebugSession for DebugAdapter {
                 self.session.message = "已请求暂停，等待目标停止".into();
             }
             DebugAction::Reset => {
+                self.session.halted()?;
                 self.session.reset_and_halt()?;
                 self.session.message = "已复位目标".into();
             }
@@ -913,6 +935,7 @@ mod tests {
                 .execute_debug(DebugAction::Connect {
                     profile,
                     external_server: true,
+                    reset: false,
                 })
                 .unwrap();
             let watch = WatchRequest {
@@ -997,6 +1020,7 @@ mod tests {
             .execute_debug(DebugAction::Connect {
                 profile,
                 external_server: true,
+                reset: false,
             })
             .unwrap();
         let paused = adapter.sample_watches(&watches);
@@ -1031,6 +1055,7 @@ mod tests {
                 .execute_debug(DebugAction::Connect {
                     profile,
                     external_server: true,
+                    reset: false,
                 })
                 .unwrap();
             adapter.execute_debug(DebugAction::Continue).unwrap();
@@ -1130,6 +1155,7 @@ mod tests {
             .execute_debug(DebugAction::Connect {
                 profile,
                 external_server: true,
+                reset: false,
             })
             .unwrap();
         let write = |adapter: &mut DebugAdapter, expression: &str, value: &str| {
@@ -1178,6 +1204,7 @@ mod tests {
             .execute_debug(DebugAction::Connect {
                 profile,
                 external_server: true,
+                reset: false,
             })
             .unwrap();
         adapter.execute_debug(DebugAction::Continue).unwrap();
@@ -1229,6 +1256,7 @@ mod tests {
             .execute_debug(DebugAction::Connect {
                 profile,
                 external_server: true,
+                reset: false,
             })
             .unwrap();
         adapter
@@ -1265,12 +1293,89 @@ mod tests {
     }
 
     #[test]
+    fn connect_mode_preserves_execution_or_resets_and_halts_without_downloading() {
+        for tool in [ToolKind::OpenOcd, ToolKind::PyOcd, ToolKind::ProbeRs] {
+            for running in [false, true] {
+                for reset in [false, true] {
+                    let (_root, mut adapter, mut profile) = fixture();
+                    profile.tool = tool;
+                    fs::write(
+                        profile.gdb_executable.with_extension("options"),
+                        format!(r#"{{"running":{running}}}"#),
+                    )
+                    .unwrap();
+                    let log_path = profile.gdb_executable.with_extension("commands");
+                    adapter
+                        .execute_debug(DebugAction::Connect {
+                            profile,
+                            external_server: true,
+                            reset,
+                        })
+                        .unwrap();
+                    let snapshot = adapter.debug_snapshot(&[]);
+                    assert_eq!(
+                        snapshot.state,
+                        if running && !reset {
+                            SessionState::Running
+                        } else {
+                            SessionState::Halted
+                        }
+                    );
+                    let log = fs::read_to_string(log_path).unwrap();
+                    assert_eq!(log.contains("monitor reset halt"), reset);
+                    assert_eq!(log.contains("maintenance flush register-cache"), reset);
+                    assert_eq!(log.contains("-exec-interrupt"), running && reset);
+                    assert!(!log.contains("-target-download"));
+                    if reset {
+                        assert!(snapshot.message.contains("已复位并暂停"));
+                        assert_eq!(snapshot.selected_frame, 0);
+                        assert!(!snapshot.frames.is_empty());
+                        adapter.execute_debug(DebugAction::Continue).unwrap();
+                    }
+                    adapter.execute_debug(DebugAction::Disconnect).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn failed_reset_connection_releases_session_and_allows_direct_retry() {
+        let (_root, mut adapter, profile) = fixture();
+        fs::write(
+            profile.gdb_executable.with_extension("options"),
+            r#"{"fail_reset":true}"#,
+        )
+        .unwrap();
+        let error = adapter
+            .execute_debug(DebugAction::Connect {
+                profile: profile.clone(),
+                external_server: true,
+                reset: true,
+            })
+            .unwrap_err();
+        assert!(error.0.contains("Reset 连接失败"));
+        assert!(adapter.session.client.is_none());
+        assert!(adapter.session.bridge.is_none());
+        assert!(adapter.session.memory_backend.is_none());
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+                reset: false,
+            })
+            .unwrap();
+        assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Halted);
+        adapter.execute_debug(DebugAction::Disconnect).unwrap();
+    }
+
+    #[test]
     fn connect_controls_breakpoints_frames_values_and_cleanup() {
         let (_root, mut adapter, profile) = fixture();
         adapter
             .execute_debug(DebugAction::Connect {
                 profile,
                 external_server: true,
+                reset: false,
             })
             .unwrap();
         let watch = WatchRequest {
@@ -1364,6 +1469,7 @@ mod tests {
                 .execute_debug(DebugAction::Connect {
                     profile,
                     external_server: true,
+                    reset: false,
                 })
                 .unwrap();
             adapter.execute_debug(DebugAction::SelectFrame(1)).unwrap();
@@ -1387,6 +1493,7 @@ mod tests {
                 .execute_debug(DebugAction::Connect {
                     profile,
                     external_server: true,
+                    reset: false,
                 })
                 .unwrap();
             adapter.execute_debug(DebugAction::Continue).unwrap();
@@ -1412,6 +1519,7 @@ mod tests {
             .execute_debug(DebugAction::Connect {
                 profile,
                 external_server: true,
+                reset: false,
             })
             .unwrap();
         adapter.execute_debug(DebugAction::Continue).unwrap();
@@ -1439,6 +1547,7 @@ mod tests {
             .execute_debug(DebugAction::Connect {
                 profile,
                 external_server: true,
+                reset: false,
             })
             .unwrap();
         adapter.execute_debug(DebugAction::Continue).unwrap();
@@ -1468,6 +1577,7 @@ mod tests {
                 .execute_debug(DebugAction::Connect {
                     profile,
                     external_server: true,
+                    reset: false,
                 })
                 .unwrap();
             adapter.install_progress.lock().unwrap().percent = Some(100.0);
@@ -1490,7 +1600,8 @@ mod tests {
         assert!(adapter
             .execute_debug(DebugAction::Connect {
                 profile: missing,
-                external_server: true
+                external_server: true,
+                reset: false,
             })
             .is_err());
         assert!(adapter.session.client.is_none());
@@ -1498,7 +1609,8 @@ mod tests {
         assert!(adapter
             .execute_debug(DebugAction::Connect {
                 profile: profile.clone(),
-                external_server: true
+                external_server: true,
+                reset: false,
             })
             .is_err());
         profile.gdb_port = 3333;
@@ -1506,6 +1618,7 @@ mod tests {
             .execute_debug(DebugAction::Connect {
                 profile,
                 external_server: true,
+                reset: false,
             })
             .unwrap();
         assert!(adapter

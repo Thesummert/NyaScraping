@@ -1,5 +1,6 @@
 import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, SpinBox, TabWidget, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { ConnectionButton } from "components/connection-button.slint";
 import { SourcePage, SourceTab, SourceBreakpoint, HighlightLine, HighlightSpan } from "pages/source.slint";
 import { InstallToolsPage, SelectToolsPage, ToolRow } from "pages/tools.slint";
 import { VariablesPage, WatchRow } from "pages/variables.slint";
@@ -382,7 +383,7 @@ export component AppWindow inherits Window {
                         alignment: end;
                         spacing: 8px;
                         Text { text: "● " + root.debug-state; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
-                        Button { text: root.debug-connected ? "断开" : "连接"; enabled: !root.interaction-busy; clicked => { root.debug-action(root.debug-connected ? 1 : 0); } }
+                        ConnectionButton { connected: root.debug-connected; busy: root.interaction-busy; action(kind) => { root.debug-action(kind); } }
                         Button { text: "下载"; enabled: (!root.debug-connected || root.debug-halted || root.debug-running) && !root.interaction-busy; clicked => { root.debug-action(8); } }
                     }
                 }

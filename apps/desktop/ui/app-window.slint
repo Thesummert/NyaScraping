@@ -455,6 +455,9 @@ export component AppWindow inherits Window {
             }
             Rectangle {
                 background: root.background-shown ? transparent : Theme.background;
+                // Match the divider limits instead of inheriting the tabs' intrinsic widths.
+                min-width: 360px;
+                clip: true;
                 horizontal-stretch: 1;
                 VerticalLayout {
                     padding: 8px;

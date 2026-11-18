@@ -925,6 +925,47 @@ impl Presenter {
         }
     }
 
+    pub fn add_source_variable(&mut self, ui: &AppWindow, name: &str) {
+        let mut candidates = self
+            .browser
+            .as_ref()
+            .map(|browser| browser.source_variables(name))
+            .unwrap_or_default();
+        if let Some(document) = self
+            .source_selected
+            .and_then(|index| self.source_documents.get(index))
+        {
+            let file = Self::source_key(&document.path);
+            candidates.retain(|variable| {
+                variable
+                    .declaration_file
+                    .as_ref()
+                    .is_some_and(|path| self.mapped_source(path) == file)
+            });
+        } else {
+            candidates.clear();
+        }
+        if candidates.len() > 1 {
+            ui.set_status(format!("变量 {name} 有多个同名作用域，请在文件树中选择具体变量").into());
+            return;
+        }
+        let has_debug_info = !candidates.is_empty();
+        let added = match candidates.pop() {
+            Some(variable) => self.watches.add_variable(variable),
+            None => self.watches.add_expression(name),
+        };
+        if added {
+            self.invalidate_watches(ui);
+        }
+        ui.set_status(if !added {
+            "该变量已在监视列表中".into()
+        } else if has_debug_info {
+            format!("变量 {name} 已加入监视").into()
+        } else {
+            format!("{name} 已作为表达式加入监视，暂停目标后求值").into()
+        });
+    }
+
     pub fn add_expression(&mut self, ui: &AppWindow, expression: &str) {
         let variable = self
             .browser

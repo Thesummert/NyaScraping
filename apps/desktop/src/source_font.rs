@@ -54,6 +54,51 @@ pub fn wheel_steps(accumulator: &mut f64, amount: f64) -> i32 {
     steps
 }
 
+pub fn expand_tabs(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut column = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '\t' => {
+                let count = 4 - column % 4;
+                result.extend(std::iter::repeat_n(' ', count));
+                column += count;
+            }
+            '\n' => {
+                result.push(ch);
+                column = 0;
+            }
+            _ => {
+                result.push(ch);
+                column += 1;
+            }
+        }
+    }
+    result
+}
+
+pub fn selected_identifier(text: &str, anchor: i32, cursor: i32) -> Option<&str> {
+    let a = usize::try_from(anchor).ok()?;
+    let b = usize::try_from(cursor).ok()?;
+    let selected = text.get(a.min(b)..a.max(b))?.trim();
+    let mut chars = selected.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic())
+        || !chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    if [
+        "if", "else", "for", "while", "return", "int", "char", "float", "double", "void", "struct",
+        "static", "const", "volatile", "sizeof", "true", "false",
+    ]
+    .contains(&selected)
+    {
+        return None;
+    }
+    Some(selected)
+}
+
 pub fn load() -> SourceFont {
     crate::project::config_dir()
         .and_then(|dir| fs::read(dir.join("source-font.json")).ok())
@@ -110,6 +155,23 @@ mod tests {
                 size: MIN_SIZE
             }
         );
+    }
+
+    #[test]
+    fn source_selection_requires_a_single_identifier_and_checks_utf8() {
+        let source = "\tint 猫 = counter + 1;";
+        let text = expand_tabs(source);
+        let start = text.find("counter").unwrap();
+        assert_eq!(
+            selected_identifier(&text, (start + 7) as i32, start as i32),
+            Some("counter")
+        );
+        assert_eq!(
+            selected_identifier(&text, start as i32, (start + 11) as i32),
+            None
+        );
+        assert_eq!(selected_identifier("int", 0, 3), None);
+        assert_eq!(selected_identifier(&text, 9, 10), None);
     }
 
     #[test]

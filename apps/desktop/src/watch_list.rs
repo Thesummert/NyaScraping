@@ -437,6 +437,7 @@ mod tests {
             members: Vec::new(),
             evaluation_expression: "counter".into(),
             function: None,
+            declaration_file: None,
         }
     }
 

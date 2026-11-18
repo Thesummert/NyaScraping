@@ -189,6 +189,8 @@ export component AppWindow inherits Window {
     callback apply-source-font();
     callback source-font-changed();
     in-out property <[HighlightLine]> source-highlights;
+    in-out property <string> source-highlight-text;
+    callback watch-source-selection(int, int, bool);
     in-out property <bool> source-highlight-enabled: true;
     in-out property <int> source-highlight-width;
     in-out property <string> source-highlight-status;
@@ -503,6 +505,8 @@ export component AppWindow inherits Window {
                                 source-title: root.source-title;
                                 metadata: root.source-meta + (root.execution-location != "" ? " · " + root.execution-location : "") + (root.source-highlight-status != "" ? " · " + root.source-highlight-status : "");
                                 source-text: root.source-text;
+                                highlight-text: root.source-highlight-text;
+                                watch-selection(anchor, cursor, highlighted) => { root.watch-source-selection(anchor, cursor, highlighted); }
                                 font-family: root.source-font-family;
                                 font-size: root.source-font-size;
                                 highlight-enabled <=> root.source-highlight-enabled;

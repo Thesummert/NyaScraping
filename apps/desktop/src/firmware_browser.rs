@@ -31,6 +31,7 @@ pub struct BrowserVariable {
     pub members: Vec<DebugMember>,
     pub evaluation_expression: String,
     pub function: Option<String>,
+    pub declaration_file: Option<String>,
 }
 
 pub struct BrowserRow {
@@ -233,6 +234,11 @@ impl FirmwareBrowser {
             );
             tree.nodes[id].variable = Some(BrowserVariable {
                 id: variable_id,
+                declaration_file: variable
+                    .declaration
+                    .as_ref()
+                    .and_then(|loc| info.files.get(loc.file))
+                    .map(|file| file.path.clone()),
                 name: variable.name.clone(),
                 type_name: variable
                     .type_name
@@ -513,6 +519,15 @@ impl FirmwareBrowser {
         matches.next().is_none().then_some(variable)
     }
 
+    pub fn source_variables(&self, name: &str) -> Vec<BrowserVariable> {
+        self.nodes
+            .iter()
+            .filter_map(|node| node.variable.as_ref())
+            .filter(|variable| variable.name == name)
+            .cloned()
+            .collect()
+    }
+
     pub fn resolve_saved_variable(
         &self,
         name: &str,
@@ -625,6 +640,25 @@ mod tests {
         browser.select(compute).unwrap();
         assert!(browser.selected_variable().is_none());
         assert!(!browser.rows().iter().any(|r| r.label == "nested"));
+    }
+
+    #[test]
+    fn source_variable_candidates_keep_declaration_file() {
+        let image = NativeFirmwareBackend
+            .parse(
+                Path::new("firmware.axf"),
+                include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf4.axf"),
+            )
+            .unwrap();
+        let browser = FirmwareBrowser::new(&image.debug, image.little_endian, true);
+        let candidates = browser.source_variables("nested");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].declaration_file.as_deref(),
+            Some("/firmware/source/main.c")
+        );
+        assert_eq!(candidates[0].function.as_deref(), Some("compute"));
+        assert!(browser.source_variables("not_a_variable").is_empty());
     }
 
     #[test]

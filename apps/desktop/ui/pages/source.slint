@@ -20,6 +20,8 @@ export component SourcePage inherits VerticalLayout {
     in property <string> source-title;
     in property <string> metadata;
     in property <string> source-text;
+    in property <string> highlight-text;
+    callback watch-selection(int, int, bool);
     in property <string> font-family: "monospace";
     in property <int> font-size: 14;
     out property <length> editor-x: editor-area.absolute-position.x + 62px;
@@ -136,34 +138,66 @@ export component SourcePage inherits VerticalLayout {
             clip: true;
             horizontal-stretch: root.highlight-lines.length == 0 ? 1 : 0;
             min-width: 0px; max-width: root.highlight-lines.length == 0 ? 100000px : 0px;
-            editor := TextEdit { width: parent.width; height: parent.height; visible: root.highlight-lines.length == 0; text: root.source-text; read-only: true; wrap: no-wrap; font-family: root.font-family; font-size: root.font-size * 1px; }
-            Rectangle {
-                visible: root.execution-line > 0 && root.highlight-lines.length == 0;
-                x: 12px; y: 12px + editor.content-y + (root.execution-line - 1) * gutter.line-height;
-                width: max(0px, editor.visible-width - 24px); height: gutter.line-height;
-                background: #00000055;
-                Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Theme.accent; }
+            ContextMenuArea {
+                Menu {
+                    MenuItem { title: "加入变量监视"; enabled: plain-input.cursor-position-byte-offset != plain-input.anchor-position-byte-offset; activated => { root.watch-selection(plain-input.anchor-position-byte-offset, plain-input.cursor-position-byte-offset, false); } }
+                    MenuItem { title: "复制"; activated => { plain-input.copy(); } }
+                    MenuItem { title: "全选"; activated => { plain-input.select-all(); } }
+                }
+                editor := ScrollView {
+                    content-width: max(self.visible-width, plain-input.preferred-width + 24px);
+                    content-height: max(self.visible-height, plain-input.preferred-height + 24px);
+                    plain-input := TextInput {
+                        x: 12px; y: 12px;
+                        width: max(editor.visible-width - 24px, self.preferred-width);
+                        height: max(editor.visible-height - 24px, self.preferred-height);
+                        text: root.source-text; single-line: false; read-only: true; wrap: no-wrap;
+                        font-family: root.font-family; font-size: root.font-size * 1px;
+                    }
+                    Rectangle {
+                        visible: root.execution-line > 0;
+                        x: 12px; y: 12px + (root.execution-line - 1) * gutter.line-height;
+                        width: max(0px, editor.visible-width - 24px); height: gutter.line-height;
+                        background: #00000055;
+                        Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Theme.accent; }
+                    }
+                }
             }
         }
-        colored := ScrollView {
+        Rectangle {
             visible: root.highlight-lines.length > 0;
             horizontal-stretch: root.highlight-lines.length > 0 ? 1 : 0;
             min-width: 0px; max-width: root.highlight-lines.length > 0 ? 100000px : 0px;
-            content-height: root.highlight-lines.length * gutter.line-height + 24px;
-            content-width: max(self.visible-width, root.highlight-width * root.font-size * 2px + 24px);
-            for n[index] in (ceil(self.visible-height / gutter.line-height) + 2): Rectangle {
-                property <int> line-index: gutter.first-line + index;
-                x: 12px; y: 12px + self.line-index * gutter.line-height;
-                width: colored.content-width - 24px; height: gutter.line-height;
-                visible: self.line-index < root.highlight-lines.length;
-                background: self.line-index + 1 == root.execution-line ? #080a11 : transparent;
-                if self.line-index + 1 == root.execution-line: Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Theme.accent; }
-                HorizontalLayout {
-                    spacing: 0px;
-                    for span in root.highlight-lines[parent.line-index].spans: Text {
-                        text: span.text; color: span.color; font-family: root.font-family; font-size: root.font-size * 1px;
+            ContextMenuArea {
+                Menu {
+                    MenuItem { title: "加入变量监视"; enabled: colored-input.cursor-position-byte-offset != colored-input.anchor-position-byte-offset; activated => { root.watch-selection(colored-input.anchor-position-byte-offset, colored-input.cursor-position-byte-offset, true); } }
+                    MenuItem { title: "复制"; activated => { colored-input.copy(); } }
+                    MenuItem { title: "全选"; activated => { colored-input.select-all(); } }
+                }
+                colored := ScrollView {
+                    content-height: max(self.visible-height, root.highlight-lines.length * gutter.line-height + 24px);
+                    content-width: max(self.visible-width, root.highlight-width * root.font-size * 2px + 24px);
+                    for n[index] in (ceil(self.visible-height / gutter.line-height) + 2): Rectangle {
+                        property <int> line-index: gutter.first-line + index;
+                        x: 12px; y: 12px + self.line-index * gutter.line-height;
+                        width: colored.content-width - 24px; height: gutter.line-height;
+                        visible: self.line-index < root.highlight-lines.length;
+                        background: self.line-index + 1 == root.execution-line ? #080a11 : transparent;
+                        if self.line-index + 1 == root.execution-line: Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Theme.accent; }
+                        HorizontalLayout {
+                            spacing: 0px;
+                            for span in root.highlight-lines[parent.line-index].spans: Text {
+                                text: span.text; color: span.color; font-family: root.font-family; font-size: root.font-size * 1px;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
                     }
-                    Rectangle { horizontal-stretch: 1; }
+                    colored-input := TextInput {
+                        x: 12px; y: 12px; width: colored.content-width - 24px; height: colored.content-height - 24px;
+                        text: root.highlight-text; single-line: false; read-only: true; wrap: no-wrap;
+                        color: transparent; selection-foreground-color: transparent; selection-background-color: #4165a080;
+                        font-family: root.font-family; font-size: root.font-size * 1px;
+                    }
                 }
             }
         }

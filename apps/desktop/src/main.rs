@@ -579,6 +579,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             })
                             .collect();
+                        ui.set_source_highlight_text(source_font::expand_tabs(&text).into());
                         ui.set_source_highlight_width(width.min(100_000) as i32);
                         ui.set_source_highlights(slint::ModelRc::new(slint::VecModel::from(rows)));
                         ui.set_source_highlight_status("Tree-sitter 高亮".into());
@@ -1743,6 +1744,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         value: value.to_string(),
                     }),
                 );
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    let source_presenter = presenter.clone();
+    let callback_updates = watch_updates.clone();
+    ui.on_watch_source_selection(move |anchor, cursor, highlighted| {
+        if let Some(ui) = weak.upgrade() {
+            let text = if highlighted {
+                ui.get_source_highlight_text()
+            } else {
+                ui.get_source_text()
+            };
+            if let Some(name) = source_font::selected_identifier(&text, anchor, cursor) {
+                let mut presenter = source_presenter.lock().expect("presenter lock");
+                presenter.add_source_variable(&ui, name);
+                sync_watches(&callback_updates, &presenter);
+            } else {
+                ui.set_status("请选择单个变量名后再加入监视".into());
             }
         }
     });

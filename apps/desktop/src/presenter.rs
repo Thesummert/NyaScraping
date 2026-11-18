@@ -845,6 +845,14 @@ impl Presenter {
             })
     }
 
+    pub fn set_firmware_root(&mut self, ui: &AppWindow, row: i32) {
+        if let Some(browser) = &mut self.browser {
+            browser.set_root(usize::try_from(row).ok());
+            self.refresh_tree(ui);
+            ui.set_firmware_selected_node(-1);
+        }
+    }
+
     pub fn show_functions(&mut self, ui: &AppWindow, show: bool) {
         ui.set_functions_visible(show);
         if let Some(browser) = &mut self.browser {
@@ -1643,6 +1651,7 @@ impl Presenter {
                 variable: row.variable,
                 can_plot: row.can_plot,
                 source_path: row.source_path.unwrap_or_default().into(),
+                directory: row.directory,
             })
             .collect();
         let mut ancestors: Vec<usize> = Vec::new();

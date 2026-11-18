@@ -260,6 +260,7 @@ export component AppWindow inherits Window {
     callback start-acquisition();
     callback stop-acquisition();
     callback toggle-watch(int, int);
+    callback set-firmware-root(int);
     callback show-functions(bool);
     in-out property <string> firmware-search;
     callback search-firmware(string);
@@ -413,6 +414,7 @@ export component AppWindow inherits Window {
                     selected-node: root.firmware-selected-node;
                     functions-visible <=> root.functions-visible;
                     search-query <=> root.firmware-search;
+                    set-root(index) => { root.set-firmware-root(index); }
                     search(query) => { root.search-firmware(query); }
                     select-node(index) => { root.select-firmware-node(index); }
                     select-file(index) => { root.select-firmware-file(index); }

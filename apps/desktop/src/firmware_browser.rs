@@ -16,6 +16,7 @@ struct Node {
     has_variables: bool,
     search_name: String,
     source_path: Option<String>,
+    directory: bool,
 }
 
 #[derive(Clone)]
@@ -41,11 +42,13 @@ pub struct BrowserRow {
     pub variable: bool,
     pub can_plot: bool,
     pub source_path: Option<String>,
+    pub directory: bool,
 }
 
 pub struct FirmwareBrowser {
     nodes: Vec<Node>,
     roots: Vec<usize>,
+    root: Option<usize>,
     visible: Vec<usize>,
     selected: Option<usize>,
     show_functions: bool,
@@ -59,6 +62,7 @@ impl FirmwareBrowser {
         let mut tree = Self {
             nodes: Vec::new(),
             roots: Vec::new(),
+            root: None,
             visible: Vec::new(),
             selected: None,
             show_functions: false,
@@ -327,9 +331,8 @@ impl FirmwareBrowser {
             node.children.sort_by(|a, b| labels[*a].cmp(&labels[*b]));
         }
         tree.roots.sort_by(|a, b| labels[*a].cmp(&labels[*b]));
-        // Reveal directory and file nodes initially; function/local branches remain collapsed.
         for id in directories.values() {
-            tree.nodes[*id].expanded = true;
+            tree.nodes[*id].directory = true;
         }
         tree
     }
@@ -346,6 +349,7 @@ impl FirmwareBrowser {
             has_variables: false,
             search_name: String::new(),
             source_path: None,
+            directory: false,
         });
         match parent {
             Some(parent) => self.nodes[parent].children.push(id),
@@ -357,7 +361,10 @@ impl FirmwareBrowser {
     pub fn rows(&mut self) -> Vec<BrowserRow> {
         self.visible.clear();
         let mut rows = Vec::new();
-        let mut stack: Vec<_> = self.roots.iter().rev().map(|id| (*id, 0)).collect();
+        let mut stack: Vec<_> = match self.root {
+            Some(id) => vec![(id, 0)],
+            None => self.roots.iter().rev().map(|id| (*id, 0)).collect(),
+        };
         while let Some((id, depth)) = stack.pop() {
             let node = &self.nodes[id];
             if !self.node_visible(id) {
@@ -381,12 +388,28 @@ impl FirmwareBrowser {
                 variable: node.variable.is_some(),
                 can_plot: node.variable.as_ref().is_some_and(|v| v.memory.is_some()),
                 source_path: node.source_path.clone(),
+                directory: node.directory,
             });
             if self.expanded(id) {
                 stack.extend(node.children.iter().rev().map(|id| (*id, depth + 1)));
             }
         }
         rows
+    }
+
+    pub fn set_root(&mut self, row: Option<usize>) {
+        if let Some(row) = row {
+            let Some(&id) = self.visible.get(row) else {
+                return;
+            };
+            if !self.nodes[id].directory {
+                return;
+            }
+            self.root = Some(id);
+        } else {
+            self.root = None;
+        }
+        self.selected = None;
     }
 
     pub fn select(&mut self, row: usize) -> Option<String> {
@@ -530,6 +553,19 @@ mod tests {
     use nya_firmware_backend::NativeFirmwareBackend;
     use std::path::Path;
 
+    fn expand_directories(browser: &mut FirmwareBrowser) {
+        loop {
+            let rows = browser.rows();
+            let Some(index) = rows
+                .iter()
+                .position(|row| row.directory && row.branch && !row.expanded)
+            else {
+                break;
+            };
+            browser.select(index);
+        }
+    }
+
     #[test]
     fn expanding_files_and_functions_reveals_owned_variables_and_details() {
         let image = NativeFirmwareBackend
@@ -539,6 +575,8 @@ mod tests {
             )
             .unwrap();
         let mut browser = FirmwareBrowser::new(&image.debug, image.little_endian, true);
+        assert!(browser.rows().iter().all(|row| !row.expanded));
+        expand_directories(&mut browser);
         let rows = browser.rows();
         assert!(!rows.iter().any(|r| r.label == "ƒ compute"));
         let file = rows.iter().position(|r| r.label == "main.c").unwrap();
@@ -636,6 +674,7 @@ mod tests {
             path: "/empty/empty.c".into(),
         });
         let mut browser = FirmwareBrowser::new(&info, true, true);
+        expand_directories(&mut browser);
         let labels: Vec<_> = browser.rows().into_iter().map(|row| row.label).collect();
         assert!(labels.contains(&"main.c".to_string()));
         assert!(!labels.contains(&"empty.c".to_string()));
@@ -646,7 +685,39 @@ mod tests {
         browser.set_query("");
         assert!(!browser.rows().iter().any(|row| row.label == "empty.c"));
         browser.set_show_functions(true);
+        expand_directories(&mut browser);
         assert!(browser.rows().iter().any(|row| row.label == "empty.c"));
+    }
+
+    #[test]
+    fn selected_directory_limits_tree_and_can_be_reset() {
+        let info = FirmwareDebugInfo {
+            files: vec![
+                SourceFile {
+                    path: "/project/a/one.c".into(),
+                },
+                SourceFile {
+                    path: "/project/b/two.c".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut browser = FirmwareBrowser::new(&info, true, true);
+        browser.set_show_functions(true);
+        assert_eq!(browser.rows().len(), 1);
+        expand_directories(&mut browser);
+        let a = browser
+            .rows()
+            .iter()
+            .position(|row| row.label == "a")
+            .unwrap();
+        browser.set_root(Some(a));
+        assert_eq!(browser.rows()[0].label, "a");
+        browser.set_query("two.c");
+        assert!(browser.rows().is_empty());
+        browser.set_query("");
+        browser.set_root(None);
+        assert_eq!(browser.rows()[0].label, "/");
     }
 
     #[test]
@@ -664,6 +735,7 @@ mod tests {
         };
         let mut browser = FirmwareBrowser::new(&info, true, true);
         browser.set_show_functions(true);
+        expand_directories(&mut browser);
         let rows = browser.rows();
         let files: Vec<_> = rows
             .iter()

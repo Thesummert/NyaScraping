@@ -1677,6 +1677,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let weak = ui.as_weak();
     let tree_presenter = presenter.clone();
+    ui.on_set_firmware_root(move |row| {
+        if let Some(ui) = weak.upgrade() {
+            tree_presenter
+                .lock()
+                .expect("presenter lock")
+                .set_firmware_root(&ui, row);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let tree_presenter = presenter.clone();
     ui.on_show_functions(move |show| {
         if let Some(ui) = weak.upgrade() {
             tree_presenter

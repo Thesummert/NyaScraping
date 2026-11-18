@@ -10,6 +10,7 @@ export struct FirmwareTreeRow {
     variable: bool,
     can-plot: bool,
     source-path: string,
+    directory: bool,
     subtree-end: int,
 }
 
@@ -25,6 +26,7 @@ export component FirmwarePage inherits VerticalLayout {
     in property <int> selected-node;
     in-out property <bool> functions-visible;
     in-out property <string> search-query;
+    callback set-root(int);
     callback search(string);
     callback open();
     callback browse();
@@ -94,6 +96,7 @@ export component FirmwarePage inherits VerticalLayout {
     spacing: 10px;
     HorizontalLayout {
         Text { text: "文件树"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: "完整树"; clicked => { root.cancel-tree-animation(); root.set-root(-1); } }
         Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
         Button { text: "解析文件"; enabled: !root.busy; clicked => { root.open(); } }
     }
@@ -161,6 +164,7 @@ export component FirmwarePage inherits VerticalLayout {
                 }
                 menu := ContextMenuArea {
                     Menu {
+                        MenuItem { title: "设为顶层文件夹"; enabled: row.directory; activated => { root.cancel-tree-animation(); root.set-root(index); } }
                         MenuItem {
                             title: "加入实时波形";
                             enabled: row.can-plot;

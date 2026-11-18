@@ -26,6 +26,8 @@ export component FirmwarePage inherits VerticalLayout {
     in property <int> selected-node;
     in-out property <bool> functions-visible;
     in-out property <string> search-query;
+    in property <bool> detached;
+    callback toggle-detached(bool);
     callback set-root(int);
     callback search(string);
     callback open();
@@ -96,6 +98,10 @@ export component FirmwarePage inherits VerticalLayout {
     spacing: 10px;
     HorizontalLayout {
         Text { text: "文件树"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: root.detached ? "收回" : "浮动"; clicked => { root.toggle-detached(!root.detached); } }
+    }
+    HorizontalLayout {
+        spacing: 4px;
         Button { text: "完整树"; clicked => { root.cancel-tree-animation(); root.set-root(-1); } }
         Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
         Button { text: "解析文件"; enabled: !root.busy; clicked => { root.open(); } }

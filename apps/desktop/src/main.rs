@@ -327,6 +327,48 @@ fn sync_waveform_window(ui: &AppWindow, window: &WaveformWindow) {
     window.set_session_ready(ui.get_debug_connected());
 }
 
+fn sync_firmware_window(ui: &AppWindow, window: &FirmwareTreeWindow) {
+    window.set_busy(ui.get_interaction_busy() || ui.get_debug_connected());
+    window.set_blocked(ui.get_interaction_busy());
+    if window.get_path() != ui.get_firmware_path() {
+        window.set_path(ui.get_firmware_path());
+    }
+    window.set_tree_title(ui.get_firmware_title());
+    window.set_tree(ui.get_firmware_tree());
+    window.set_label_width(ui.get_firmware_tree_label_width());
+    window.set_content_width(ui.get_firmware_tree_content_width());
+    window.set_details(ui.get_firmware_details());
+    window.set_selected_node(ui.get_firmware_selected_node());
+    window.set_functions_visible(ui.get_functions_visible());
+    if window.get_search_query() != ui.get_firmware_search() {
+        window.set_search_query(ui.get_firmware_search());
+    }
+}
+
+fn sync_watches_window(ui: &AppWindow, window: &WatchesWindow) {
+    window.set_blocked(ui.get_interaction_busy());
+    window.set_watches(ui.get_watches());
+    window.set_name_width(ui.get_watch_name_width());
+    window.set_type_width(ui.get_watch_type_width());
+    window.set_value_width(ui.get_watch_value_width());
+    window.set_acquisition_active(ui.get_acquisition_active());
+    if window.get_endpoint() != ui.get_acquisition_endpoint() {
+        window.set_endpoint(ui.get_acquisition_endpoint());
+    }
+    window.set_source_label(ui.get_acquisition_source_label());
+    window.set_use_session(ui.get_acquisition_uses_session());
+    window.set_session_ready(ui.get_debug_connected());
+    window.set_live_enabled(ui.get_live_enabled());
+    window.set_live_interval_index(ui.get_live_interval_index());
+    if window.get_live_custom_hz() != ui.get_live_custom_hz() {
+        window.set_live_custom_hz(ui.get_live_custom_hz());
+    }
+    window.set_frequency_error(ui.get_live_frequency_error());
+    window.set_sample_status(ui.get_watch_sample_status());
+    window.set_revision(ui.get_watch_revision());
+    window.set_can_write(ui.get_debug_connected() && !ui.get_interaction_busy());
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hardware_rendering = project::hardware_rendering_enabled();
     let backend_override = std::env::var_os("SLINT_BACKEND");
@@ -657,6 +699,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+    let firmware_window = FirmwareTreeWindow::new()?;
+    let watches_window = WatchesWindow::new()?;
     let waveform_window = WaveformWindow::new()?;
     let breakpoint_window = BreakpointWindow::new()?;
     let log_window = SystemLogWindow::new()?;
@@ -1930,6 +1974,163 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .stop_acquisition(&ui);
         }
     });
+    // Forward panel actions to the same models and handlers used by the docked views.
+    let weak_ui = ui.as_weak();
+    let weak_window = firmware_window.as_weak();
+    ui.on_toggle_firmware_window(move |detached| {
+        if let (Some(ui), Some(window)) = (weak_ui.upgrade(), weak_window.upgrade()) {
+            if detached {
+                sync_firmware_window(&ui, &window);
+                match window.show() {
+                    Ok(()) => ui.set_firmware_detached(true),
+                    Err(error) => ui.set_status(format!("无法打开文件树窗口：{error}").into()),
+                }
+            } else {
+                ui.set_firmware_detached(false);
+                ui.set_file_tree_visible(true);
+                ui.set_workspace_expanded(false);
+                let _ = window.hide();
+            }
+        }
+    });
+    let weak_ui = ui.as_weak();
+    let weak_window = watches_window.as_weak();
+    ui.on_toggle_watches_window(move |detached| {
+        if let (Some(ui), Some(window)) = (weak_ui.upgrade(), weak_window.upgrade()) {
+            if detached {
+                sync_watches_window(&ui, &window);
+                match window.show() {
+                    Ok(()) => ui.set_watches_detached(true),
+                    Err(error) => ui.set_status(format!("无法打开变量监视窗口：{error}").into()),
+                }
+            } else {
+                ui.set_watches_detached(false);
+                ui.set_workspace_expanded(false);
+                let _ = window.hide();
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    firmware_window.window().on_close_requested(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_firmware_detached(false);
+            ui.set_file_tree_visible(true);
+            ui.set_workspace_expanded(false);
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+    let weak = ui.as_weak();
+    watches_window.window().on_close_requested(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_watches_detached(false);
+            ui.set_workspace_expanded(false);
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+    let weak = ui.as_weak();
+    firmware_window.on_reattach(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_toggle_firmware_window(false);
+        }
+    });
+    let weak = ui.as_weak();
+    watches_window.on_reattach(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_toggle_watches_window(false);
+        }
+    });
+
+    macro_rules! firmware_forward {
+        ($on:ident, $invoke:ident ( $($arg:ident),* )) => {{
+            let weak = ui.as_weak();
+            let window = firmware_window.as_weak();
+            firmware_window.$on(move |$($arg),*| {
+                if let (Some(ui), Some(window)) = (weak.upgrade(), window.upgrade()) {
+                    ui.$invoke($($arg),*);
+                    sync_firmware_window(&ui, &window);
+                }
+            });
+        }};
+    }
+    firmware_forward!(on_select_node, invoke_select_firmware_node(index));
+    firmware_forward!(on_select_file, invoke_select_firmware_file(index));
+    firmware_forward!(on_set_root, invoke_set_firmware_root(index));
+    firmware_forward!(on_open_source_file, invoke_open_tree_source(path));
+    firmware_forward!(on_add_variable, invoke_add_firmware_variable(index));
+    firmware_forward!(on_plot_variable, invoke_plot_variable(index));
+    firmware_forward!(on_open, invoke_open_firmware());
+    firmware_forward!(on_browse, invoke_browse_firmware());
+    let weak = ui.as_weak();
+    firmware_window.on_path_changed(move |path| {
+        if let Some(ui) = weak.upgrade() {
+            if ui.get_firmware_path() != path {
+                ui.set_firmware_path(path);
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let window = firmware_window.as_weak();
+    firmware_window.on_search(move |query| {
+        if let (Some(ui), Some(window)) = (weak.upgrade(), window.upgrade()) {
+            ui.set_firmware_search(query.clone());
+            ui.invoke_search_firmware(query);
+            sync_firmware_window(&ui, &window);
+        }
+    });
+    let weak = ui.as_weak();
+    let window = firmware_window.as_weak();
+    firmware_window.on_show_functions(move |show| {
+        if let (Some(ui), Some(window)) = (weak.upgrade(), window.upgrade()) {
+            ui.invoke_show_functions(show);
+            sync_firmware_window(&ui, &window);
+        }
+    });
+
+    macro_rules! watches_forward {
+        ($on:ident, $invoke:ident ( $($arg:ident),* )) => {{
+            let weak = ui.as_weak();
+            let window = watches_window.as_weak();
+            watches_window.$on(move |$($arg),*| {
+                if let (Some(ui), Some(window)) = (weak.upgrade(), window.upgrade()) {
+                    ui.$invoke($($arg),*);
+                    sync_watches_window(&ui, &window);
+                }
+            });
+        }};
+    }
+    watches_forward!(on_write, invoke_write_watch(entry, node, value));
+    watches_forward!(on_add, invoke_add_expression(expression));
+    watches_forward!(on_remove, invoke_remove_watch(index));
+    watches_forward!(on_toggle_waveform, invoke_toggle_waveform(index, node));
+    watches_forward!(on_toggle, invoke_toggle_watch(entry, node));
+    let weak = ui.as_weak();
+    watches_window.on_endpoint_changed(move |endpoint| {
+        if let Some(ui) = weak.upgrade() {
+            if ui.get_acquisition_endpoint() != endpoint {
+                ui.set_acquisition_endpoint(endpoint);
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    watches_window.on_custom_hz_changed(move |value| {
+        if let Some(ui) = weak.upgrade() {
+            if ui.get_live_custom_hz() != value {
+                ui.set_live_custom_hz(value);
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let window = watches_window.as_weak();
+    watches_window.on_live_refresh(move |enabled, index, hz| {
+        if let (Some(ui), Some(window)) = (weak.upgrade(), window.upgrade()) {
+            ui.set_live_enabled(enabled);
+            ui.set_live_interval_index(index);
+            ui.set_live_custom_hz(hz);
+            ui.invoke_live_refresh();
+            sync_watches_window(&ui, &window);
+        }
+    });
+
     let weak_ui = ui.as_weak();
     let weak_window = waveform_window.as_weak();
     ui.on_toggle_waveform_window(move |detached| {
@@ -1960,6 +2161,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let weak_window = waveform_window.as_weak();
     let weak_breakpoint_window = breakpoint_window.as_weak();
     let weak_log_window = log_window.as_weak();
+    let weak_firmware_window = firmware_window.as_weak();
+    let weak_watches_window = watches_window.as_weak();
     let weak_ui_for_font = ui.as_weak();
     ui.window().on_close_requested(move || {
         if let Some(ui) = weak_ui_for_font.upgrade() {
@@ -1970,6 +2173,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = source_font::save(&font);
         }
         if let Some(window) = weak_window.upgrade() {
+            let _ = window.hide();
+        }
+        if let Some(window) = weak_firmware_window.upgrade() {
+            let _ = window.hide();
+        }
+        if let Some(window) = weak_watches_window.upgrade() {
             let _ = window.hide();
         }
         if let Some(window) = weak_breakpoint_window.upgrade() {
@@ -2091,6 +2300,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     });
     ui.invoke_refresh_rate_changed();
+    let panel_timer = slint::Timer::default();
+    let weak = ui.as_weak();
+    let firmware = firmware_window.as_weak();
+    let watches = watches_window.as_weak();
+    panel_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(33),
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                if ui.get_firmware_detached() {
+                    if let Some(window) = firmware.upgrade() {
+                        sync_firmware_window(&ui, &window);
+                    }
+                }
+                if ui.get_watches_detached() {
+                    if let Some(window) = watches.upgrade() {
+                        sync_watches_window(&ui, &window);
+                    }
+                }
+            }
+        },
+    );
 
     ui.invoke_refresh_tools();
     let firmware_watch = firmware_watch::setup(&ui);
@@ -2100,6 +2331,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     progress_timer.stop();
     firmware_progress_timer.stop();
     waveform_timer.stop();
+    panel_timer.stop();
     breakpoint_timer.stop();
     acquisition.shutdown();
     acquisition_worker

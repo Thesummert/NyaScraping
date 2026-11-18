@@ -99,9 +99,13 @@ export component AppWindow inherits Window {
     changed background-blur-draft => { root.preview-background(); }
     changed settings-open => { root.preview-background(); }
     changed settings-tab => { root.preview-background(); }
-    private property <bool> interaction-busy: root.busy || root.firmware-parsing || root.file-dialog-open || root.project-dialog-open || root.settings-open || root.firmware-update-open;
+    out property <bool> interaction-busy: root.busy || root.firmware-parsing || root.file-dialog-open || root.project-dialog-open || root.settings-open || root.firmware-update-open;
+    in-out property <bool> firmware-detached: false;
+    in-out property <bool> watches-detached: false;
+    callback toggle-firmware-window(bool);
+    callback toggle-watches-window(bool);
     in-out property <bool> workspace-expanded: false;
-    private property <bool> file-tree-visible: true;
+    in-out property <bool> file-tree-visible: true;
     private property <float> file-tree-reveal: root.file-tree-visible ? 1 : 0;
     animate file-tree-reveal { duration: 240ms; easing: ease-out; }
     private property <length> left-panel-width: 280px;
@@ -323,7 +327,9 @@ export component AppWindow inherits Window {
         }
         Menu {
             title: "视图";
-            MenuItem { title: root.file-tree-visible ? "隐藏文件树" : "显示文件树"; enabled: !root.interaction-busy && !root.workspace-expanded; activated => { root.file-tree-visible = !root.file-tree-visible; } }
+            MenuItem { title: root.firmware-detached ? "收回文件树" : "浮动文件树"; enabled: !root.interaction-busy; activated => { root.toggle-firmware-window(!root.firmware-detached); } }
+            MenuItem { title: root.watches-detached ? "收回变量监视" : "浮动变量监视"; enabled: !root.interaction-busy; activated => { root.toggle-watches-window(!root.watches-detached); } }
+            MenuItem { title: root.file-tree-visible ? "隐藏文件树" : "显示文件树"; enabled: !root.interaction-busy && !root.workspace-expanded && !root.firmware-detached; activated => { root.file-tree-visible = !root.file-tree-visible; } }
             MenuItem { title: root.workspace-expanded ? "恢复三栏布局" : "扩大源码 / 波形区域"; enabled: !root.interaction-busy; activated => { root.workspace-expanded = !root.workspace-expanded; } }
         }
         Menu {
@@ -397,12 +403,14 @@ export component AppWindow inherits Window {
             padding: 10px;
             spacing: 0px;
             left-panel := Rectangle {
-                width: root.workspace-expanded ? 0px : root.left-panel-width * root.file-tree-reveal;
-                visible: !root.workspace-expanded && root.file-tree-reveal > 0;
+                width: root.workspace-expanded || root.firmware-detached ? 0px : root.left-panel-width * root.file-tree-reveal;
+                visible: !root.workspace-expanded && !root.firmware-detached && root.file-tree-reveal > 0;
                 clip: true;
                 background: root.background-shown ? #191c2980 : Theme.sidebar;
                 border-radius: 16px;
                 FirmwarePage {
+                    detached: false;
+                    toggle-detached(value) => { root.toggle-firmware-window(value); }
                     width: root.left-panel-width;
                     height: parent.height;
                     padding: 16px;
@@ -430,8 +438,8 @@ export component AppWindow inherits Window {
                 }
             }
             Rectangle {
-                width: root.workspace-expanded ? 0px : 24px;
-                visible: !root.workspace-expanded;
+                width: root.workspace-expanded || root.firmware-detached ? 0px : 24px;
+                visible: !root.workspace-expanded && !root.firmware-detached;
                 background: transparent;
                 Rectangle {
                     x: 2px; y: 16px; width: 20px; height: 32px;
@@ -569,20 +577,22 @@ export component AppWindow inherits Window {
                 }
             }
             PanelDivider {
-                width: root.workspace-expanded ? 0px : 10px;
-                visible: !root.workspace-expanded;
+                width: root.workspace-expanded || root.watches-detached ? 0px : 10px;
+                visible: !root.workspace-expanded && !root.watches-detached;
                 drag-start => { root.drag-panel-width = right-panel.width; }
                 drag(delta) => {
                     root.right-panel-width = max(330px, min(root.drag-panel-width - delta, root.width - 54px - 360px - root.left-panel-width));
                 }
             }
             right-panel := Rectangle {
-                width: root.workspace-expanded ? 0px : root.right-panel-width;
-                visible: !root.workspace-expanded;
+                width: root.workspace-expanded || root.watches-detached ? 0px : root.right-panel-width;
+                visible: !root.workspace-expanded && !root.watches-detached;
                 clip: true;
                 background: root.background-shown ? #191c2980 : Theme.sidebar;
                 border-radius: 16px;
                 VariablesPage {
+                    detached: false;
+                    toggle-detached(value) => { root.toggle-watches-window(value); }
                     padding: 16px;
                     watches: root.watches;
                     name-width: root.watch-name-width * 1px;
@@ -1103,4 +1113,124 @@ export component InstallProgressWindow inherits Window {
             if root.can-cancel: Button { text: root.cancelling ? "正在取消…" : "取消"; enabled: !root.cancelling; clicked => { root.cancel(); } }
         }
     }
+}
+
+export component FirmwareTreeWindow inherits Window {
+    title: "文件树";
+    preferred-width: 420px; preferred-height: 760px;
+    min-width: 320px; min-height: 480px;
+    background: Theme.sidebar;
+    in property <bool> busy;
+    in property <bool> blocked;
+    in-out property <string> path;
+    in property <string> tree-title;
+    in property <[FirmwareTreeRow]> tree;
+    in property <int> label-width;
+    in property <int> content-width;
+    in property <string> details;
+    in property <int> selected-node;
+    in-out property <bool> functions-visible;
+    in-out property <string> search-query;
+    callback path-changed(string);
+    callback search(string);
+    callback show-functions(bool);
+    callback set-root(int);
+    callback select-node(int);
+    callback select-file(int);
+    callback open-source-file(string);
+    callback add-variable(int);
+    callback plot-variable(int);
+    callback open();
+    callback browse();
+    callback reattach();
+    changed path => { root.path-changed(root.path); }
+    FirmwarePage {
+        padding: 16px;
+        detached: true;
+        toggle-detached(value) => { root.reattach(); }
+        busy: root.busy;
+        path <=> root.path;
+        title: root.tree-title;
+        tree: root.tree;
+        tree-label-width: root.label-width * 1px;
+        tree-content-width: root.content-width * 1px;
+        details: root.details;
+        selected-node: root.selected-node;
+        functions-visible <=> root.functions-visible;
+        search-query <=> root.search-query;
+        search(query) => { root.search(query); }
+        show-functions(show) => { root.show-functions(show); }
+        set-root(index) => { root.set-root(index); }
+        select-node(index) => { root.select-node(index); }
+        select-file(index) => { root.select-file(index); }
+        open-source-file(path) => { root.open-source-file(path); }
+        add-variable(index) => { root.add-variable(index); }
+        plot-variable(index) => { root.plot-variable(index); }
+        open => { root.open(); }
+        browse => { root.browse(); }
+    }
+    if root.blocked: Rectangle { background: #0004; TouchArea { } }
+}
+
+export component WatchesWindow inherits Window {
+    title: "变量监视";
+    preferred-width: 500px; preferred-height: 720px;
+    min-width: 330px; min-height: 400px;
+    background: Theme.sidebar;
+    in property <bool> blocked;
+    in property <[WatchRow]> watches;
+    in property <int> name-width;
+    in property <int> type-width;
+    in property <int> value-width;
+    in property <bool> acquisition-active;
+    in-out property <string> endpoint;
+    in property <string> source-label;
+    in property <bool> use-session;
+    in property <bool> session-ready;
+    in-out property <bool> live-enabled;
+    in-out property <int> live-interval-index;
+    in-out property <string> live-custom-hz;
+    in property <string> frequency-error;
+    in property <string> sample-status;
+    in property <int> revision;
+    in property <bool> can-write;
+    callback endpoint-changed(string);
+    callback custom-hz-changed(string);
+    changed live-custom-hz => { root.custom-hz-changed(root.live-custom-hz); }
+    callback live-refresh(bool, int, string);
+    callback write(int, int, string);
+    callback add(string);
+    callback remove(int);
+    callback toggle-waveform(int, int);
+    callback toggle(int, int);
+    callback reattach();
+    changed endpoint => { root.endpoint-changed(root.endpoint); }
+    VariablesPage {
+        padding: 16px;
+        detached: true;
+        toggle-detached(value) => { root.reattach(); }
+        watches: root.watches;
+        name-width: root.name-width * 1px;
+        type-width: root.type-width * 1px;
+        value-width: root.value-width * 1px;
+        acquisition-active: root.acquisition-active;
+        memory-endpoint <=> root.endpoint;
+        source-label: root.source-label;
+        use-session: root.use-session;
+        session-ready: root.session-ready;
+        live-enabled <=> root.live-enabled;
+        live-interval-index <=> root.live-interval-index;
+        live-custom-hz <=> root.live-custom-hz;
+        frequency-error: root.frequency-error;
+        sample-status: root.sample-status;
+        live-refresh => { root.live-refresh(root.live-enabled, root.live-interval-index, root.live-custom-hz); }
+        revision: root.revision;
+        can-write: root.can-write;
+        write(entry, node, value) => { root.write(entry, node, value); }
+        add(expression) => { root.add(expression); }
+        remove(index) => { root.remove(index); }
+        toggle-waveform(index, node) => { root.toggle-waveform(index, node); }
+        toggle(entry, node) => { root.toggle(entry, node); }
+    }
+    if root.blocked: Rectangle { background: #0004; TouchArea { } }
 }

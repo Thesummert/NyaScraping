@@ -19,6 +19,8 @@ export struct WatchRow {
 }
 
 export component VariablesPage inherits VerticalLayout {
+    in property <bool> detached;
+    callback toggle-detached(bool);
     in property <[WatchRow]> watches;
     in property <length> name-width: 72px;
     in property <length> type-width: 76px;
@@ -99,7 +101,10 @@ export component VariablesPage inherits VerticalLayout {
         }
     }
     spacing: 8px;
-    Text { text: "变量监视"; color: Theme.text; font-size: 15px; font-weight: 700; }
+    HorizontalLayout {
+        Text { text: "变量监视"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: root.detached ? "收回" : "浮动"; clicked => { root.toggle-detached(!root.detached); } }
+    }
     HorizontalLayout {
         spacing: 6px;
         Text { text: root.source-label; color: Theme.muted; font-size: 11px; vertical-alignment: center; }

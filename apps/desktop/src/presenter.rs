@@ -4,7 +4,7 @@ use crate::{
     watch_list::WatchList,
     waveform_view::{self, COLORS, PLOT_WIDTH},
     AppWindow, BreakpointRow, FirmwareTreeRow, FrameRow, PackRow, SourceBreakpoint, SourceTab,
-    TargetRow, ToolRow, WatchRow, WaveformPath, WaveformRow,
+    TargetRow, ToolRow, WatchRow, WaveformPath, WaveformRow, WirelessDeviceRow,
 };
 use nya_application::Event;
 use nya_domain::{
@@ -18,6 +18,56 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+fn apply_wireless_devices(
+    ui: &AppWindow,
+    devices: Vec<nya_domain::WirelessDevice>,
+    selected: Option<String>,
+    message: String,
+) {
+    let change_selection = selected.is_some();
+    let mut id = selected.unwrap_or_else(|| ui.get_wireless_device_id().to_string());
+    if id.is_empty() {
+        id = devices
+            .first()
+            .map(|device| device.id.clone())
+            .unwrap_or_default();
+    }
+    if let Some(device) = devices.iter().find(|device| device.id == id) {
+        if change_selection || ui.get_wireless_endpoint().is_empty() {
+            ui.set_wireless_endpoint(device.endpoint.as_str().into());
+        }
+    }
+    let labels: Vec<slint::SharedString> = devices
+        .iter()
+        .map(|device| {
+            format!(
+                "{} · {}",
+                device.name,
+                device.id.chars().take(12).collect::<String>()
+            )
+            .into()
+        })
+        .collect();
+    let rows: Vec<_> = devices
+        .into_iter()
+        .map(|device| WirelessDeviceRow {
+            id: device.id.into(),
+            name: device.name.into(),
+            endpoint: device.endpoint.into(),
+        })
+        .collect();
+    ui.set_wireless_devices(ModelRc::new(VecModel::from(rows)));
+    ui.set_wireless_device_labels(ModelRc::new(VecModel::from(labels)));
+    ui.set_wireless_device_id(id.into());
+    let selected = ui
+        .get_wireless_devices()
+        .iter()
+        .position(|device| device.id == ui.get_wireless_device_id());
+    ui.set_wireless_device_index(selected.map(|i| i as i32).unwrap_or(-1));
+    ui.set_wireless_message(message.as_str().into());
+    ui.set_status(message.into());
+}
 
 const PLOT_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
@@ -118,6 +168,9 @@ pub struct Presenter {
 /// Plain Rust data prepared on the worker, before entering the Slint event loop.
 pub enum PreparedEvent {
     Internal,
+    WirelessAcquisitionStarted(u64),
+    WirelessAcquisitionStopped(u64, String),
+    Wireless(Vec<nya_domain::WirelessDevice>, Option<String>, String),
     Tools(ToolState, String),
     Targets(TargetCatalog),
     Debug(DebugSnapshot, bool),
@@ -164,6 +217,9 @@ fn executable_lines(
 impl From<Event> for PreparedEvent {
     fn from(event: Event) -> Self {
         match event {
+            Event::WirelessAcquisitionStarted(generation) => Self::WirelessAcquisitionStarted(generation),
+            Event::WirelessAcquisitionStopped { generation, message } => Self::WirelessAcquisitionStopped(generation, message),
+            Event::WirelessDevicesUpdated { devices, selected_id, message } => Self::Wireless(devices, selected_id, message),
             Event::MemoryRead => Self::Internal,
             Event::ToolsUpdated { state, message } => Self::Tools(state, message),
             Event::TargetsUpdated(catalog) => Self::Targets(catalog),
@@ -502,11 +558,40 @@ impl Presenter {
             }
             _ => {}
         }
-        if !matches!(&event, PreparedEvent::Debug(_, false)) && !ui.get_firmware_parsing() {
+        if !matches!(
+            &event,
+            PreparedEvent::Debug(_, false) | PreparedEvent::WirelessAcquisitionStopped(_, _)
+        ) && !ui.get_firmware_parsing()
+        {
             ui.set_busy(false);
         }
         match event {
             PreparedEvent::Internal => {}
+            PreparedEvent::WirelessAcquisitionStarted(generation) => {
+                self.acquisition
+                    .start_source(MemorySource::WirelessSession(generation));
+                self.refresh_acquisition(ui);
+                ui.set_status("无线内存采集已连接，无需启动 GDB".into());
+            }
+            PreparedEvent::WirelessAcquisitionStopped(generation, message) => {
+                let endpoint = self
+                    .acquisition
+                    .state
+                    .lock()
+                    .expect("acquisition lock")
+                    .endpoint;
+                if endpoint == Some(MemorySource::WirelessSession(generation)) {
+                    self.acquisition.stop();
+                }
+                if message.contains("清理失败") {
+                    ui.invoke_record_system_error(message.as_str().into());
+                    ui.set_status(message.into());
+                }
+                self.refresh_acquisition(ui);
+            }
+            PreparedEvent::Wireless(devices, selected, message) => {
+                apply_wireless_devices(ui, devices, selected, message);
+            }
             PreparedEvent::Tools(state, message) => {
                 let kind = match state.backend {
                     Some(ToolKind::OpenOcd) => 0,
@@ -721,7 +806,11 @@ impl Presenter {
                     .lock()
                     .expect("acquisition lock")
                     .endpoint
-                    == Some(MemorySource::DebugSession)
+                    .is_some_and(|source| {
+                        source == MemorySource::DebugSession
+                            || (snapshot.state == SessionState::Faulted
+                                && matches!(source, MemorySource::WirelessSession(_)))
+                    })
                 {
                     self.acquisition.stop();
                     ui.set_live_enabled(false);
@@ -1053,6 +1142,13 @@ impl Presenter {
     }
 
     fn memory_source(ui: &AppWindow) -> Result<MemorySource, String> {
+        if ui.get_wireless_enabled() {
+            return if ui.get_debug_connected() {
+                Ok(MemorySource::DebugSession)
+            } else {
+                Err("请先开始无线采集".into())
+            };
+        }
         if matches!(ui.get_backend_kind(), 1 | 2) {
             if !ui.get_debug_connected() {
                 return Err("请先在调试页连接所选的 pyOCD / probe-rs 后端".into());
@@ -1077,6 +1173,10 @@ impl Presenter {
             .is_empty()
         {
             ui.set_acquisition_status("请先添加波形通道".into());
+            return;
+        }
+        if ui.get_wireless_enabled() && !ui.get_debug_connected() {
+            ui.invoke_start_wireless_acquisition();
             return;
         }
         match Self::memory_source(ui) {
@@ -1259,6 +1359,13 @@ impl Presenter {
                 .endpoint
                 .is_none()
         {
+            if ui.get_wireless_enabled() && !ui.get_debug_connected() {
+                ui.invoke_start_wireless_acquisition();
+                self.last_sequence = None;
+                self.last_plot_sequence = None;
+                self.refresh_acquisition(ui);
+                return;
+            }
             match Self::memory_source(ui) {
                 Ok(source) => self.acquisition.start_source(source),
                 Err(error) => {

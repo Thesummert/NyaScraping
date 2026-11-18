@@ -7,6 +7,7 @@ use std::{
     net::SocketAddr,
     num::NonZeroUsize,
     sync::{
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, SyncSender},
         Condvar, Mutex,
     },
@@ -43,21 +44,31 @@ pub const CAPACITY: usize = 32768;
 pub enum MemorySource {
     OpenOcd(SocketAddr),
     DebugSession,
+    WirelessSession(u64),
 }
 
 struct SessionMemoryReader {
     commands: SyncSender<Command>,
+    wireless_generation: Option<u64>,
 }
 impl LiveMemoryReader for SessionMemoryReader {
     fn read_blocks(&mut self, blocks: &[nya_domain::waveform::ReadBlock]) -> Result<Vec<Vec<u8>>> {
         let (response, receiver) = mpsc::sync_channel(1);
         let deadline = Instant::now() + Duration::from_millis(1200);
+        let request = MemoryReadRequest {
+            blocks: blocks.to_vec(),
+            deadline,
+            response,
+        };
+        let command = match self.wireless_generation {
+            Some(generation) => Command::ReadWirelessMemory {
+                generation,
+                request,
+            },
+            None => Command::ReadLiveMemory(request),
+        };
         self.commands
-            .try_send(Command::ReadLiveMemory(MemoryReadRequest {
-                blocks: blocks.to_vec(),
-                deadline,
-                response,
-            }))
+            .try_send(command)
             .map_err(|_| Error("调试任务队列繁忙或已关闭".into()))?;
         receiver
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
@@ -112,6 +123,9 @@ pub struct Acquisition {
     pub state: Mutex<State>,
     changed: Condvar,
     commands: Mutex<Option<SyncSender<Command>>>,
+    // Cleanup bypasses the bounded read queue, so Stop remains reliable when
+    // controls or a failed network sweep have filled it.
+    pending_wireless_stop: AtomicU64,
 }
 
 pub struct DebugControlGuard<'a>(&'a Acquisition);
@@ -137,6 +151,20 @@ impl Acquisition {
     }
     pub fn set_command_sender(&self, sender: SyncSender<Command>) {
         *self.commands.lock().expect("acquisition commands lock") = Some(sender);
+    }
+
+    pub fn take_wireless_stop(&self) -> Option<u64> {
+        match self.pending_wireless_stop.swap(0, Ordering::AcqRel) {
+            0 => None,
+            generation => Some(generation),
+        }
+    }
+
+    fn release_wireless(&self, source: Option<MemorySource>) {
+        if let Some(MemorySource::WirelessSession(generation)) = source {
+            self.pending_wireless_stop
+                .fetch_max(generation, Ordering::Release);
+        }
     }
 
     pub fn set_targets(&self, targets: Vec<(usize, MemoryChannel)>) {
@@ -209,10 +237,14 @@ impl Acquisition {
 
     pub fn start_source(&self, source: MemorySource) {
         let mut state = self.state.lock().expect("acquisition lock");
+        if state.endpoint != Some(source) {
+            self.release_wireless(state.endpoint);
+        }
         state.endpoint = Some(source);
         state.status = match source {
             MemorySource::OpenOcd(_) => "正在连接 OpenOCD…",
             MemorySource::DebugSession => "正在通过现有调试会话采集…",
+            MemorySource::WirelessSession(_) => "正在通过手机 QUIC 采集内存…",
         }
         .into();
         state.revision += 1;
@@ -229,6 +261,7 @@ impl Acquisition {
 
     pub fn stop(&self) {
         let mut state = self.state.lock().expect("acquisition lock");
+        self.release_wireless(state.endpoint);
         state.endpoint = None;
         state.status = "采集已停止，保留已有波形".into();
         state.revision += 1;
@@ -238,6 +271,7 @@ impl Acquisition {
 
     pub fn shutdown(&self) {
         let mut state = self.state.lock().expect("acquisition lock");
+        self.release_wireless(state.endpoint);
         state.quit = true;
         self.changed.notify_one();
     }
@@ -290,14 +324,20 @@ impl Acquisition {
                             Box::new(OpenOcdMemoryReader::connect(endpoint)?)
                                 as Box<dyn LiveMemoryReader>
                         }
-                        MemorySource::DebugSession => Box::new(SessionMemoryReader {
-                            commands: self
-                                .commands
-                                .lock()
-                                .expect("acquisition commands lock")
-                                .clone()
-                                .ok_or_else(|| Error("调试采集尚未初始化".into()))?,
-                        }),
+                        MemorySource::DebugSession | MemorySource::WirelessSession(_) => {
+                            Box::new(SessionMemoryReader {
+                                wireless_generation: match endpoint {
+                                    MemorySource::WirelessSession(generation) => Some(generation),
+                                    _ => None,
+                                },
+                                commands: self
+                                    .commands
+                                    .lock()
+                                    .expect("acquisition commands lock")
+                                    .clone()
+                                    .ok_or_else(|| Error("调试采集尚未初始化".into()))?,
+                            })
+                        }
                     });
                     connection = Some(endpoint);
                 }
@@ -340,7 +380,7 @@ impl Acquisition {
                     // one debug-session request when addresses are scattered.
                     let batch_size = match endpoint {
                         MemorySource::OpenOcd(_) => 64,
-                        MemorySource::DebugSession => 8,
+                        MemorySource::DebugSession | MemorySource::WirelessSession(_) => 8,
                     };
                     let mut blocks = Vec::with_capacity(plan.blocks.len());
                     for batch in plan.blocks.chunks(batch_size) {
@@ -397,7 +437,12 @@ impl Acquisition {
                     state.elapsed = elapsed;
                     state.sequence += 1;
                     if state.sweeps == 1 {
-                        state.status = "运行中内存采集 · 无暂停".into();
+                        state.status = if matches!(endpoint, MemorySource::WirelessSession(_)) {
+                            "无线内存采集 · QUIC · 无暂停"
+                        } else {
+                            "运行中内存采集 · 无暂停"
+                        }
+                        .into();
                     }
                     // Blocking RPC provides natural backpressure; no fixed polling sleep.
                     drop(state);
@@ -405,6 +450,7 @@ impl Acquisition {
                 Ok::<_, nya_domain::Error>(())
             })();
             if let Err(error) = result {
+                self.release_wireless(Some(endpoint));
                 reader = None;
                 connection = None;
                 let mut state = self.state.lock().expect("acquisition lock");
@@ -436,6 +482,110 @@ mod tests {
             scalar_type: ScalarType::Unsigned,
             little_endian: true,
         }
+    }
+
+    #[test]
+    fn wireless_sampling_batches_channels_and_retains_samples_after_stop() {
+        let acquisition = Arc::new(Acquisition::default());
+        let (sender, receiver) = mpsc::sync_channel(8);
+        acquisition.set_command_sender(sender);
+        acquisition.configure(
+            (0..9)
+                .map(|i| (i, channel(0x20000000 + i as u64 * 8), false))
+                .collect(),
+            Duration::from_secs(10),
+        );
+        acquisition.start_source(MemorySource::WirelessSession(42));
+        let sampler = acquisition.clone();
+        let thread = std::thread::spawn(move || sampler.run());
+        let mut offset = 0u32;
+        for count in [8, 1] {
+            let Command::ReadWirelessMemory {
+                generation,
+                request,
+            } = receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+            else {
+                panic!("wireless reads must use their fenced request")
+            };
+            assert_eq!(generation, 42);
+            assert_eq!(request.blocks.len(), count);
+            let bytes = request
+                .blocks
+                .iter()
+                .map(|_| {
+                    let value = 100 + offset;
+                    offset += 1;
+                    value.to_le_bytes().to_vec()
+                })
+                .collect();
+            request.response.send(Ok(bytes)).unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while acquisition.state.lock().unwrap().sweeps == 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        acquisition.stop();
+        assert_eq!(acquisition.take_wireless_stop(), Some(42));
+        assert_eq!(acquisition.take_wireless_stop(), None);
+        acquisition.shutdown();
+        thread.join().unwrap();
+        let state = acquisition.state.lock().unwrap();
+        assert_eq!(state.sweeps, 1);
+        for (i, channel) in state.channels.iter().enumerate() {
+            assert_eq!(channel.samples.latest().unwrap().value, (100 + i) as f64);
+        }
+    }
+
+    #[test]
+    fn wireless_restart_discards_old_in_flight_results_and_failures_schedule_cleanup() {
+        let acquisition = Arc::new(Acquisition::default());
+        let (sender, receiver) = mpsc::sync_channel(8);
+        acquisition.set_command_sender(sender);
+        acquisition.configure(
+            vec![(0, channel(0x20000000), false)],
+            Duration::from_secs(10),
+        );
+        acquisition.start_source(MemorySource::WirelessSession(42));
+        let sampler = acquisition.clone();
+        let thread = std::thread::spawn(move || sampler.run());
+        let Command::ReadWirelessMemory {
+            generation: 42,
+            request,
+        } = receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+        else {
+            panic!("first collection")
+        };
+        acquisition.stop();
+        assert_eq!(acquisition.take_wireless_stop(), Some(42));
+        acquisition.start_source(MemorySource::WirelessSession(43));
+        request
+            .response
+            .send(Ok(vec![7u32.to_le_bytes().to_vec()]))
+            .unwrap();
+        let Command::ReadWirelessMemory {
+            generation: 43,
+            request,
+        } = receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+        else {
+            panic!("new collection")
+        };
+        request
+            .response
+            .send(Err(Error("wireless disconnected".into())))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while acquisition.state.lock().unwrap().endpoint.is_some() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(acquisition.take_wireless_stop(), Some(43));
+        acquisition.shutdown();
+        thread.join().unwrap();
+        let state = acquisition.state.lock().unwrap();
+        assert_eq!(state.sweeps, 0);
+        assert_eq!(state.channels[0].samples.len(), 0);
+        assert!(state.status.contains("wireless disconnected"));
     }
 
     #[test]

@@ -421,13 +421,37 @@ impl Session {
 
 impl DebugSession for DebugAdapter {
     fn execute_debug(&mut self, action: DebugAction) -> Result<()> {
+        let (action, wireless_config) = match action {
+            DebugAction::ConnectWireless {
+                profile,
+                connection,
+                reset,
+            } => (
+                DebugAction::Connect {
+                    profile,
+                    external_server: true,
+                    reset,
+                },
+                Some(connection),
+            ),
+            action => (action, None),
+        };
         match action {
+            DebugAction::ConnectWireless { .. } => unreachable!("normalized above"),
+            DebugAction::FlashWireless {
+                profile,
+                connection,
+            } => {
+                self.flash_wireless(profile, connection)?;
+                self.session = Session::default();
+                self.session.message = "固件已无线烧录并自动复位".into();
+            }
             DebugAction::Connect {
                 profile,
                 external_server,
                 reset,
             } => {
-                if self.session.client.is_some() {
+                if self.session.client.is_some() || self.wireless.is_some() {
                     return Err(Error("调试会话已存在，请先断开".into()));
                 }
                 if !profile.firmware.is_file() {
@@ -446,7 +470,9 @@ impl DebugSession for DebugAdapter {
                 // Frame argument values are available in watches. Fetching them
                 // while formatting *stopped delays the initial stop notification.
                 client.command("-gdb-set print frame-arguments none")?;
-                if matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs) {
+                if wireless_config.is_some()
+                    || matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs)
+                {
                     client.command(&format!(
                         "-interpreter-exec console {}",
                         mi::quote("maintenance set target-non-stop on")
@@ -462,12 +488,24 @@ impl DebugSession for DebugAdapter {
                     "-file-exec-and-symbols {}",
                     mi::quote(&profile.firmware.to_string_lossy())
                 ))?;
+                if let Some(config) = wireless_config {
+                    self.start_wireless_server(&profile, &config)?;
+                }
                 if !external_server {
                     self.start_server(&profile)?;
                 }
-                let mut endpoint = std::net::SocketAddr::from(([127, 0, 0, 1], profile.gdb_port));
-                if matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs) {
-                    let bridge = match if profile.tool == ToolKind::PyOcd {
+                let mut endpoint = self
+                    .wireless
+                    .as_ref()
+                    .map(|r| r.address)
+                    .unwrap_or_else(|| {
+                        std::net::SocketAddr::from(([127, 0, 0, 1], profile.gdb_port))
+                    });
+                if self.wireless.is_some()
+                    || matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs)
+                {
+                    let bridge = match if self.wireless.is_none() && profile.tool == ToolKind::PyOcd
+                    {
                         NonStopBridge::start_native(endpoint)
                     } else {
                         NonStopBridge::start(endpoint)
@@ -489,7 +527,11 @@ impl DebugSession for DebugAdapter {
                 }
                 self.session.client = Some(client);
                 self.session.firmware = Some(profile.firmware);
-                self.session.memory_backend = Some(profile.tool);
+                self.session.memory_backend = Some(if self.wireless.is_some() {
+                    ToolKind::ProbeRs
+                } else {
+                    profile.tool
+                });
                 if let Err(error) = self.session.thread_state().and_then(|()| {
                     if reset {
                         self.session
@@ -505,7 +547,13 @@ impl DebugSession for DebugAdapter {
                     let _ = self.stop_server();
                     return Err(error);
                 }
-                self.session.breakpoint_list()?;
+                if let Err(error) = self.session.breakpoint_list() {
+                    self.session.client = None;
+                    self.session.bridge = None;
+                    self.session.memory_backend = None;
+                    let _ = self.stop_server();
+                    return Err(error);
+                }
                 self.session.last_stop = self.session.client()?.stop_generation;
                 self.session.client()?.changed = false;
                 self.session.message = if reset {
@@ -560,7 +608,8 @@ impl DebugSession for DebugAdapter {
                 self.session.message = "已复位目标".into();
             }
             DebugAction::Flash { profile } => {
-                if self.server.is_some() || self.session.client.is_some() {
+                if self.server.is_some() || self.session.client.is_some() || self.wireless.is_some()
+                {
                     return Err(Error("请先断开调试会话再直接烧录".into()));
                 }
                 if !profile.firmware.is_file() {
@@ -753,6 +802,9 @@ impl DebugSession for DebugAdapter {
     }
     fn poll_debug(&mut self) -> Result<bool> {
         let result = (|| {
+            if let Some(remote) = &self.wireless {
+                remote.check()?;
+            }
             if let Some(server) = self.server.as_mut() {
                 if let Some(status) = server.try_wait().map_err(crate::error)? {
                     return Err(Error(format!("GDB 服务已退出：{status}")));
@@ -970,6 +1022,7 @@ mod tests {
             install_progress: Default::default(),
             server: None,
             session: Session::default(),
+            wireless: None,
         };
         let profile = TargetProfile {
             name: "fake".into(),

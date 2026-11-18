@@ -2,6 +2,7 @@ import { Button, CheckBox, ComboBox, LineEdit, ScrollView } from "std-widgets.sl
 import { Theme } from "../theme.slint";
 import { TargetSelector, TargetRow, PackRow } from "target-selector.slint";
 import { ConfigSelector } from "config-selector.slint";
+import { WirelessSettings } from "wireless-settings.slint";
 
 export component DebugSettings inherits ScrollView {
     in property <bool> busy;
@@ -22,6 +23,24 @@ export component DebugSettings inherits ScrollView {
     in-out property <string> port;
     in-out property <string> firmware;
     in-out property <bool> external-server;
+    in-out property <bool> wireless-enabled;
+    in property <[string]> wireless-devices;
+    in property <int> wireless-device-index: -1;
+    in property <string> wireless-device-id;
+    in-out property <string> wireless-endpoint;
+    in-out property <string> wireless-computer-name;
+    in-out property <string> wireless-target;
+    in-out property <string> wireless-core;
+    in-out property <string> wireless-speed;
+    in-out property <int> wireless-protocol-index;
+    in-out property <bool> wireless-under-reset;
+    in property <bool> wireless-pairing;
+    in property <string> wireless-comparison-code;
+    in property <string> wireless-message;
+    callback select-wireless-device(int);
+    callback refresh-wireless();
+    callback pair-wireless();
+    callback forget-wireless();
     callback browse-firmware();
     callback refresh-targets();
     callback search-targets(string);
@@ -33,7 +52,28 @@ export component DebugSettings inherits ScrollView {
     VerticalLayout {
         spacing: 10px;
         Text { text: "调试器设置"; color: Theme.text; font-size: 20px; font-weight: 700; }
-        Text { text: root.external-server ? "连接外部本机服务：127.0.0.1:" + root.port : "后端：" + root.backend; color: Theme.accent; overflow: elide; }
+        CheckBox { text: "使用 EmberMobile 无线调试"; checked <=> root.wireless-enabled; enabled: !root.busy && !root.connected; }
+        Text { text: root.wireless-enabled ? "无线后端 · EmberMobile" : root.external-server ? "连接外部本机服务：127.0.0.1:" + root.port : "后端：" + root.backend; color: Theme.accent; overflow: elide; }
+        if root.wireless-enabled: WirelessSettings {
+            busy: root.busy; connected: root.connected;
+            devices: root.wireless-devices;
+            device-index: root.wireless-device-index;
+            device-id: root.wireless-device-id;
+            endpoint <=> root.wireless-endpoint;
+            computer-name <=> root.wireless-computer-name;
+            target <=> root.wireless-target;
+            core <=> root.wireless-core;
+            speed <=> root.wireless-speed;
+            protocol-index <=> root.wireless-protocol-index;
+            under-reset <=> root.wireless-under-reset;
+            pairing: root.wireless-pairing;
+            comparison-code: root.wireless-comparison-code;
+            message: root.wireless-message;
+            select-device(index) => { root.select-wireless-device(index); }
+            refresh => { root.refresh-wireless(); }
+            pair => { root.pair-wireless(); }
+            forget => { root.forget-wireless(); }
+        }
         HorizontalLayout {
             spacing: 8px;
             Text { text: "GDB"; color: Theme.muted; width: 60px; vertical-alignment: center; }
@@ -45,7 +85,7 @@ export component DebugSettings inherits ScrollView {
             LineEdit { text <=> root.firmware; placeholder-text: "ELF / AXF 路径（含符号）"; enabled: !root.busy && !root.connected; horizontal-stretch: 1; }
             Button { text: "浏览…"; enabled: !root.busy && !root.connected; clicked => { root.browse-firmware(); } }
         }
-        TargetSelector {
+        if !root.wireless-enabled: TargetSelector {
             busy: root.busy || root.connected || root.external-server;
             backend-kind: root.backend-kind;
             target <=> root.target;
@@ -59,7 +99,7 @@ export component DebugSettings inherits ScrollView {
             remove-pack(path) => { root.remove-pack(path); }
             install-pack(part) => { root.install-pack(part); }
         }
-        if root.backend-kind == 0: ConfigSelector {
+        if !root.wireless-enabled && root.backend-kind == 0: ConfigSelector {
             busy: root.busy || root.connected || root.external-server;
             can-browse: true;
             title: "Probe";
@@ -78,9 +118,9 @@ export component DebugSettings inherits ScrollView {
             spacing: 8px;
             Text { text: "GDB 端口"; color: Theme.muted; width: 60px; vertical-alignment: center; }
             LineEdit { text <=> root.port; enabled: !root.busy && !root.connected; width: 90px; }
-            CheckBox { text: "连接已有本机 GDB 服务"; checked <=> root.external-server; enabled: !root.busy && !root.connected; }
+            if !root.wireless-enabled: CheckBox { text: "连接已有本机 GDB 服务"; checked <=> root.external-server; enabled: !root.busy && !root.connected; }
         }
-        if root.backend-kind == 0: HorizontalLayout {
+        if !root.wireless-enabled && root.backend-kind == 0: HorizontalLayout {
             spacing: 8px;
             Text { text: "传输方式"; color: Theme.muted; width: 60px; vertical-alignment: center; }
             ComboBox {

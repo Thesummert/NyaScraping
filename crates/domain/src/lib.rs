@@ -1,6 +1,8 @@
 //! UI-independent contracts. This crate has no Slint, process, or native dependencies.
 pub mod firmware;
 pub mod waveform;
+pub mod wireless;
+pub use wireless::{WirelessConfig, WirelessDevice, WirelessRegistry};
 
 use std::{fmt, path::PathBuf};
 
@@ -145,6 +147,17 @@ pub struct WatchValue {
 
 #[derive(Clone, Debug)]
 pub enum DebugAction {
+    /// Attach through a paired EmberMobile gateway. Uses local symbols and GDB.
+    ConnectWireless {
+        profile: TargetProfile,
+        connection: WirelessConfig,
+        reset: bool,
+    },
+    /// Upload, verify and flash through the paired gateway without launching GDB.
+    FlashWireless {
+        profile: TargetProfile,
+        connection: WirelessConfig,
+    },
     Connect {
         profile: TargetProfile,
         external_server: bool,

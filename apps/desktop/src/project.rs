@@ -21,6 +21,8 @@ pub struct Project {
     pub transport_index: i32,
     pub port: String,
     pub external_server: bool,
+    #[serde(default)]
+    pub wireless: crate::wireless::Settings,
     pub backend_kind: i32,
     pub backend_version: String,
     pub acquisition_endpoint: String,
@@ -52,6 +54,7 @@ impl Project {
             transport_index: ui.get_debug_transport_index(),
             port: ui.get_debug_port().to_string(),
             external_server: ui.get_external_server(),
+            wireless: crate::wireless::Settings::capture(ui),
             backend_kind: ui.get_backend_kind(),
             backend_version,
             acquisition_endpoint: ui.get_acquisition_endpoint().to_string(),
@@ -113,6 +116,12 @@ mod tests {
             transport_index: 2,
             port: "3333".into(),
             external_server: false,
+            wireless: crate::wireless::Settings {
+                enabled: true,
+                device_id: "phone-id".into(),
+                target: "chip".into(),
+                ..Default::default()
+            },
             backend_kind: 0,
             backend_version: "system".into(),
             acquisition_endpoint: "127.0.0.1:6666".into(),
@@ -133,6 +142,8 @@ mod tests {
         assert_eq!(loaded.target, "chip");
         assert_eq!(loaded.transport_index, 2);
         assert_eq!(loaded.refresh_rate_index, 0);
+        assert!(loaded.wireless.enabled);
+        assert_eq!(loaded.wireless.device_id, "phone-id");
         let mut legacy = serde_json::to_value(&loaded).unwrap();
         legacy.as_object_mut().unwrap().remove("refresh_rate_index");
         legacy.as_object_mut().unwrap().remove("transport_index");
@@ -141,12 +152,14 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("watch_column_widths");
+        legacy.as_object_mut().unwrap().remove("wireless");
         let legacy: Project = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy.refresh_rate_index, 0);
         assert_eq!(legacy.transport_index, 0);
         assert!(legacy.source_directory.is_empty());
         assert_eq!(legacy.watch_column_widths, [0; 4]);
         assert_eq!(loaded.watch_column_widths, [120, 180, 90, 50]);
+        assert_eq!(legacy.wireless, crate::wireless::Settings::default());
         assert!(loaded.watches[0].waveform);
         assert_eq!(loaded.watches[0].scope.as_deref(), Some("main.c:1"));
         let mut future = loaded;

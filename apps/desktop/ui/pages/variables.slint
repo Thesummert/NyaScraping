@@ -34,6 +34,7 @@ export component VariablesPage inherits VerticalLayout {
     in property <string> source-label;
     in property <bool> use-session;
     in property <bool> session-ready;
+    in property <string> session-message;
     in property <int> revision;
     in-out property <bool> live-enabled;
     in-out property <int> live-interval-index: 5;
@@ -114,7 +115,7 @@ export component VariablesPage inherits VerticalLayout {
         Text { text: root.source-label; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
         if !root.use-session: LineEdit { text <=> root.memory-endpoint; placeholder-text: "127.0.0.1:6666"; enabled: !root.acquisition-active; horizontal-stretch: 1; }
     }
-    if root.use-session && !root.session-ready: Text { text: "请先在调试页连接当前后端"; color: Theme.muted; font-size: 11px; }
+    if root.use-session && !root.session-ready: Text { text: root.session-message; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
     HorizontalLayout {
         spacing: 6px;
         CheckBox { text: "实时刷新"; enabled: !root.use-session || root.session-ready; checked <=> root.live-enabled; toggled => { root.live-refresh(); } }

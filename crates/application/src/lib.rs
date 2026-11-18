@@ -1,8 +1,9 @@
 //! Use cases run on a worker; UI callbacks submit commands and consume events.
 use nya_domain::{
     firmware::{FirmwareBackend, FirmwareImage},
-    DebugAction, DebugSession, DebugSnapshot, Document, Result, TargetCatalog, TextBackend,
-    ToolKind, ToolRegistry, ToolState, WatchRequest,
+    DebugAction, DebugSession, DebugSnapshot, Document, Result, TargetCatalog, TargetProfile,
+    TextBackend, ToolKind, ToolRegistry, ToolState, WatchRequest, WirelessConfig, WirelessDevice,
+    WirelessRegistry,
 };
 use std::{path::PathBuf, sync::mpsc::SyncSender, time::Instant};
 
@@ -13,6 +14,22 @@ pub struct MemoryReadRequest {
 }
 
 pub enum Command {
+    StartWirelessAcquisition {
+        profile: TargetProfile,
+        connection: WirelessConfig,
+    },
+    StopWirelessAcquisition(u64),
+    ReadWirelessMemory {
+        generation: u64,
+        request: MemoryReadRequest,
+    },
+    RefreshWirelessDevices,
+    PairWireless {
+        endpoint: String,
+        computer_name: String,
+        comparison: SyncSender<String>,
+    },
+    ForgetWireless(String),
     RefreshTools,
     RefreshTargets,
     AddPack(PathBuf),
@@ -47,6 +64,17 @@ pub enum Command {
 }
 
 pub enum Event {
+    WirelessAcquisitionStarted(u64),
+    /// Automatic cleanup does not complete an unrelated queued UI command.
+    WirelessAcquisitionStopped {
+        generation: u64,
+        message: String,
+    },
+    WirelessDevicesUpdated {
+        devices: Vec<WirelessDevice>,
+        selected_id: Option<String>,
+        message: String,
+    },
     /// Internal acquisition response; never posted to the UI event queue.
     MemoryRead,
     TargetsUpdated(TargetCatalog),
@@ -72,7 +100,9 @@ pub struct Application<T, E, F> {
     next_pending_breakpoint: u64,
 }
 
-impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Application<T, E, F> {
+impl<T: ToolRegistry + DebugSession + WirelessRegistry, E: TextBackend, F: FirmwareBackend>
+    Application<T, E, F>
+{
     pub fn new(tools: T, text: E, firmware: F) -> Self {
         Self {
             tools,
@@ -86,6 +116,69 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
 
     pub fn execute(&mut self, command: Command) -> Event {
         let result: Result<Event> = match command {
+            Command::StartWirelessAcquisition {
+                profile,
+                connection,
+            } => self
+                .tools
+                .start_wireless_acquisition(&profile, &connection)
+                .map(Event::WirelessAcquisitionStarted),
+            Command::StopWirelessAcquisition(generation) => Ok(Event::WirelessAcquisitionStopped {
+                generation,
+                message: match self.tools.stop_wireless_acquisition(generation) {
+                    Ok(()) => "无线采集已停止，保留已有数据".into(),
+                    Err(error) => format!("无线采集已停止，手机会话清理失败：{error}"),
+                },
+            }),
+            Command::ReadWirelessMemory {
+                generation,
+                request,
+            } => {
+                let result = if Instant::now() >= request.deadline {
+                    Err(nya_domain::Error("无线内存采集请求已过期".into()))
+                } else {
+                    self.tools.read_wireless_memory(generation, &request.blocks)
+                };
+                let _ = request.response.try_send(result);
+                return Event::MemoryRead;
+            }
+            Command::RefreshWirelessDevices => {
+                self.tools
+                    .paired_wireless_devices()
+                    .map(|devices| Event::WirelessDevicesUpdated {
+                        devices,
+                        selected_id: None,
+                        message: "已配对手机列表已刷新".into(),
+                    })
+            }
+            Command::PairWireless {
+                endpoint,
+                computer_name,
+                comparison,
+            } => self
+                .tools
+                .pair_wireless(&endpoint, &computer_name, &mut |code| {
+                    let _ = comparison.try_send(code.into());
+                })
+                .and_then(|device| {
+                    Ok(Event::WirelessDevicesUpdated {
+                        devices: self.tools.paired_wireless_devices()?,
+                        selected_id: Some(device.id),
+                        message: format!("已配对 {}，可关闭设置后连接或下载", device.name),
+                    })
+                }),
+            Command::ForgetWireless(id) => self.tools.forget_wireless(&id).and_then(|revoked| {
+                Ok(Event::WirelessDevicesUpdated {
+                    devices: self.tools.paired_wireless_devices()?,
+                    selected_id: Some(String::new()),
+                    message: if revoked {
+                        "配对已删除，手机凭据已撤销"
+                    } else {
+                        "本机配对已删除；手机未能撤销，请在手机配对列表另行删除"
+                    }
+                    .into(),
+                })
+            }),
             Command::ReadLiveMemory(request) => {
                 let result = if Instant::now() >= request.deadline {
                     Err(nya_domain::Error("内存采集请求已过期".into()))
@@ -111,8 +204,12 @@ impl<T: ToolRegistry + DebugSession, E: TextBackend, F: FirmwareBackend> Applica
                 }
                 let state = self.tools.debug_snapshot(&[]).state;
                 let mut pending_message = None;
-                let flush_after =
-                    matches!(&action, DebugAction::Connect { .. } | DebugAction::Pause);
+                let flush_after = matches!(
+                    &action,
+                    DebugAction::Connect { .. }
+                        | DebugAction::ConnectWireless { .. }
+                        | DebugAction::Pause
+                );
                 let result = match action {
                     DebugAction::AddSourceBreakpoint { file, line }
                         if !matches!(
@@ -423,11 +520,68 @@ mod tests {
 
     #[derive(Default)]
     struct Tools {
+        phones: Vec<WirelessDevice>,
+        collection: Option<u64>,
         state: ToolState,
         calls: Vec<String>,
         debug: DebugSnapshot,
         actions: Vec<DebugAction>,
         dirty: bool,
+    }
+    impl WirelessRegistry for Tools {
+        fn start_wireless_acquisition(
+            &mut self,
+            _profile: &TargetProfile,
+            _connection: &WirelessConfig,
+        ) -> Result<u64> {
+            self.collection = Some(42);
+            Ok(42)
+        }
+        fn read_wireless_memory(
+            &mut self,
+            generation: u64,
+            blocks: &[nya_domain::waveform::ReadBlock],
+        ) -> Result<Vec<Vec<u8>>> {
+            if self.collection != Some(generation) {
+                return Err(Error("stale collection".into()));
+            }
+            self.calls.push("wireless:read".into());
+            Ok(blocks
+                .iter()
+                .map(|block| vec![42; block.byte_size])
+                .collect())
+        }
+        fn stop_wireless_acquisition(&mut self, generation: u64) -> Result<()> {
+            if self.collection == Some(generation) {
+                self.collection = None;
+            }
+            Ok(())
+        }
+        fn paired_wireless_devices(&self) -> Result<Vec<WirelessDevice>> {
+            Ok(self.phones.clone())
+        }
+        fn pair_wireless(
+            &mut self,
+            endpoint: &str,
+            name: &str,
+            on_code: &mut dyn FnMut(&str),
+        ) -> Result<WirelessDevice> {
+            on_code("12345678");
+            if endpoint == "unreachable:4242" {
+                return Err(Error("phone unavailable".into()));
+            }
+            let device = WirelessDevice {
+                id: "phone-id".into(),
+                name: name.into(),
+                endpoint: endpoint.into(),
+            };
+            self.phones = vec![device.clone()];
+            Ok(device)
+        }
+        fn forget_wireless(&mut self, id: &str) -> Result<bool> {
+            self.phones.retain(|device| device.id != id);
+            Ok(false)
+        }
     }
     impl ToolRegistry for Tools {
         fn discover(&self) -> Result<Vec<ToolInstallation>> {
@@ -492,9 +646,9 @@ mod tests {
         fn execute_debug(&mut self, action: DebugAction) -> Result<()> {
             use nya_domain::SessionState;
             match &action {
-                DebugAction::Connect { .. } | DebugAction::Pause => {
-                    self.debug.state = SessionState::Halted
-                }
+                DebugAction::Connect { .. }
+                | DebugAction::ConnectWireless { .. }
+                | DebugAction::Pause => self.debug.state = SessionState::Halted,
                 DebugAction::Continue => self.debug.state = SessionState::Running,
                 DebugAction::Disconnect => self.debug.state = SessionState::Disconnected,
                 DebugAction::AddBreakpoint(_) => return Err(Error("bad breakpoint".into())),
@@ -811,6 +965,160 @@ mod tests {
             &app.tools.actions[..],
             [DebugAction::Flash { profile }] if profile.tool == ToolKind::PyOcd
         ));
+    }
+
+    #[test]
+    fn native_collection_uses_its_own_generation_and_expired_requests_skip_hardware() {
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        let profile = TargetProfile {
+            name: "phone".into(),
+            tool: ToolKind::ProbeRs,
+            target: "chip".into(),
+            interface: None,
+            transport: None,
+            gdb_port: 3333,
+            gdb_executable: "".into(),
+            firmware: "firmware.axf".into(),
+        };
+        assert!(matches!(
+            app.execute(Command::StartWirelessAcquisition {
+                profile,
+                connection: WirelessConfig::new("phone")
+            }),
+            Event::WirelessAcquisitionStarted(42)
+        ));
+        for (generation, expired, expected) in
+            [(42, false, true), (41, false, false), (42, true, false)]
+        {
+            let (response, receiver) = std::sync::mpsc::sync_channel(1);
+            let request = MemoryReadRequest {
+                blocks: vec![nya_domain::waveform::ReadBlock {
+                    address: 0x20000000,
+                    byte_size: 4,
+                    little_endian: true,
+                }],
+                deadline: if expired {
+                    Instant::now()
+                } else {
+                    Instant::now() + std::time::Duration::from_secs(1)
+                },
+                response,
+            };
+            assert!(matches!(
+                app.execute(Command::ReadWirelessMemory {
+                    generation,
+                    request
+                }),
+                Event::MemoryRead
+            ));
+            assert_eq!(receiver.recv().unwrap().is_ok(), expected);
+        }
+        assert_eq!(app.tools.calls, ["wireless:read"]);
+        assert!(matches!(
+            app.execute(Command::StopWirelessAcquisition(41)),
+            Event::WirelessAcquisitionStopped { generation: 41, .. }
+        ));
+        assert_eq!(app.tools.collection, Some(42));
+        app.execute(Command::StopWirelessAcquisition(42));
+        assert!(app.tools.collection.is_none());
+    }
+
+    #[test]
+    fn pairing_delivers_comparison_code_and_returns_selected_phone_and_offline_forget() {
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let event = app.execute(Command::PairWireless {
+            endpoint: "phone:4242".into(),
+            computer_name: "computer".into(),
+            comparison: sender,
+        });
+        assert_eq!(receiver.recv().unwrap(), "12345678");
+        match event {
+            Event::WirelessDevicesUpdated {
+                devices,
+                selected_id,
+                ..
+            } => {
+                assert_eq!(devices.len(), 1);
+                assert_eq!(selected_id.as_deref(), Some("phone-id"));
+            }
+            _ => panic!("pairing must refresh devices and select the new phone"),
+        }
+        match app.execute(Command::ForgetWireless("phone-id".into())) {
+            Event::WirelessDevicesUpdated {
+                devices,
+                selected_id,
+                message,
+            } => {
+                assert!(devices.is_empty());
+                assert_eq!(selected_id.as_deref(), Some(""));
+                assert!(message.contains("另行删除"));
+            }
+            _ => panic!("offline forget must still update the desktop"),
+        }
+    }
+
+    #[test]
+    fn pairing_failure_is_reported_and_closed_comparison_receiver_never_blocks() {
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        drop(receiver);
+        assert!(matches!(
+            app.execute(Command::PairWireless {
+                endpoint: "unreachable:4242".into(),
+                computer_name: "computer".into(),
+                comparison: sender
+            }),
+            Event::Failed(_)
+        ));
+        assert!(app.tools.phones.is_empty());
+    }
+
+    #[test]
+    fn wireless_actions_bypass_local_tool_selection_and_install_pending_breakpoints() {
+        use nya_domain::{TargetProfile, WirelessConfig};
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        app.execute(Command::Debug(DebugAction::AddSourceBreakpoint {
+            file: "main.c".into(),
+            line: 8,
+        }));
+        let profile = TargetProfile {
+            name: "wireless".into(),
+            tool: ToolKind::ProbeRs,
+            target: "chip".into(),
+            interface: None,
+            transport: None,
+            gdb_port: 3333,
+            gdb_executable: "gdb".into(),
+            firmware: "firmware.axf".into(),
+        };
+        let connection = WirelessConfig::new("phone");
+        let event = app.execute(Command::Debug(DebugAction::ConnectWireless {
+            profile: profile.clone(),
+            connection: connection.clone(),
+            reset: false,
+        }));
+        match event {
+            Event::DebugUpdated { snapshot, .. } => {
+                assert_eq!(snapshot.state, nya_domain::SessionState::Halted);
+                assert_eq!(snapshot.breakpoints.len(), 1);
+                assert_eq!(snapshot.breakpoints[0].line, 8);
+            }
+            _ => panic!("wireless connection must not require a local tool"),
+        }
+        assert!(
+            matches!(&app.tools.actions[0], DebugAction::ConnectWireless { profile, .. } if profile.tool == ToolKind::ProbeRs)
+        );
+        app.execute(Command::Debug(DebugAction::Disconnect));
+        app.execute(Command::Debug(DebugAction::FlashWireless {
+            profile,
+            connection,
+        }));
+        assert!(matches!(
+            app.tools.actions.last(),
+            Some(DebugAction::FlashWireless { .. })
+        ));
+        assert!(app.tools.state.backend.is_none());
     }
 
     #[test]

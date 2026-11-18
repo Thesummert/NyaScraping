@@ -5,6 +5,7 @@ mod mi;
 mod non_stop;
 mod session;
 mod targets;
+mod wireless;
 // All NyaScrapingCore-specific types stay inside this adapter.
 use nya_domain::{
     DebugBackend, Error, Result, TargetProfile, ToolInstallation, ToolKind, ToolRegistry,
@@ -47,6 +48,7 @@ pub struct DebugAdapter {
     install_progress: SharedInstallProgress,
     server: Option<RunningGdbServer>,
     session: session::Session,
+    wireless: Option<wireless::RemoteSession>,
 }
 
 impl DebugAdapter {
@@ -57,6 +59,7 @@ impl DebugAdapter {
             install_progress: Default::default(),
             server: None,
             session: session::Session::default(),
+            wireless: None,
         })
     }
 
@@ -69,7 +72,7 @@ impl DebugAdapter {
     }
 
     fn operation(&mut self, profile: &TargetProfile, operation: Operation) -> Result<()> {
-        if self.server.is_some() || self.session.client.is_some() {
+        if self.server.is_some() || self.session.client.is_some() || self.wireless.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before a maintenance operation".into(),
             ));
@@ -162,7 +165,7 @@ impl ToolRegistry for DebugAdapter {
     }
 
     fn select(&mut self, tool: ToolKind, version: &str) -> Result<()> {
-        if self.server.is_some() || self.session.client.is_some() {
+        if self.server.is_some() || self.session.client.is_some() || self.wireless.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before switching a backend".into(),
             ));
@@ -178,7 +181,7 @@ impl ToolRegistry for DebugAdapter {
     }
 
     fn uninstall(&mut self, tool: ToolKind, version: &str) -> Result<()> {
-        if self.server.is_some() || self.session.client.is_some() {
+        if self.server.is_some() || self.session.client.is_some() || self.wireless.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before uninstalling a tool".into(),
             ));
@@ -195,7 +198,7 @@ impl ToolRegistry for DebugAdapter {
     }
 
     fn remove_local(&mut self, tool: ToolKind, name: &str) -> Result<()> {
-        if self.server.is_some() || self.session.client.is_some() {
+        if self.server.is_some() || self.session.client.is_some() || self.wireless.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before removing a local tool".into(),
             ));
@@ -224,7 +227,7 @@ impl ToolRegistry for DebugAdapter {
 
 impl DebugBackend for DebugAdapter {
     fn start_server(&mut self, profile: &TargetProfile) -> Result<()> {
-        if self.server.is_some() {
+        if self.server.is_some() || self.wireless.is_some() {
             return Err(Error(
                 "A GDB server is already owned by this adapter".into(),
             ));
@@ -245,6 +248,9 @@ impl DebugBackend for DebugAdapter {
     }
 
     fn stop_server(&mut self) -> Result<()> {
+        if let Some(mut remote) = self.wireless.take() {
+            remote.stop()?;
+        }
         if let Some(mut server) = self.server.take() {
             server.stop().map_err(error)?;
         }
@@ -284,6 +290,7 @@ mod tests {
                 install_progress: Default::default(),
                 server: None,
                 session: session::Session::default(),
+                wireless: None,
             }
         }
         fn add_pyocd(&self, version: &str) -> PathBuf {

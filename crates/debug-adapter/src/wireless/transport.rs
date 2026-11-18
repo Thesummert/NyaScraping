@@ -13,6 +13,7 @@ use tokio::{
 pub(super) const AUTH: u8 = 1;
 pub(super) const RPC: u8 = 2;
 pub(super) const UPLOAD: u8 = 4;
+pub(super) const MEMORY_READ: u8 = 6;
 pub(super) const PAIR: u8 = 11;
 pub(super) const FORGET: u8 = 12;
 pub(super) const OK: u8 = 128;
@@ -53,6 +54,14 @@ pub(super) async fn write(
 }
 
 pub(super) async fn response(recv: &mut quinn::RecvStream, wait: Duration) -> Result<Vec<u8>> {
+    response_kind(recv, wait, OK).await
+}
+
+async fn response_kind(
+    recv: &mut quinn::RecvStream,
+    wait: Duration,
+    expected: u8,
+) -> Result<Vec<u8>> {
     let (kind, bytes) = timeout(wait, read(recv)).await.map_err(error)??;
     if kind == ERROR {
         let fault: Value = serde_json::from_slice(&bytes).map_err(error)?;
@@ -62,7 +71,7 @@ pub(super) async fn response(recv: &mut quinn::RecvStream, wait: Duration) -> Re
             fault["message"].as_str().unwrap_or("无线调试请求失败")
         )));
     }
-    if kind != OK {
+    if kind != expected {
         return Err(Error(format!("无效的 Ember v2 响应类型：{kind}")));
     }
     Ok(bytes)
@@ -219,6 +228,33 @@ impl Client {
         let payload =
             serde_json::to_vec(&json!({"method":method,"params":params})).map_err(error)?;
         serde_json::from_slice(&self.exchange(RPC, &payload).await?).map_err(error)
+    }
+
+    pub async fn read_memory(
+        &self,
+        session_id: i64,
+        core: u32,
+        blocks: &[nya_domain::waveform::ReadBlock],
+    ) -> Result<Vec<Vec<u8>>> {
+        // A bounded sweep keeps debugger commands responsive on the shared worker.
+        // Dropping a timed-out stream cancels only this read, not the connection.
+        timeout(Duration::from_millis(900), async {
+            let mut result = Vec::with_capacity(blocks.len());
+            for block in blocks {
+                let (mut send, mut recv) = self.connection.open_bi().await.map_err(error)?;
+                write(&mut send, MEMORY_READ, &serde_json::to_vec(&json!({
+                    "session_id":session_id,"core":core,"address":block.address,"length":block.byte_size
+                })).map_err(error)?).await?;
+                send.finish().map_err(error)?;
+                // Only the outer sweep timer owns the deadline and its message.
+                let bytes = response_kind(&mut recv, Duration::from_secs(30), DATA).await?;
+                if bytes.len() != block.byte_size {
+                    return Err(Error("手机返回不完整的内存数据，已丢弃本轮采集".into()));
+                }
+                result.push(bytes);
+            }
+            Ok(result)
+        }).await.map_err(|_| Error("无线内存读取超时，请检查网络或减少不连续地址".into()))?
     }
 
     pub async fn upload(

@@ -165,7 +165,7 @@ impl ToolRegistry for DebugAdapter {
     }
 
     fn select(&mut self, tool: ToolKind, version: &str) -> Result<()> {
-        if self.server.is_some() || self.session.client.is_some() {
+        if self.server.is_some() || self.session.client.is_some() || self.wireless.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before switching a backend".into(),
             ));
@@ -181,7 +181,7 @@ impl ToolRegistry for DebugAdapter {
     }
 
     fn uninstall(&mut self, tool: ToolKind, version: &str) -> Result<()> {
-        if self.server.is_some() || self.session.client.is_some() {
+        if self.server.is_some() || self.session.client.is_some() || self.wireless.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before uninstalling a tool".into(),
             ));
@@ -198,7 +198,7 @@ impl ToolRegistry for DebugAdapter {
     }
 
     fn remove_local(&mut self, tool: ToolKind, name: &str) -> Result<()> {
-        if self.server.is_some() || self.session.client.is_some() {
+        if self.server.is_some() || self.session.client.is_some() || self.wireless.is_some() {
             return Err(Error(
                 "Disconnect the GDB server before removing a local tool".into(),
             ));

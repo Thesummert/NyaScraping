@@ -156,6 +156,8 @@ pub struct Presenter {
 /// Plain Rust data prepared on the worker, before entering the Slint event loop.
 pub enum PreparedEvent {
     Internal,
+    WirelessAcquisitionStarted(u64),
+    WirelessAcquisitionStopped(u64, String),
     Wireless(Vec<nya_domain::WirelessDevice>, Option<String>, String),
     Tools(ToolState, String),
     Targets(TargetCatalog),
@@ -203,6 +205,8 @@ fn executable_lines(
 impl From<Event> for PreparedEvent {
     fn from(event: Event) -> Self {
         match event {
+            Event::WirelessAcquisitionStarted(generation) => Self::WirelessAcquisitionStarted(generation),
+            Event::WirelessAcquisitionStopped { generation, message } => Self::WirelessAcquisitionStopped(generation, message),
             Event::WirelessDevicesUpdated { devices, selected_id, message } => Self::Wireless(devices, selected_id, message),
             Event::MemoryRead => Self::Internal,
             Event::ToolsUpdated { state, message } => Self::Tools(state, message),
@@ -504,11 +508,37 @@ impl Presenter {
             }
             _ => {}
         }
-        if !matches!(&event, PreparedEvent::Debug(_, false)) && !ui.get_firmware_parsing() {
+        if !matches!(
+            &event,
+            PreparedEvent::Debug(_, false) | PreparedEvent::WirelessAcquisitionStopped(_, _)
+        ) && !ui.get_firmware_parsing()
+        {
             ui.set_busy(false);
         }
         match event {
             PreparedEvent::Internal => {}
+            PreparedEvent::WirelessAcquisitionStarted(generation) => {
+                self.acquisition
+                    .start_source(MemorySource::WirelessSession(generation));
+                self.refresh_acquisition(ui);
+                ui.set_status("无线内存采集已连接，无需启动 GDB".into());
+            }
+            PreparedEvent::WirelessAcquisitionStopped(generation, message) => {
+                let endpoint = self
+                    .acquisition
+                    .state
+                    .lock()
+                    .expect("acquisition lock")
+                    .endpoint;
+                if endpoint == Some(MemorySource::WirelessSession(generation)) {
+                    self.acquisition.stop();
+                }
+                if message.contains("清理失败") {
+                    ui.invoke_record_system_error(message.as_str().into());
+                    ui.set_status(message.into());
+                }
+                self.refresh_acquisition(ui);
+            }
             PreparedEvent::Wireless(devices, selected, message) => {
                 apply_wireless_devices(ui, devices, selected, message);
             }
@@ -731,7 +761,11 @@ impl Presenter {
                     .lock()
                     .expect("acquisition lock")
                     .endpoint
-                    == Some(MemorySource::DebugSession)
+                    .is_some_and(|source| {
+                        source == MemorySource::DebugSession
+                            || (snapshot.state == SessionState::Faulted
+                                && matches!(source, MemorySource::WirelessSession(_)))
+                    })
                 {
                     self.acquisition.stop();
                     ui.set_live_enabled(false);
@@ -1015,7 +1049,11 @@ impl Presenter {
 
     fn memory_source(ui: &AppWindow) -> Result<MemorySource, String> {
         if ui.get_wireless_enabled() {
-            return Err("无线调试暂不支持无暂停波形采集；可在目标暂停后查看变量".into());
+            return if ui.get_debug_connected() {
+                Ok(MemorySource::DebugSession)
+            } else {
+                Err("请先开始无线采集".into())
+            };
         }
         if matches!(ui.get_backend_kind(), 1 | 2) {
             if !ui.get_debug_connected() {
@@ -1041,6 +1079,10 @@ impl Presenter {
             .is_empty()
         {
             ui.set_acquisition_status("请先添加波形通道".into());
+            return;
+        }
+        if ui.get_wireless_enabled() && !ui.get_debug_connected() {
+            ui.invoke_start_wireless_acquisition();
             return;
         }
         match Self::memory_source(ui) {
@@ -1223,6 +1265,13 @@ impl Presenter {
                 .endpoint
                 .is_none()
         {
+            if ui.get_wireless_enabled() && !ui.get_debug_connected() {
+                ui.invoke_start_wireless_acquisition();
+                self.last_sequence = None;
+                self.last_plot_sequence = None;
+                self.refresh_acquisition(ui);
+                return;
+            }
             match Self::memory_source(ui) {
                 Ok(source) => self.acquisition.start_source(source),
                 Err(error) => {

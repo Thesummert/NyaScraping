@@ -34,6 +34,7 @@ fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
         return;
     }
     let message = match &command {
+        Command::StartWirelessAcquisition { .. } => Some("正在连接手机数据采集…".into()),
         Command::RefreshWirelessDevices => Some("正在刷新已配对手机…".into()),
         Command::PairWireless { .. } => Some("正在配对，请核对校验码并在手机确认…".into()),
         Command::ForgetWireless(_) => Some("正在删除无线配对…".into()),
@@ -342,7 +343,8 @@ fn sync_waveform_window(ui: &AppWindow, window: &WaveformWindow) {
     }
     window.set_source_label(ui.get_acquisition_source_label());
     window.set_use_session(ui.get_acquisition_uses_session());
-    window.set_session_ready(ui.get_debug_connected());
+    window.set_session_ready(ui.get_acquisition_session_ready());
+    window.set_session_message(ui.get_acquisition_session_message());
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1068,12 +1070,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = std::thread::spawn(move || {
         let mut last_sample = std::time::Instant::now();
         while !worker_shutdown.load(Ordering::Relaxed) {
-            let pending = worker_updates.lock().expect("watch updates lock").take();
+            let pending_stop = worker_acquisition.take_wireless_stop();
+            let pending = if pending_stop.is_none() {
+                worker_updates.lock().expect("watch updates lock").take()
+            } else {
+                None
+            };
             let mut finished_install = false;
             let mut finished_download = false;
             let mut finished_firmware = false;
             let mut finished_wireless = false;
-            let event = if let Some(watches) = pending {
+            let mut finished_acquisition = false;
+            let event = if let Some(generation) = pending_stop {
+                Some(application.execute(Command::StopWirelessAcquisition(generation)))
+            } else if let Some(watches) = pending {
                 Some(application.execute(Command::UpdateWatches(watches)))
             } else {
                 let interval = worker_interval.load(Ordering::Relaxed);
@@ -1088,6 +1098,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 match receiver.recv_timeout(wait) {
                     Ok(command) => {
+                        finished_acquisition =
+                            matches!(&command, Command::StartWirelessAcquisition { .. });
                         finished_install = matches!(&command, Command::InstallTool { .. });
                         finished_download = matches!(
                             &command,
@@ -1106,7 +1118,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         finished_firmware = matches!(&command, Command::OpenFirmware(_));
                         let _control = matches!(&command, Command::Debug(_))
                             .then(|| worker_acquisition.pause_for_debug_control());
-                        Some(application.execute(command))
+                        // Stop can arrive while recv_timeout is already waiting.
+                        // Drain again after dequeue, before a new connection or
+                        // flash tries to acquire the phone's target ownership.
+                        let cleanup = worker_acquisition.take_wireless_stop().map(|generation| {
+                            application.execute(Command::StopWirelessAcquisition(generation))
+                        });
+                        let cleanup_failure = cleanup.as_ref().and_then(|event| match event {
+                            nya_application::Event::WirelessAcquisitionStopped {
+                                message, ..
+                            } if message.contains("清理失败") => Some(message.clone()),
+                            _ => None,
+                        });
+                        if let Some(message) = cleanup_failure.as_ref().filter(|_| {
+                            matches!(
+                                &command,
+                                Command::Debug(_) | Command::StartWirelessAcquisition { .. }
+                            )
+                        }) {
+                            Some(nya_application::Event::Failed(message.clone()))
+                        } else {
+                            let event = application.execute(command);
+                            if matches!(&event, nya_application::Event::MemoryRead)
+                                && cleanup_failure.is_some()
+                            {
+                                cleanup
+                            } else {
+                                Some(event)
+                            }
+                        }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         let event = application.poll();
@@ -1163,6 +1203,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let presenter = worker_presenter.clone();
                     move |ui| {
                         let mut presenter = presenter.lock().expect("presenter lock");
+                        if finished_acquisition {
+                            if let presenter::PreparedEvent::Failed(error) = &event {
+                                ui.set_live_enabled(false);
+                                ui.set_acquisition_status(error.as_str().into());
+                                ui.set_watch_sample_status(error.as_str().into());
+                            }
+                        }
                         if finished_wireless {
                             ui.set_wireless_pairing(false);
                             ui.set_wireless_comparison_code("".into());
@@ -1320,8 +1367,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let debug_sender = sender.clone();
     let weak_download = download_window.as_weak();
     let download_progress = install_progress.clone();
+    let debug_acquisition = acquisition.clone();
     ui.on_debug_action(move |kind| {
         if let Some(ui) = weak.upgrade() {
+            if ui.get_wireless_enabled()
+                && ui.get_acquisition_active()
+                && matches!(kind, 0 | 8 | 10)
+            {
+                if ui.get_busy() || ui.get_file_dialog_open() {
+                    return;
+                }
+                debug_acquisition.stop();
+                ui.set_live_enabled(false);
+            }
             let action = match kind {
                 0 | 8 | 10 if kind != 8 || !ui.get_debug_connected() => {
                     match target_profile(&ui, kind == 8) {
@@ -1934,6 +1992,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .start_acquisition(&ui);
             if ui.get_acquisition_active() {
                 ui.invoke_live_refresh();
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let wireless_sender = sender.clone();
+    ui.on_start_wireless_acquisition(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if ui.get_busy() || ui.get_acquisition_active() || ui.get_file_dialog_open() {
+            return;
+        }
+        let prepared = (|| {
+            if ui.get_debug_connected() {
+                return Err("请先断开 GDB 调试，再开始无线采集".to_string());
+            }
+            let profile = target_profile(&ui, true)?;
+            let connection = wireless::connection(&ui, false)?;
+            Ok(Command::StartWirelessAcquisition {
+                profile,
+                connection,
+            })
+        })();
+        match prepared {
+            Ok(command) => submit(&ui, &wireless_sender, command),
+            Err(error) => {
+                ui.set_live_enabled(false);
+                ui.set_acquisition_status(error.as_str().into());
+                ui.set_watch_sample_status(error.as_str().into());
+                ui.set_status(error.into());
             }
         }
     });

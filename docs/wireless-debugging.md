@@ -13,6 +13,19 @@
 
 无线参数自动保存到桌面配置目录的 `wireless.json`，并随 `.nyaproj` 项目保存；项目只记录设备 ID 和参数，配对密钥仍保存在本机后端凭据库。旧项目缺少无线配置时默认使用本地后端。无线调试不需要安装本地 OpenOCD/pyOCD/probe-rs，也不会使用它们的芯片配置文件。
 
+## 无线数据采集
+
+1. 在无线调试设置中选择已配对手机，填写芯片型号、协议、速率和核心。采集无需填写本地 GDB 路径。
+2. 打开并解析目标实际运行的 ELF/AXF，把具有固定地址的变量加入波形；或加入监视列表后开启「实时刷新」。
+3. 在波形页点击「开始采集」。已连接调试时复用 GDB 连接读取内存；未连接时通过手机原生接口读取。两种方式均显示实时曲线、变量值和实际采集速率。
+4. 「停止」会释放本次采集会话并保留已有波形，支持继续查看、缩放、切换图表和导出 CSV。再次开始会建立新代次并清空本轮缓冲。
+
+手机的原生内存接口与 GDB 互斥；连接调试时通过同一 GDB 会话读取运行中内存。独立采集切换到工具栏的连接、复位连接或下载时，桌面会先停止并释放采集。已有其他手机端 GDB 或烧录任务时拒绝启动独立采集。
+
+采集支持现有标量整数、浮点数和布尔类型，按 ELF 的大小和字节序解码，最多 16 个波形通道，每通道保留 32768 个样本。运行时局部变量或没有固定地址的表达式仍需在 GDB 暂停后求值。监视变量按「实时刷新」频率读取，波形以链路实际可达到的速度采集；配置频率不代表保证的硬件采样率。时间轴使用电脑计时和单轮读取中点估计，不是 MCU 硬件采样时钟。
+
+独立采集使用已认证 QUIC 的 `MEMORY_READ` 二进制接口；调试期间使用 GDB 内存读取。每轮请求最多 8 个读取块、每块 1–1024 字节。完整读取一轮后才发布数据；超时、断线、短响应或旧会话会停止采集并保留已有样本。采集读取不发送暂停、继续、复位、内存写入或目标函数调用命令；首次附着按无线设置执行。
+
 ## 准备和验证
 
 手机启动 Ember 服务，与电脑处于可互通的局域网。在手机上授予 USB 权限并连接调试探针；后端不能代替 Android 授权。首次配对无需连接 MCU。
@@ -41,7 +54,8 @@ cargo run -p nya-debug-adapter --example wireless -- forget <设备ID>
 - `WirelessConfig::new(device_id)`：默认使用已保存地址、核心 0、SWD、1000 kHz；可覆盖 `endpoint`、`core`、`speed_khz`、`protocol`、`under_reset`。地址覆盖仍校验完整设备 ID 和原证书指纹。目前使用明确的 TCP 地址入口，不自动浏览 mDNS。
 - `DebugAction::ConnectWireless { profile, connection, reset }`：`profile.target` 是手机 probe-rs 芯片名，`firmware` 和 `gdb_executable` 是电脑本地路径，`gdb_port` 是手机服务端口。`profile.tool/interface/transport` 不参与无线工具选择，SWD/JTAG 取自 `WirelessConfig`。本地 GDB 和符号加载通过后才操作远端探针。
 - `DebugAction::FlashWireless { profile, connection }`：支持 ELF/AXF/HEX，文件限 1–64 MiB，独立烧录接口按手机协议复位核心 0。其他核心可通过 `ConnectWireless` 选择后使用 GDB 下载。
-- 连接后继续使用 `DebugSession` 的暂停、继续、源码单步、断点、栈帧、变量读取/修改、复位、下载和断开。`Application::execute(Command::Debug(...))` 可直接传入无线操作，不需要选择或安装本地 OpenOCD/pyOCD/probe-rs。运行中独立内存采样接口目前不支持无线会话。
+- 连接后继续使用 `DebugSession` 的暂停、继续、源码单步、断点、栈帧、变量读取/修改、复位、下载和断开。`Application::execute(Command::Debug(...))` 可直接传入无线操作，不需要选择或安装本地 OpenOCD/pyOCD/probe-rs。
+- `WirelessRegistry::start_wireless_acquisition(profile, connection)` 返回独立采集代次；`read_wireless_memory(generation, blocks)` 读取原始字节；`stop_wireless_acquisition(generation)` 只释放匹配的采集，旧请求不能读取或停止新采集和 GDB 会话。应用层对应 `StartWirelessAcquisition`、`ReadWirelessMemory`、`StopWirelessAcquisition`，通过现有后端工作线程串行执行。
 
 上述方法会阻塞，应在后端工作线程调用。`DebugAdapter::set_install_progress` 的共享进度用于报告上传和手机烧录进度。成功完成以前不会报告 100%。
 
@@ -64,4 +78,4 @@ cargo run -p nya-scraping --example wireless_ui_check
 
 无线测试使用本机真实 TCP/QUIC/TLS 模拟手机，检查 TLS exporter 校验码、认证、证书固定、协议字段、固件分块和 SHA-256、任务结果与资源清理；调试动作使用现有模拟 GDB/MI 进程验证。这些测试需要允许本地 TCP/UDP 套接字。尚未以真实 Android 手机、探针和 MCU 完成硬件联调。
 
-桌面测试覆盖无线配置校验、项目保存及旧项目兼容、无需安装本地调试后端的无线配置，以及配对校验码和设备列表事件。`wireless_ui_check` 离屏渲染普通配置和配对等待状态，检查地址刷新与设备选择，覆盖 1480×900 和 1180×720 窗口；传入截图路径前缀可导出 PNG，无需显示服务器或连接真实手机。
+桌面测试覆盖无线配置校验、项目保存及旧项目兼容、无需安装本地调试后端的无线配置，以及配对校验码和设备列表事件。无线采集测试检查真实 QUIC 二进制读取、长度与超时、会话隔离、分块解码和清理。`wireless_ui_check` 还通过确定性工作线程验证变量采样、曲线渲染、CSV 导出及自动清理事件，覆盖 1480×900 和 1180×720 窗口；传入截图路径前缀可导出 PNG，无需显示服务器或连接真实手机。

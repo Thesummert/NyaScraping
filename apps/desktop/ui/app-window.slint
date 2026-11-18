@@ -257,8 +257,11 @@ export component AppWindow inherits Window {
     in-out property <string> acquisition-status: "采集未启动";
     in-out property <string> acquisition-statistics: "每通道最多保留 32768 个样本；尚无采集数据";
     in-out property <string> acquisition-endpoint: "127.0.0.1:6666";
-    out property <bool> acquisition-uses-session: root.backend-kind == 1 || root.backend-kind == 2;
-    out property <string> acquisition-source-label: root.wireless-enabled ? "EmberMobile · 暂不支持采集" : root.backend-kind == 1 ? "pyOCD · 调试会话" : root.backend-kind == 2 ? "probe-rs · 调试会话" : "OpenOCD Tcl";
+    out property <bool> acquisition-uses-session: root.wireless-enabled || root.backend-kind == 1 || root.backend-kind == 2;
+    out property <bool> acquisition-session-ready: root.wireless-enabled ? root.debug-connected || (root.wireless-device-index >= 0 && root.wireless-target != "") : root.debug-connected;
+    out property <string> acquisition-session-message: root.wireless-enabled ? (root.debug-connected ? "复用无线调试连接采集" : root.acquisition-session-ready ? "直接连接手机采集，无需 GDB" : "请先在无线调试设置中配对手机并填写芯片型号") : (root.debug-connected ? "复用当前调试连接" : "请先连接调试后端");
+    out property <string> acquisition-source-label: root.wireless-enabled ? "EmberMobile · QUIC 内存" : root.backend-kind == 1 ? "pyOCD · 调试会话" : root.backend-kind == 2 ? "probe-rs · 调试会话" : "OpenOCD Tcl";
+    callback start-wireless-acquisition();
     callback refresh-tools();
     in-out property <string> tree-sitter-executable;
     in-out property <string> tree-sitter-config;
@@ -359,7 +362,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "安装后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "刷新率"; enabled: !root.interaction-busy; activated => { root.settings-tab = 3; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
-            MenuItem { title: "无线调试…"; enabled: !root.interaction-busy && !root.debug-connected; activated => { root.wireless-enabled = true; root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "无线调试…"; enabled: !root.interaction-busy && !root.debug-connected && !root.acquisition-active; activated => { root.wireless-enabled = true; root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "Tree-sitter 管理"; enabled: !root.interaction-busy; activated => { root.settings-tab = 4; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "源码字体"; enabled: !root.interaction-busy; activated => { root.source-font-draft = root.source-font-family; root.source-font-size-draft = root.source-font-size; root.settings-tab = 5; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "自定义背景"; enabled: !root.interaction-busy; activated => { root.settings-tab = 6; root.settings-message = ""; root.settings-open = true; } }
@@ -556,7 +559,8 @@ export component AppWindow inherits Window {
                                 endpoint <=> root.acquisition-endpoint;
                                 source-label: root.acquisition-source-label;
                                 use-session: root.acquisition-uses-session;
-                                session-ready: root.debug-connected;
+                                session-ready: root.acquisition-session-ready;
+                                session-message: root.acquisition-session-message;
                                 start => { root.start-acquisition(); }
                                 stop => { root.stop-acquisition(); }
                                 remove(index, node) => { root.toggle-waveform(index, node); }
@@ -615,7 +619,8 @@ export component AppWindow inherits Window {
                     memory-endpoint <=> root.acquisition-endpoint;
                     source-label: root.acquisition-source-label;
                     use-session: root.acquisition-uses-session;
-                    session-ready: root.debug-connected;
+                    session-ready: root.acquisition-session-ready;
+                    session-message: root.acquisition-session-message;
                     live-enabled <=> root.live-enabled;
                     live-interval-index <=> root.live-interval-index;
                     live-custom-hz <=> root.live-custom-hz;
@@ -675,7 +680,7 @@ export component AppWindow inherits Window {
                             padding-top: 12px;
                             busy: root.busy || root.file-dialog-open;
                             tools: root.tools;
-                            connected: root.debug-connected;
+                            connected: root.debug-connected || (root.wireless-enabled && root.acquisition-active);
                             backend-summary: root.backend-summary;
                             message: root.tool-message;
                             refresh => { root.refresh-tools(); }
@@ -688,7 +693,7 @@ export component AppWindow inherits Window {
                             padding-top: 12px;
                             busy: root.busy || root.file-dialog-open;
                             tools: root.tools;
-                            connected: root.debug-connected;
+                            connected: root.debug-connected || (root.wireless-enabled && root.acquisition-active);
                             message: root.tool-message;
                             local-directory <=> root.local-tool-directory;
                             refresh => { root.refresh-tools(); }
@@ -703,7 +708,7 @@ export component AppWindow inherits Window {
                         title: "调试器设置";
                         DebugSettings {
                             busy: root.busy || root.file-dialog-open;
-                            connected: root.debug-connected;
+                            connected: root.debug-connected || (root.wireless-enabled && root.acquisition-active);
                             backend: root.backend-summary;
                             gdb-path <=> root.gdb-path;
                             target <=> root.debug-target;
@@ -1062,6 +1067,7 @@ export component WaveformWindow inherits Window {
     in property <string> source-label;
     in property <bool> use-session;
     in property <bool> session-ready;
+    in property <string> session-message;
     in-out property <bool> detached: true;
     callback toggle-detached(bool);
     callback add-chart();
@@ -1096,6 +1102,7 @@ export component WaveformWindow inherits Window {
         source-label: root.source-label;
         use-session: root.use-session;
         session-ready: root.session-ready;
+        session-message: root.session-message;
         toggle-detached(value) => { root.toggle-detached(value); }
         add-chart => { root.add-chart(); }
         select-chart(index) => { root.select-chart(index); }

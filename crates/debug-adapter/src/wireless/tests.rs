@@ -19,6 +19,10 @@ struct PhoneState {
     replace_job: bool,
     reject_upload: bool,
     fail_gdb: bool,
+    short_memory: bool,
+    wrong_memory_kind: bool,
+    memory_delay_ms: u64,
+    current_session: Option<i64>,
 }
 
 /// A real TLS/QUIC peer and a strict TCP discovery endpoint. No USB or MCU.
@@ -91,6 +95,23 @@ impl Phone {
                     let mut authenticated = false;
                     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
                         let (kind, bytes) = transport::read(&mut recv).await.unwrap();
+                        if kind == transport::MEMORY_READ && authenticated {
+                            let request: Value = serde_json::from_slice(&bytes).unwrap();
+                            let (delay, wrong_kind) = {
+                                let state = state.lock().unwrap();
+                                (state.memory_delay_ms, state.wrong_memory_kind)
+                            };
+                            if delay > 0 { tokio::time::sleep(Duration::from_millis(delay)).await; }
+                            let (kind, bytes) = match memory_read(&state, request) {
+                                Ok(bytes) => (if wrong_kind { transport::OK } else { transport::DATA }, bytes),
+                                Err(e) => (255, serde_json::to_vec(&json!({"code":e.0,"message":e.0})).unwrap()),
+                            };
+                            if transport::write(&mut send, kind, &bytes).await.is_ok() {
+                                let _ = send.finish();
+                                let _ = send.stopped().await;
+                            }
+                            continue;
+                        }
                         let result: Result<Value> = match kind {
                             transport::PAIR => {
                                 let request: Value = serde_json::from_slice(&bytes).unwrap();
@@ -233,6 +254,184 @@ fn rpc(shared: &Mutex<PhoneState>, method: &str, params: Value) -> Result<Value>
         }
         _ => unreachable!(),
     }
+}
+
+fn memory_read(shared: &Mutex<PhoneState>, params: Value) -> Result<Vec<u8>> {
+    let mut state = shared.lock().unwrap();
+    let mut keys: Vec<_> = params
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["address", "core", "length", "session_id"]);
+    state.calls.push(("memory_read".into(), params.clone()));
+    if params["session_id"].as_i64() != Some(state.current_session.unwrap_or(7)) {
+        return Err(Error("stale_session".into()));
+    }
+    if state.gdb {
+        return Err(Error("gdb_busy".into()));
+    }
+    if !state.attached {
+        return Err(Error("not_attached".into()));
+    }
+    let address = params["address"].as_u64().unwrap();
+    let length = params["length"].as_u64().unwrap();
+    let length = if state.short_memory {
+        length - 1
+    } else {
+        length
+    };
+    Ok((0..length).map(|i| address.wrapping_add(i) as u8).collect())
+}
+
+fn memory_blocks() -> Vec<nya_domain::waveform::ReadBlock> {
+    vec![
+        nya_domain::waveform::ReadBlock {
+            address: 0x20000004,
+            byte_size: 4,
+            little_endian: true,
+        },
+        nya_domain::waveform::ReadBlock {
+            address: 0x20000030,
+            byte_size: 2,
+            little_endian: false,
+        },
+    ]
+}
+
+#[test]
+fn native_acquisition_reads_binary_memory_without_gdb_or_execution_commands() {
+    let phone = Phone::start();
+    let (_root, mut adapter, profile) = fixture();
+    let mut config = pair(&mut adapter, &phone);
+    config.core = 2;
+    let generation = adapter
+        .start_wireless_acquisition(&profile, &config)
+        .unwrap();
+    let values = adapter
+        .read_wireless_memory(generation, &memory_blocks())
+        .unwrap();
+    assert_eq!(values, [vec![4, 5, 6, 7], vec![0x30, 0x31]]);
+    assert_eq!(
+        phone
+            .state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .find(|(method, _)| method == "memory_read")
+            .unwrap()
+            .1["core"],
+        2
+    );
+    adapter.stop_wireless_acquisition(generation).unwrap();
+    let state = phone.state.lock().unwrap();
+    let calls: Vec<_> = state.calls.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(
+        calls,
+        [
+            "backend_state",
+            "attach",
+            "memory_read",
+            "memory_read",
+            "detach"
+        ]
+    );
+    assert!(!state.attached && !state.gdb);
+    assert!(adapter.wireless.is_none());
+}
+
+#[test]
+fn native_acquisition_rejects_stale_reads_stops_and_invalid_ranges() {
+    let phone = Phone::start();
+    let (_root, mut adapter, profile) = fixture();
+    let config = pair(&mut adapter, &phone);
+    let old = adapter
+        .start_wireless_acquisition(&profile, &config)
+        .unwrap();
+    adapter.stop_wireless_acquisition(old).unwrap();
+    let new = adapter
+        .start_wireless_acquisition(&profile, &config)
+        .unwrap();
+    let before = phone.state.lock().unwrap().calls.len();
+    assert_ne!(old, new);
+    assert!(adapter.read_wireless_memory(old, &memory_blocks()).is_err());
+    adapter.stop_wireless_acquisition(old).unwrap();
+    for (address, length, count) in [(0, 0, 1), (0, 1025, 1), (u64::MAX, 4, 1), (0, 4, 9)] {
+        let blocks = vec![
+            nya_domain::waveform::ReadBlock {
+                address,
+                byte_size: length,
+                little_endian: true
+            };
+            count
+        ];
+        assert!(adapter.read_wireless_memory(new, &blocks).is_err());
+    }
+    assert_eq!(phone.state.lock().unwrap().calls.len(), before);
+    assert!(adapter.read_wireless_memory(new, &memory_blocks()).is_ok());
+    assert!(adapter
+        .execute_debug(DebugAction::FlashWireless {
+            profile,
+            connection: config
+        })
+        .is_err());
+    adapter.stop_wireless_acquisition(new).unwrap();
+}
+
+#[test]
+fn native_acquisition_rejects_short_wrong_kind_stale_session_and_gdb_ownership() {
+    for failure in ["short", "kind", "session", "gdb"] {
+        let phone = Phone::start();
+        let (_root, mut adapter, profile) = fixture();
+        let config = pair(&mut adapter, &phone);
+        phone.state.lock().unwrap().attached = true;
+        let generation = adapter
+            .start_wireless_acquisition(&profile, &config)
+            .unwrap();
+        {
+            let mut state = phone.state.lock().unwrap();
+            match failure {
+                "short" => state.short_memory = true,
+                "kind" => state.wrong_memory_kind = true,
+                "session" => state.current_session = Some(8),
+                "gdb" => state.gdb = true,
+                _ => unreachable!(),
+            }
+        }
+        assert!(adapter
+            .read_wireless_memory(generation, &memory_blocks())
+            .is_err());
+        adapter.stop_wireless_acquisition(generation).unwrap();
+        assert!(phone.state.lock().unwrap().attached);
+        assert!(!phone
+            .state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(m, _)| m == "detach" || m == "gdb_stop"));
+    }
+}
+
+#[test]
+fn native_memory_timeouts_are_bounded_and_do_not_report_partial_batches() {
+    let phone = Phone::start();
+    let (_root, mut adapter, profile) = fixture();
+    let config = pair(&mut adapter, &phone);
+    let generation = adapter
+        .start_wireless_acquisition(&profile, &config)
+        .unwrap();
+    phone.state.lock().unwrap().memory_delay_ms = 1500;
+    let started = Instant::now();
+    let error = adapter
+        .read_wireless_memory(generation, &memory_blocks())
+        .unwrap_err();
+    assert!(error.0.contains("超时"));
+    assert!(started.elapsed() < Duration::from_millis(1300));
+    adapter.stop_wireless_acquisition(generation).unwrap();
 }
 
 fn fixture() -> (tempfile::TempDir, DebugAdapter, TargetProfile) {
@@ -533,6 +732,12 @@ fn wireless_gdb_reuses_debug_actions_and_cleans_owned_services() {
         .execute_debug(DebugAction::AddBreakpoint("compute".into()))
         .unwrap();
     adapter.execute_debug(DebugAction::Continue).unwrap();
+    let bytes = adapter.read_live_memory(&memory_blocks()).unwrap();
+    assert_eq!(bytes.len(), 2);
+    assert_eq!(
+        adapter.debug_snapshot(&[]).state,
+        nya_domain::SessionState::Running
+    );
     adapter.execute_debug(DebugAction::Pause).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while adapter.debug_snapshot(&[]).state != nya_domain::SessionState::Halted {
@@ -544,9 +749,11 @@ fn wireless_gdb_reuses_debug_actions_and_cleans_owned_services() {
     adapter.execute_debug(DebugAction::Download).unwrap();
     adapter.execute_debug(DebugAction::Disconnect).unwrap();
     let commands = std::fs::read_to_string(gdb.with_extension("commands")).unwrap();
-    assert!(commands.contains("-target-select remote 127.0.0.1:3333"));
+    assert!(commands.contains("-target-select remote 127.0.0.1:"));
+    assert!(commands.contains("-data-read-memory-bytes"));
+    assert_eq!(commands.matches("-exec-interrupt --all").count(), 1);
     assert!(commands.contains("-target-download"));
-    assert!(!commands.contains("target-non-stop"));
+    assert!(commands.contains("target-non-stop"));
     let state = phone.state.lock().unwrap();
     assert!(!state.gdb && !state.attached);
     let calls: Vec<_> = state.calls.iter().map(|(name, _)| name.as_str()).collect();

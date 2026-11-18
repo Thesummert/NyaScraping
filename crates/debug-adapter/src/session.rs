@@ -470,8 +470,8 @@ impl DebugSession for DebugAdapter {
                 // Frame argument values are available in watches. Fetching them
                 // while formatting *stopped delays the initial stop notification.
                 client.command("-gdb-set print frame-arguments none")?;
-                if wireless_config.is_none()
-                    && matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs)
+                if wireless_config.is_some()
+                    || matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs)
                 {
                     client.command(&format!(
                         "-interpreter-exec console {}",
@@ -501,10 +501,11 @@ impl DebugSession for DebugAdapter {
                     .unwrap_or_else(|| {
                         std::net::SocketAddr::from(([127, 0, 0, 1], profile.gdb_port))
                     });
-                if self.wireless.is_none()
-                    && matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs)
+                if self.wireless.is_some()
+                    || matches!(profile.tool, ToolKind::PyOcd | ToolKind::ProbeRs)
                 {
-                    let bridge = match if profile.tool == ToolKind::PyOcd {
+                    let bridge = match if self.wireless.is_none() && profile.tool == ToolKind::PyOcd
+                    {
                         NonStopBridge::start_native(endpoint)
                     } else {
                         NonStopBridge::start(endpoint)
@@ -526,7 +527,11 @@ impl DebugSession for DebugAdapter {
                 }
                 self.session.client = Some(client);
                 self.session.firmware = Some(profile.firmware);
-                self.session.memory_backend = self.wireless.is_none().then_some(profile.tool);
+                self.session.memory_backend = Some(if self.wireless.is_some() {
+                    ToolKind::ProbeRs
+                } else {
+                    profile.tool
+                });
                 if let Err(error) = self.session.thread_state().and_then(|()| {
                     if reset {
                         self.session
@@ -857,9 +862,6 @@ impl DebugSession for DebugAdapter {
     }
 
     fn read_live_memory(&mut self, blocks: &[ReadBlock]) -> Result<Vec<Vec<u8>>> {
-        if self.wireless.is_some() {
-            return Err(Error("无线调试会话暂不支持无暂停内存采集".into()));
-        }
         if !matches!(
             self.session.memory_backend,
             Some(ToolKind::PyOcd | ToolKind::ProbeRs)

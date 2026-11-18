@@ -13,6 +13,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 use store::{SavedDevice, Store};
@@ -132,6 +133,7 @@ impl DebugAdapter {
             session_id,
             owns_target: false,
             owns_gdb: false,
+            acquisition: None,
         };
         if connection["attached"] == true {
             if !connection["chip"]
@@ -274,6 +276,65 @@ fn progress(shared: &SharedInstallProgress, stage: &str, percent: Option<f32>) {
 }
 
 impl WirelessRegistry for DebugAdapter {
+    fn start_wireless_acquisition(
+        &mut self,
+        profile: &TargetProfile,
+        connection: &WirelessConfig,
+    ) -> Result<u64> {
+        static NEXT_COLLECTION: AtomicU64 = AtomicU64::new(1);
+        let mut remote = self.open_wireless(connection, profile)?;
+        let generation = NEXT_COLLECTION.fetch_add(1, Ordering::Relaxed);
+        remote.acquisition = Some((generation, connection.core));
+        self.wireless = Some(remote);
+        Ok(generation)
+    }
+
+    fn read_wireless_memory(
+        &mut self,
+        generation: u64,
+        blocks: &[nya_domain::waveform::ReadBlock],
+    ) -> Result<Vec<Vec<u8>>> {
+        let remote = self
+            .wireless
+            .as_ref()
+            .ok_or_else(|| Error("无线采集会话已断开".into()))?;
+        let (_, core) = remote
+            .acquisition
+            .filter(|(id, _)| *id == generation)
+            .ok_or_else(|| Error("无线采集请求已失效，请重新开始采集".into()))?;
+        if blocks.len() > 8
+            || blocks.iter().any(|block| {
+                block.byte_size == 0
+                    || block.byte_size > 1024
+                    || block.address.checked_add(block.byte_size as u64).is_none()
+            })
+        {
+            return Err(Error(
+                "无线内存读取每批最多 8 块，每块为 1–1024 字节".into(),
+            ));
+        }
+        if blocks.is_empty() {
+            return Ok(Vec::new());
+        }
+        remote.check()?;
+        remote
+            .runtime
+            .block_on(remote.client.read_memory(remote.session_id, core, blocks))
+    }
+
+    fn stop_wireless_acquisition(&mut self, generation: u64) -> Result<()> {
+        if self
+            .wireless
+            .as_ref()
+            .and_then(|r| r.acquisition)
+            .is_some_and(|(id, _)| id == generation)
+        {
+            if let Some(mut remote) = self.wireless.take() {
+                remote.stop()?;
+            }
+        }
+        Ok(())
+    }
     fn paired_wireless_devices(&self) -> Result<Vec<WirelessDevice>> {
         Ok(Store::open(&self.wireless_directory())?
             .devices
@@ -367,6 +428,8 @@ pub(super) struct RemoteSession {
     session_id: i64,
     owns_target: bool,
     owns_gdb: bool,
+    /// (local collection generation, target core), absent for GDB sessions.
+    acquisition: Option<(u64, u32)>,
 }
 
 impl RemoteSession {
@@ -430,7 +493,20 @@ impl RemoteSession {
             }
         }
         if self.owns_target && !self.owns_gdb {
-            match self.call("detach", json!({})) {
+            let result = if self.acquisition.is_some() {
+                self.runtime.block_on(async {
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        self.client
+                            .call("detach", json!({"session_id":self.session_id})),
+                    )
+                    .await
+                    .map_err(|_| Error("停止无线采集时等待手机释放目标超时".into()))?
+                })
+            } else {
+                self.call("detach", json!({}))
+            };
+            match result {
                 Ok(_) => self.owns_target = false,
                 Err(e) => {
                     failure.get_or_insert(e);

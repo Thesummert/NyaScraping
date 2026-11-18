@@ -1,8 +1,9 @@
 //! Use cases run on a worker; UI callbacks submit commands and consume events.
 use nya_domain::{
     firmware::{FirmwareBackend, FirmwareImage},
-    DebugAction, DebugSession, DebugSnapshot, Document, Result, TargetCatalog, TextBackend,
-    ToolKind, ToolRegistry, ToolState, WatchRequest, WirelessDevice, WirelessRegistry,
+    DebugAction, DebugSession, DebugSnapshot, Document, Result, TargetCatalog, TargetProfile,
+    TextBackend, ToolKind, ToolRegistry, ToolState, WatchRequest, WirelessConfig, WirelessDevice,
+    WirelessRegistry,
 };
 use std::{path::PathBuf, sync::mpsc::SyncSender, time::Instant};
 
@@ -13,6 +14,15 @@ pub struct MemoryReadRequest {
 }
 
 pub enum Command {
+    StartWirelessAcquisition {
+        profile: TargetProfile,
+        connection: WirelessConfig,
+    },
+    StopWirelessAcquisition(u64),
+    ReadWirelessMemory {
+        generation: u64,
+        request: MemoryReadRequest,
+    },
     RefreshWirelessDevices,
     PairWireless {
         endpoint: String,
@@ -54,6 +64,12 @@ pub enum Command {
 }
 
 pub enum Event {
+    WirelessAcquisitionStarted(u64),
+    /// Automatic cleanup does not complete an unrelated queued UI command.
+    WirelessAcquisitionStopped {
+        generation: u64,
+        message: String,
+    },
     WirelessDevicesUpdated {
         devices: Vec<WirelessDevice>,
         selected_id: Option<String>,
@@ -100,6 +116,32 @@ impl<T: ToolRegistry + DebugSession + WirelessRegistry, E: TextBackend, F: Firmw
 
     pub fn execute(&mut self, command: Command) -> Event {
         let result: Result<Event> = match command {
+            Command::StartWirelessAcquisition {
+                profile,
+                connection,
+            } => self
+                .tools
+                .start_wireless_acquisition(&profile, &connection)
+                .map(Event::WirelessAcquisitionStarted),
+            Command::StopWirelessAcquisition(generation) => Ok(Event::WirelessAcquisitionStopped {
+                generation,
+                message: match self.tools.stop_wireless_acquisition(generation) {
+                    Ok(()) => "无线采集已停止，保留已有数据".into(),
+                    Err(error) => format!("无线采集已停止，手机会话清理失败：{error}"),
+                },
+            }),
+            Command::ReadWirelessMemory {
+                generation,
+                request,
+            } => {
+                let result = if Instant::now() >= request.deadline {
+                    Err(nya_domain::Error("无线内存采集请求已过期".into()))
+                } else {
+                    self.tools.read_wireless_memory(generation, &request.blocks)
+                };
+                let _ = request.response.try_send(result);
+                return Event::MemoryRead;
+            }
             Command::RefreshWirelessDevices => {
                 self.tools
                     .paired_wireless_devices()
@@ -479,6 +521,7 @@ mod tests {
     #[derive(Default)]
     struct Tools {
         phones: Vec<WirelessDevice>,
+        collection: Option<u64>,
         state: ToolState,
         calls: Vec<String>,
         debug: DebugSnapshot,
@@ -486,6 +529,34 @@ mod tests {
         dirty: bool,
     }
     impl WirelessRegistry for Tools {
+        fn start_wireless_acquisition(
+            &mut self,
+            _profile: &TargetProfile,
+            _connection: &WirelessConfig,
+        ) -> Result<u64> {
+            self.collection = Some(42);
+            Ok(42)
+        }
+        fn read_wireless_memory(
+            &mut self,
+            generation: u64,
+            blocks: &[nya_domain::waveform::ReadBlock],
+        ) -> Result<Vec<Vec<u8>>> {
+            if self.collection != Some(generation) {
+                return Err(Error("stale collection".into()));
+            }
+            self.calls.push("wireless:read".into());
+            Ok(blocks
+                .iter()
+                .map(|block| vec![42; block.byte_size])
+                .collect())
+        }
+        fn stop_wireless_acquisition(&mut self, generation: u64) -> Result<()> {
+            if self.collection == Some(generation) {
+                self.collection = None;
+            }
+            Ok(())
+        }
         fn paired_wireless_devices(&self) -> Result<Vec<WirelessDevice>> {
             Ok(self.phones.clone())
         }
@@ -894,6 +965,62 @@ mod tests {
             &app.tools.actions[..],
             [DebugAction::Flash { profile }] if profile.tool == ToolKind::PyOcd
         ));
+    }
+
+    #[test]
+    fn native_collection_uses_its_own_generation_and_expired_requests_skip_hardware() {
+        let mut app = Application::new(Tools::default(), NoFiles, NoFiles);
+        let profile = TargetProfile {
+            name: "phone".into(),
+            tool: ToolKind::ProbeRs,
+            target: "chip".into(),
+            interface: None,
+            transport: None,
+            gdb_port: 3333,
+            gdb_executable: "".into(),
+            firmware: "firmware.axf".into(),
+        };
+        assert!(matches!(
+            app.execute(Command::StartWirelessAcquisition {
+                profile,
+                connection: WirelessConfig::new("phone")
+            }),
+            Event::WirelessAcquisitionStarted(42)
+        ));
+        for (generation, expired, expected) in
+            [(42, false, true), (41, false, false), (42, true, false)]
+        {
+            let (response, receiver) = std::sync::mpsc::sync_channel(1);
+            let request = MemoryReadRequest {
+                blocks: vec![nya_domain::waveform::ReadBlock {
+                    address: 0x20000000,
+                    byte_size: 4,
+                    little_endian: true,
+                }],
+                deadline: if expired {
+                    Instant::now()
+                } else {
+                    Instant::now() + std::time::Duration::from_secs(1)
+                },
+                response,
+            };
+            assert!(matches!(
+                app.execute(Command::ReadWirelessMemory {
+                    generation,
+                    request
+                }),
+                Event::MemoryRead
+            ));
+            assert_eq!(receiver.recv().unwrap().is_ok(), expected);
+        }
+        assert_eq!(app.tools.calls, ["wireless:read"]);
+        assert!(matches!(
+            app.execute(Command::StopWirelessAcquisition(41)),
+            Event::WirelessAcquisitionStopped { generation: 41, .. }
+        ));
+        assert_eq!(app.tools.collection, Some(42));
+        app.execute(Command::StopWirelessAcquisition(42));
+        assert!(app.tools.collection.is_none());
     }
 
     #[test]

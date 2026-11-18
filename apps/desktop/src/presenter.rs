@@ -4,7 +4,7 @@ use crate::{
     watch_list::WatchList,
     waveform_view::{self, COLORS, PLOT_WIDTH},
     AppWindow, BreakpointRow, FirmwareTreeRow, FrameRow, PackRow, SourceBreakpoint, SourceTab,
-    TargetRow, ToolRow, WatchRow, WaveformPath, WaveformRow,
+    TargetRow, ToolRow, WatchRow, WaveformPath, WaveformRow, WirelessDeviceRow,
 };
 use nya_application::Event;
 use nya_domain::{
@@ -18,6 +18,56 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+
+fn apply_wireless_devices(
+    ui: &AppWindow,
+    devices: Vec<nya_domain::WirelessDevice>,
+    selected: Option<String>,
+    message: String,
+) {
+    let change_selection = selected.is_some();
+    let mut id = selected.unwrap_or_else(|| ui.get_wireless_device_id().to_string());
+    if id.is_empty() {
+        id = devices
+            .first()
+            .map(|device| device.id.clone())
+            .unwrap_or_default();
+    }
+    if let Some(device) = devices.iter().find(|device| device.id == id) {
+        if change_selection || ui.get_wireless_endpoint().is_empty() {
+            ui.set_wireless_endpoint(device.endpoint.as_str().into());
+        }
+    }
+    let labels: Vec<slint::SharedString> = devices
+        .iter()
+        .map(|device| {
+            format!(
+                "{} · {}",
+                device.name,
+                device.id.chars().take(12).collect::<String>()
+            )
+            .into()
+        })
+        .collect();
+    let rows: Vec<_> = devices
+        .into_iter()
+        .map(|device| WirelessDeviceRow {
+            id: device.id.into(),
+            name: device.name.into(),
+            endpoint: device.endpoint.into(),
+        })
+        .collect();
+    ui.set_wireless_devices(ModelRc::new(VecModel::from(rows)));
+    ui.set_wireless_device_labels(ModelRc::new(VecModel::from(labels)));
+    ui.set_wireless_device_id(id.into());
+    let selected = ui
+        .get_wireless_devices()
+        .iter()
+        .position(|device| device.id == ui.get_wireless_device_id());
+    ui.set_wireless_device_index(selected.map(|i| i as i32).unwrap_or(-1));
+    ui.set_wireless_message(message.as_str().into());
+    ui.set_status(message.into());
+}
 
 const PLOT_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
@@ -106,6 +156,7 @@ pub struct Presenter {
 /// Plain Rust data prepared on the worker, before entering the Slint event loop.
 pub enum PreparedEvent {
     Internal,
+    Wireless(Vec<nya_domain::WirelessDevice>, Option<String>, String),
     Tools(ToolState, String),
     Targets(TargetCatalog),
     Debug(DebugSnapshot, bool),
@@ -152,6 +203,7 @@ fn executable_lines(
 impl From<Event> for PreparedEvent {
     fn from(event: Event) -> Self {
         match event {
+            Event::WirelessDevicesUpdated { devices, selected_id, message } => Self::Wireless(devices, selected_id, message),
             Event::MemoryRead => Self::Internal,
             Event::ToolsUpdated { state, message } => Self::Tools(state, message),
             Event::TargetsUpdated(catalog) => Self::Targets(catalog),
@@ -457,6 +509,9 @@ impl Presenter {
         }
         match event {
             PreparedEvent::Internal => {}
+            PreparedEvent::Wireless(devices, selected, message) => {
+                apply_wireless_devices(ui, devices, selected, message);
+            }
             PreparedEvent::Tools(state, message) => {
                 let kind = match state.backend {
                     Some(ToolKind::OpenOcd) => 0,
@@ -959,6 +1014,9 @@ impl Presenter {
     }
 
     fn memory_source(ui: &AppWindow) -> Result<MemorySource, String> {
+        if ui.get_wireless_enabled() {
+            return Err("无线调试暂不支持无暂停波形采集；可在目标暂停后查看变量".into());
+        }
         if matches!(ui.get_backend_kind(), 1 | 2) {
             if !ui.get_debug_connected() {
                 return Err("请先在调试页连接所选的 pyOCD / probe-rs 后端".into());

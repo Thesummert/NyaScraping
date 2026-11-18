@@ -8,6 +8,8 @@ import { WaveformsPage, WaveformRow, WaveformPath } from "pages/waveforms.slint"
 import { FirmwarePage, FirmwareTreeRow } from "pages/firmware.slint";
 import { DebugPage, FrameRow, BreakpointRow } from "pages/debug.slint";
 import { DebugSettings } from "pages/debug-settings.slint";
+import { WirelessDeviceRow } from "pages/wireless-settings.slint";
+export { WirelessDeviceRow }
 import { TargetRow, PackRow } from "pages/target-selector.slint";
 export { SourceTab, SourceBreakpoint, HighlightLine, HighlightSpan, FirmwareTreeRow, WatchRow, ToolRow, FrameRow, BreakpointRow, TargetRow, PackRow, WaveformRow, WaveformPath }
 
@@ -136,6 +138,35 @@ export component AppWindow inherits Window {
     callback browse-probe();
     in-out property <string> debug-port: "3333";
     in-out property <bool> external-server: false;
+    in-out property <bool> wireless-enabled: false;
+    in-out property <[WirelessDeviceRow]> wireless-devices;
+    in-out property <[string]> wireless-device-labels;
+    in-out property <int> wireless-device-index: -1;
+    in-out property <string> wireless-device-id;
+    in-out property <string> wireless-endpoint;
+    in-out property <string> wireless-computer-name: "NyaScraping";
+    in-out property <string> wireless-target;
+    in-out property <string> wireless-core: "0";
+    in-out property <string> wireless-speed: "1000";
+    in-out property <int> wireless-protocol-index: 0;
+    in-out property <bool> wireless-under-reset: false;
+    in-out property <bool> wireless-pairing: false;
+    in-out property <string> wireless-comparison-code;
+    in-out property <string> wireless-message;
+    callback select-wireless-device(int);
+    callback refresh-wireless();
+    callback pair-wireless();
+    callback forget-wireless();
+    callback wireless-settings-changed();
+    changed wireless-enabled => { root.wireless-settings-changed(); }
+    changed wireless-device-id => { root.wireless-settings-changed(); }
+    changed wireless-endpoint => { root.wireless-settings-changed(); }
+    changed wireless-computer-name => { root.wireless-settings-changed(); }
+    changed wireless-target => { root.wireless-settings-changed(); }
+    changed wireless-core => { root.wireless-settings-changed(); }
+    changed wireless-speed => { root.wireless-settings-changed(); }
+    changed wireless-protocol-index => { root.wireless-settings-changed(); }
+    changed wireless-under-reset => { root.wireless-settings-changed(); }
     in-out property <[FrameRow]> stack-frames;
     in-out property <[BreakpointRow]> breakpoints;
     in-out property <string> debug-log;
@@ -227,7 +258,7 @@ export component AppWindow inherits Window {
     in-out property <string> acquisition-statistics: "每通道最多保留 32768 个样本；尚无采集数据";
     in-out property <string> acquisition-endpoint: "127.0.0.1:6666";
     out property <bool> acquisition-uses-session: root.backend-kind == 1 || root.backend-kind == 2;
-    out property <string> acquisition-source-label: root.backend-kind == 1 ? "pyOCD · 调试会话" : root.backend-kind == 2 ? "probe-rs · 调试会话" : "OpenOCD Tcl";
+    out property <string> acquisition-source-label: root.wireless-enabled ? "EmberMobile · 暂不支持采集" : root.backend-kind == 1 ? "pyOCD · 调试会话" : root.backend-kind == 2 ? "probe-rs · 调试会话" : "OpenOCD Tcl";
     callback refresh-tools();
     in-out property <string> tree-sitter-executable;
     in-out property <string> tree-sitter-config;
@@ -328,6 +359,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "安装后端"; enabled: !root.interaction-busy; activated => { root.settings-tab = 1; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "刷新率"; enabled: !root.interaction-busy; activated => { root.settings-tab = 3; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "调试设置"; enabled: !root.interaction-busy; activated => { root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
+            MenuItem { title: "无线调试…"; enabled: !root.interaction-busy && !root.debug-connected; activated => { root.wireless-enabled = true; root.settings-tab = 2; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "Tree-sitter 管理"; enabled: !root.interaction-busy; activated => { root.settings-tab = 4; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "源码字体"; enabled: !root.interaction-busy; activated => { root.source-font-draft = root.source-font-family; root.source-font-size-draft = root.source-font-size; root.settings-tab = 5; root.settings-message = ""; root.settings-open = true; } }
             MenuItem { title: "自定义背景"; enabled: !root.interaction-busy; activated => { root.settings-tab = 6; root.settings-message = ""; root.settings-open = true; } }
@@ -695,6 +727,24 @@ export component AppWindow inherits Window {
                             port <=> root.debug-port;
                             firmware <=> root.firmware-path;
                             external-server <=> root.external-server;
+                            wireless-enabled <=> root.wireless-enabled;
+                            wireless-devices: root.wireless-device-labels;
+                            wireless-device-index: root.wireless-device-index;
+                            wireless-device-id: root.wireless-device-id;
+                            wireless-endpoint <=> root.wireless-endpoint;
+                            wireless-computer-name <=> root.wireless-computer-name;
+                            wireless-target <=> root.wireless-target;
+                            wireless-core <=> root.wireless-core;
+                            wireless-speed <=> root.wireless-speed;
+                            wireless-protocol-index <=> root.wireless-protocol-index;
+                            wireless-under-reset <=> root.wireless-under-reset;
+                            wireless-pairing: root.wireless-pairing;
+                            wireless-comparison-code: root.wireless-comparison-code;
+                            wireless-message: root.wireless-message;
+                            select-wireless-device(index) => { root.select-wireless-device(index); }
+                            refresh-wireless => { root.refresh-wireless(); }
+                            pair-wireless => { root.pair-wireless(); }
+                            forget-wireless => { root.forget-wireless(); }
                             browse-firmware => { root.browse-firmware(); }
                         }
                     }

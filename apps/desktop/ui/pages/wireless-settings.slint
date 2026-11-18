@@ -1,0 +1,78 @@
+import { Button, CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export struct WirelessDeviceRow { id: string, name: string, endpoint: string }
+
+export component WirelessSettings inherits VerticalLayout {
+    in property <bool> busy;
+    in property <bool> connected;
+    in property <[string]> devices;
+    in property <int> device-index: -1;
+    in property <string> device-id;
+    in-out property <string> endpoint;
+    in-out property <string> computer-name;
+    in-out property <string> target;
+    in-out property <string> core;
+    in-out property <string> speed;
+    in-out property <int> protocol-index;
+    in-out property <bool> under-reset;
+    in property <bool> pairing;
+    in property <string> comparison-code;
+    in property <string> message;
+    callback select-device(int);
+    callback refresh();
+    callback pair();
+    callback forget();
+    private property <bool> editable: !root.busy && !root.connected;
+    spacing: 8px;
+
+    Text { text: "EmberMobile 无线调试"; color: Theme.text; font-size: 16px; font-weight: 600; }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "已配对手机"; color: Theme.muted; width: 84px; vertical-alignment: center; }
+        ComboBox {
+            model: root.devices;
+            current-index: root.device-index;
+            enabled: root.editable && root.devices.length > 0;
+            horizontal-stretch: 1;
+            selected => { root.select-device(self.current-index); }
+        }
+        Button { text: "刷新"; enabled: root.editable; clicked => { root.refresh(); } }
+        Button { text: "删除配对"; enabled: root.editable && root.device-index >= 0; clicked => { root.forget(); } }
+    }
+    if root.device-id != "": Text { text: "设备 ID：" + root.device-id; color: Theme.muted; font-size: 10px; overflow: elide; }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "手机地址"; color: Theme.muted; width: 84px; vertical-alignment: center; }
+        LineEdit { text <=> root.endpoint; placeholder-text: "例如 192.168.1.100:4242"; enabled: root.editable; horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "本机名称"; color: Theme.muted; width: 84px; vertical-alignment: center; }
+        LineEdit { text <=> root.computer-name; placeholder-text: "在手机配对列表中显示的名称"; enabled: root.editable; horizontal-stretch: 1; }
+        Button { text: root.pairing ? "等待手机确认…" : "配对此地址"; enabled: root.editable && root.endpoint != "" && root.computer-name != ""; clicked => { root.pair(); } }
+    }
+    if root.pairing: VerticalLayout {
+        spacing: 4px;
+        Text { text: root.comparison-code == "" ? "正在联系手机…" : "配对校验码：" + root.comparison-code; color: Theme.accent; font-size: 22px; font-weight: 700; }
+        Text { text: "核对两端校验码一致后，在手机上同意配对（120 秒内）。可在手机拒绝以结束。"; color: Theme.text; wrap: word-wrap; }
+    }
+    if root.message != "": Text { text: root.message; color: Theme.accent; wrap: word-wrap; }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "目标芯片"; color: Theme.muted; width: 84px; vertical-alignment: center; }
+        LineEdit { text <=> root.target; placeholder-text: "probe-rs 具体型号，例如 STM32H723ZGTx"; enabled: root.editable; horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "调试协议"; color: Theme.muted; width: 84px; vertical-alignment: center; }
+        ComboBox { model: ["SWD", "JTAG"]; current-index <=> root.protocol-index; enabled: root.editable; width: 110px; }
+        Text { text: "速率 kHz"; color: Theme.muted; vertical-alignment: center; }
+        LineEdit { text <=> root.speed; enabled: root.editable; width: 90px; }
+        Text { text: "核心"; color: Theme.muted; vertical-alignment: center; }
+        LineEdit { text <=> root.core; enabled: root.editable; width: 70px; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    CheckBox { text: "在复位下附着目标"; checked <=> root.under-reset; enabled: root.editable; }
+    Text { text: "手机启动 Ember 服务并授权 USB 探针；电脑与手机需在可互通的局域网。GDB 端口用于局域网调试，请在可信网络使用。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+}

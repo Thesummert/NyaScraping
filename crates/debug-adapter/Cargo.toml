@@ -9,3 +9,16 @@ nya-domain.workspace = true
 nya-scraping-core.workspace = true
 serde_json = "1.0"
 tempfile.workspace = true
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "macros"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+base64 = "0.22"
+sha2 = "0.10"
+ring = "0.17"
+socket2 = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[dev-dependencies]
+rcgen = "0.13"

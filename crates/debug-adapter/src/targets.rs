@@ -419,6 +419,7 @@ mod tests {
             install_progress: Default::default(),
             server: None,
             session: Default::default(),
+            wireless: None,
         };
         adapter.select(ToolKind::OpenOcd, "1.0").unwrap();
         let catalog = adapter.target_catalog().unwrap();
@@ -516,6 +517,7 @@ else:
             install_progress: Default::default(),
             server: None,
             session: Default::default(),
+            wireless: None,
         };
         adapter.select(ToolKind::PyOcd, "1.0").unwrap();
         let pack = root.path().join("芯片包 with spaces.pack");
@@ -538,6 +540,7 @@ else:
             install_progress: Default::default(),
             server: None,
             session: Default::default(),
+            wireless: None,
         };
         assert_eq!(reopened.target_catalog().unwrap().packs, catalog.packs);
         let mut command = Command::new("pyocd");

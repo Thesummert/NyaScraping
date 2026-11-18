@@ -7,6 +7,7 @@ mod firmware_watch;
 mod presenter;
 mod project;
 mod source_font;
+mod source_paths;
 mod system_log;
 mod tree_sitter;
 mod watch_list;
@@ -223,6 +224,8 @@ fn apply_project(
     ui.set_backend_kind(project.backend_kind);
     ui.set_firmware_path(project.firmware.clone().into());
     ui.set_source_path(project.source.clone().into());
+    ui.set_source_directory(project.source_directory.clone().into());
+    presenter.set_source_directory(ui, &project.source_directory);
     ui.set_gdb_path(project.gdb.into());
     ui.set_debug_target(project.target.into());
     ui.set_debug_interface(project.interface.into());
@@ -905,6 +908,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sampler = acquisition.clone();
     let acquisition_worker = std::thread::spawn(move || sampler.run());
     let worker_presenter = presenter.clone();
+    let worker_source_directory = presenter
+        .lock()
+        .expect("presenter lock")
+        .source_directory
+        .clone();
     let watch_updates: WatchUpdates = Arc::new(Mutex::new(None));
     ui.set_project_history(slint::ModelRc::new(slint::VecModel::from(
         project::history()
@@ -1117,6 +1125,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if finished_firmware {
                 firmware_backend.preparing_view();
+            }
+            if let nya_application::Event::DebugUpdated { snapshot, .. } = &mut event {
+                if let Some(frame) = snapshot
+                    .frames
+                    .iter()
+                    .find(|f| f.level == snapshot.selected_frame && !f.file.is_empty())
+                {
+                    let root = worker_source_directory
+                        .lock()
+                        .expect("source directory lock")
+                        .clone();
+                    if !root.trim().is_empty() {
+                        let path = source_paths::resolve(&root, &frame.file);
+                        snapshot.source = NativeTextBackend.load(&path).ok();
+                    }
+                }
             }
             let event = presenter::PreparedEvent::from(event);
             let sync = matches!(&event, presenter::PreparedEvent::Firmware(_));
@@ -1448,6 +1472,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let weak = ui.as_weak();
+    let directory_presenter = presenter.clone();
+    ui.on_source_directory_changed(move || {
+        if let Some(ui) = weak.upgrade() {
+            directory_presenter
+                .lock()
+                .expect("presenter lock")
+                .set_source_directory(&ui, ui.get_source_directory().as_str());
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_browse_source_directory(move || {
+        if let Some(ui) = weak.upgrade() {
+            file_picker::browse_source_directory(&ui);
+        }
+    });
+
+    let weak = ui.as_weak();
     let target_sender = sender.clone();
     ui.on_refresh_targets(move || {
         if let Some(ui) = weak.upgrade() {
@@ -1586,16 +1627,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
             ui.set_current_tab(0);
+            let path = source_paths::resolve(ui.get_source_directory().as_str(), path.as_str());
+            let path = path.to_string_lossy().into_owned();
             if !source_presenter
                 .lock()
                 .expect("presenter lock")
-                .activate_source_path(&ui, path.as_str())
+                .activate_source_path(&ui, &path)
             {
-                submit(
-                    &ui,
-                    &source_sender,
-                    Command::OpenSource(path.as_str().into()),
-                );
+                submit(&ui, &source_sender, Command::OpenSource(path.into()));
             }
         }
     });
@@ -2114,6 +2153,7 @@ mod project_loading_tests {
             format: 1,
             firmware: firmware.to_string_lossy().into_owned(),
             source: dir.path().join("missing.c").to_string_lossy().into_owned(),
+            source_directory: String::new(),
             gdb: "gdb".into(),
             target: "".into(),
             interface: "".into(),

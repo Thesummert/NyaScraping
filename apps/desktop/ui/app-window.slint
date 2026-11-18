@@ -168,6 +168,9 @@ export component AppWindow inherits Window {
     callback close-source-tab(int);
     callback open-tree-source(string);
     in-out property <string> source-path;
+    in-out property <string> source-directory;
+    callback source-directory-changed();
+    callback browse-source-directory();
     in-out property <string> source-title: "尚未打开文件";
     in-out property <string> source-meta: "";
     in-out property <string> source-text: "打开一个源码文件以开始浏览。";
@@ -485,6 +488,10 @@ export component AppWindow inherits Window {
                                 select-tab(index) => { root.select-source-tab(index); }
                                 close-tab(index) => { root.close-source-tab(index); }
                                 path <=> root.source-path;
+                                source-directory <=> root.source-directory;
+                                source-directory-changed => { root.source-directory-changed(); }
+                                browse-source-directory => { root.browse-source-directory(); }
+                                refresh-source-directory => { if root.debug-halted && !root.interaction-busy { root.debug-action(9); } }
                                 source-title: root.source-title;
                                 metadata: root.source-meta + (root.execution-location != "" ? " · " + root.execution-location : "") + (root.source-highlight-status != "" ? " · " + root.source-highlight-status : "");
                                 source-text: root.source-text;

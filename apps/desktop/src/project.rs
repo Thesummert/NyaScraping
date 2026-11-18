@@ -12,6 +12,8 @@ pub struct Project {
     pub format: u32,
     pub firmware: String,
     pub source: String,
+    #[serde(default)]
+    pub source_directory: String,
     pub gdb: String,
     pub target: String,
     pub interface: String,
@@ -41,6 +43,7 @@ impl Project {
             format: 1,
             firmware: ui.get_firmware_path().to_string(),
             source: ui.get_source_path().to_string(),
+            source_directory: ui.get_source_directory().to_string(),
             gdb: ui.get_gdb_path().to_string(),
             target: ui.get_debug_target().to_string(),
             interface: ui.get_debug_interface().to_string(),
@@ -95,6 +98,7 @@ mod tests {
             format: 1,
             firmware: "firmware.elf".into(),
             source: "".into(),
+            source_directory: "source".into(),
             gdb: "gdb".into(),
             target: "chip".into(),
             interface: "probe.cfg".into(),
@@ -123,9 +127,11 @@ mod tests {
         let mut legacy = serde_json::to_value(&loaded).unwrap();
         legacy.as_object_mut().unwrap().remove("refresh_rate_index");
         legacy.as_object_mut().unwrap().remove("transport_index");
+        legacy.as_object_mut().unwrap().remove("source_directory");
         let legacy: Project = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy.refresh_rate_index, 0);
         assert_eq!(legacy.transport_index, 0);
+        assert!(legacy.source_directory.is_empty());
         assert!(loaded.watches[0].waveform);
         assert_eq!(loaded.watches[0].scope.as_deref(), Some("main.c:1"));
         let mut future = loaded;

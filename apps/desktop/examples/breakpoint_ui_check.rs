@@ -11,6 +11,8 @@ mod acquisition;
 mod firmware_browser;
 #[path = "../src/presenter.rs"]
 mod presenter;
+#[path = "../src/source_paths.rs"]
+mod source_paths;
 #[path = "../src/watch_list.rs"]
 mod watch_list;
 #[path = "../src/waveform_view.rs"]

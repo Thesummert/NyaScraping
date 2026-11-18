@@ -13,6 +13,10 @@ export component SourcePage inherits VerticalLayout {
     in property <bool> busy;
     in property <bool> custom-background;
     in-out property <string> path;
+    in-out property <string> source-directory;
+    callback source-directory-changed();
+    callback browse-source-directory();
+    callback refresh-source-directory();
     in property <string> source-title;
     in property <string> metadata;
     in property <string> source-text;
@@ -59,6 +63,12 @@ export component SourcePage inherits VerticalLayout {
         Button { text: "浏览…"; enabled: !root.busy; clicked => { root.browse(); } }
         Button { text: "打开源码"; enabled: !root.busy; clicked => { root.open(); } }
         CheckBox { text: "语法高亮"; checked <=> root.highlight-enabled; }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "源码文件夹"; color: Theme.muted; vertical-alignment: center; }
+        LineEdit { text <=> root.source-directory; placeholder-text: "用于查找调试信息中的源码（可选）"; horizontal-stretch: 1; enabled: !root.busy; edited => { root.source-directory-changed(); } accepted => { root.refresh-source-directory(); } }
+        Button { text: "选择文件夹…"; enabled: !root.busy; clicked => { root.browse-source-directory(); } }
     }
     if root.tabs.length > 0: ScrollView {
         height: 36px;

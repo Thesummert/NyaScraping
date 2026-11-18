@@ -15,7 +15,7 @@ use slint::{Model, ModelRc, VecModel};
 use std::{
     collections::HashMap,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -87,6 +87,9 @@ pub struct Presenter {
     breakpoints: Vec<nya_domain::Breakpoint>,
     execution_position: Option<(std::path::PathBuf, u32)>,
     executable_lines: HashMap<std::path::PathBuf, Vec<u32>>,
+    mapped_lines: HashMap<std::path::PathBuf, Vec<u32>>,
+    recorded_paths: HashMap<std::path::PathBuf, Option<std::path::PathBuf>>,
+    pub source_directory: Arc<Mutex<String>>,
     watches: WatchList,
     pub acquisition: Arc<Acquisition>,
     last_sequence: Option<u64>,
@@ -186,6 +189,39 @@ impl From<Event> for PreparedEvent {
 impl Presenter {
     fn source_key(path: &std::path::Path) -> std::path::PathBuf {
         std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn mapped_source(&self, path: &str) -> std::path::PathBuf {
+        let root = self.source_directory.lock().expect("source directory lock");
+        Self::source_key(&crate::source_paths::resolve(&root, path))
+    }
+
+    pub fn set_source_directory(&mut self, ui: &AppWindow, root: &str) {
+        let changed = {
+            let mut current = self.source_directory.lock().expect("source directory lock");
+            let changed = *current != root;
+            *current = root.to_owned();
+            changed
+        };
+        if changed {
+            self.execution_position = None;
+        }
+        self.mapped_lines.clear();
+        self.recorded_paths.clear();
+        for (recorded, lines) in &self.executable_lines {
+            let mapped = self.mapped_source(&recorded.to_string_lossy());
+            self.mapped_lines
+                .entry(mapped.clone())
+                .or_default()
+                .extend(lines);
+            self.recorded_paths
+                .entry(mapped)
+                .and_modify(|entry| *entry = None)
+                .or_insert_with(|| Some(recorded.clone()));
+        }
+        self.sync_executable_lines(ui);
+        self.sync_source_breakpoints(ui);
+        self.sync_execution_line(ui);
     }
 
     fn open_source_document(&mut self, ui: &AppWindow, document: Document) {
@@ -316,7 +352,8 @@ impl Presenter {
             .as_ref()
             .and_then(|(path, line)| {
                 let document = self.source_documents.get(self.source_selected?)?;
-                (Self::source_key(&document.path) == *path).then_some(*line)
+                (Self::source_key(&document.path) == self.mapped_source(&path.to_string_lossy()))
+                    .then_some(*line)
             })
             .unwrap_or(0);
         ui.set_source_execution_line(line.min(i32::MAX as u32) as i32);
@@ -327,7 +364,7 @@ impl Presenter {
             .source_selected
             .and_then(|i| self.source_documents.get(i))
             .and_then(|doc| {
-                self.executable_lines
+                self.mapped_lines
                     .get(&Self::source_key(&doc.path))
                     .map(|lines| (doc, lines))
             });
@@ -364,9 +401,7 @@ impl Presenter {
                 self.breakpoints
                     .iter()
                     .filter(|bp| {
-                        bp.line > 0
-                            && !bp.file.is_empty()
-                            && Self::source_key(std::path::Path::new(&bp.file)) == path
+                        bp.line > 0 && !bp.file.is_empty() && self.mapped_source(&bp.file) == path
                     })
                     .map(|bp| SourceBreakpoint {
                         line: bp.line.min(i32::MAX as u32) as i32,
@@ -387,14 +422,18 @@ impl Presenter {
             .and_then(|i| self.source_documents.get(i))?;
         let path = Self::source_key(&document.path);
         if let Some(bp) = self.breakpoints.iter().find(|bp| {
-            bp.line == line
-                && !bp.file.is_empty()
-                && Self::source_key(std::path::Path::new(&bp.file)) == path
+            bp.line == line && !bp.file.is_empty() && self.mapped_source(&bp.file) == path
         }) {
             Some(nya_domain::DebugAction::RemoveBreakpoint(bp.id.clone()))
         } else {
             Some(nya_domain::DebugAction::AddSourceBreakpoint {
-                file: document.path.to_string_lossy().into_owned(),
+                file: self
+                    .recorded_paths
+                    .get(&path)
+                    .and_then(|value| value.as_ref())
+                    .unwrap_or(&document.path)
+                    .to_string_lossy()
+                    .into_owned(),
                 line,
             })
         }
@@ -406,6 +445,8 @@ impl Presenter {
         self.acquisition.set_targets(Vec::new());
         self.browser = None;
         self.executable_lines.clear();
+        self.mapped_lines.clear();
+        self.recorded_paths.clear();
         self.sync_executable_lines(ui);
         self.watches.reset_firmware();
         self.sync_waveforms(ui);
@@ -651,12 +692,7 @@ impl Presenter {
                     })
                     .flatten()
                     .filter(|frame| !frame.file.is_empty() && frame.line > 0)
-                    .map(|frame| {
-                        (
-                            Self::source_key(std::path::Path::new(&frame.file)),
-                            frame.line,
-                        )
-                    });
+                    .map(|frame| (std::path::PathBuf::from(&frame.file), frame.line));
                 let navigate = position.is_some() && position != self.execution_position;
                 self.execution_position = position;
                 if navigate {
@@ -705,7 +741,7 @@ impl Presenter {
                 browser.set_query(&ui.get_firmware_search());
                 self.browser = Some(browser);
                 self.executable_lines = view.executable_lines;
-                self.sync_executable_lines(ui);
+                self.set_source_directory(ui, ui.get_source_directory().as_str());
                 self.watches.reset_firmware();
                 self.sync_waveforms(ui);
                 self.invalidate_watches(ui);

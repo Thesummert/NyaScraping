@@ -101,6 +101,8 @@ sudo pacman -U build/packages/nya-scraping-*.pkg.tar.zst
 
 可用 `cargo run -p nya-firmware-backend --example parse_firmware -- /path/to/firmware.elf` 测量解析各阶段耗时；`cargo run -p nya-scraping --example firmware_ui_check -- /path/to/firmware.elf` 可离屏验证进度弹窗和文件树更新，并报告界面准备耗时。
 
+源码页可设置「源码文件夹」并随项目保存。查找调试信息记录的源码时，会在该目录下依次尝试较长到较短的路径后缀；找不到时使用原始路径。执行位置、可执行行和断点也使用这一映射。
+
 源码页的标签栏记录当前打开的文件，可切换或关闭标签；重复打开同一路径会复用标签。文件树中的源码路径来自编译信息，双击时需要该路径在本机可读取，否则状态栏会显示错误。
 
 源码工作台可点击「浏览…」通过系统文件选择窗口打开源码，也可输入文件绝对路径后点击「打开源码」或回车，通过 `nya-text-backend` 读取文本、编码与换行信息。文本后端支持 UTF-8、UTF-16LE/BE、BOM、常见旧编码、换行归一化与保留编码的保存；也提供 `load_with_encoding` 供调用方显式选择文件编码。工具页扫描 PATH 与 NyaScrapingCore 管理的安装目录；启动时也会扫描一次。硬件操作需要另行安装对应工具和 GDB。

@@ -1038,6 +1038,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let weak = ui.as_weak();
     let weak_install = install_window.as_weak();
     let weak_download = download_window.as_weak();
+    let worker_acquisition = acquisition.clone();
     let worker = std::thread::spawn(move || {
         let mut last_sample = std::time::Instant::now();
         while !worker_shutdown.load(Ordering::Relaxed) {
@@ -1066,6 +1067,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Command::Debug(DebugAction::Download | DebugAction::Flash { .. })
                         );
                         finished_firmware = matches!(&command, Command::OpenFirmware(_));
+                        let _control = matches!(&command, Command::Debug(_))
+                            .then(|| worker_acquisition.pause_for_debug_control());
                         Some(application.execute(command))
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {

@@ -38,7 +38,6 @@ pub fn sampling_interval_micros(
 }
 
 pub const CAPACITY: usize = 32768;
-pub const MAX_MEMORY_CHANNELS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemorySource {
@@ -85,6 +84,8 @@ pub struct State {
     pub sweeps: u64,
     pub quit: bool,
     pub monitor_interval: Duration,
+    debug_control: bool,
+    openocd_reading: bool,
 }
 
 impl Default for State {
@@ -100,6 +101,8 @@ impl Default for State {
             sweeps: 0,
             quit: false,
             monitor_interval: Duration::from_millis(500),
+            debug_control: false,
+            openocd_reading: false,
         }
     }
 }
@@ -111,7 +114,27 @@ pub struct Acquisition {
     commands: Mutex<Option<SyncSender<Command>>>,
 }
 
+pub struct DebugControlGuard<'a>(&'a Acquisition);
+
+impl Drop for DebugControlGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().expect("acquisition lock");
+        state.debug_control = false;
+        self.0.changed.notify_all();
+    }
+}
+
 impl Acquisition {
+    /// Let OpenOCD finish an in-flight Tcl read before issuing a GDB command.
+    /// Session-backed reads already run on the command worker and must not wait here.
+    pub fn pause_for_debug_control(&self) -> DebugControlGuard<'_> {
+        let mut state = self.state.lock().expect("acquisition lock");
+        state.debug_control = true;
+        while state.openocd_reading {
+            state = self.changed.wait(state).expect("acquisition lock");
+        }
+        DebugControlGuard(self)
+    }
     pub fn set_command_sender(&self, sender: SyncSender<Command>) {
         *self.commands.lock().expect("acquisition commands lock") = Some(sender);
     }
@@ -146,7 +169,6 @@ impl Acquisition {
         let mut previous = std::mem::take(&mut state.channels);
         state.channels = targets
             .into_iter()
-            .take(MAX_MEMORY_CHANNELS)
             .map(|(id, memory, waveform)| {
                 if let Some(index) = previous
                     .iter()
@@ -279,7 +301,7 @@ impl Acquisition {
                     });
                     connection = Some(endpoint);
                 }
-                loop {
+                'sampling: loop {
                     {
                         let mut state = self.state.lock().expect("acquisition lock");
                         if state.quit {
@@ -314,7 +336,40 @@ impl Acquisition {
                         (&wave_indices, &wave_plan)
                     };
                     let begin = epoch.elapsed();
-                    let blocks = reader.as_mut().unwrap().read_blocks(&plan.blocks)?;
+                    // Keep each RPC within backend limits and bound the time spent in
+                    // one debug-session request when addresses are scattered.
+                    let batch_size = match endpoint {
+                        MemorySource::OpenOcd(_) => 64,
+                        MemorySource::DebugSession => 8,
+                    };
+                    let mut blocks = Vec::with_capacity(plan.blocks.len());
+                    for batch in plan.blocks.chunks(batch_size) {
+                        let mut state = self.state.lock().expect("acquisition lock");
+                        while matches!(endpoint, MemorySource::OpenOcd(_))
+                            && state.debug_control
+                            && !state.quit
+                            && state.revision == revision
+                        {
+                            state = self.changed.wait(state).expect("acquisition lock");
+                        }
+                        if state.quit {
+                            return Ok(());
+                        }
+                        if state.revision != revision {
+                            break 'sampling;
+                        }
+                        if matches!(endpoint, MemorySource::OpenOcd(_)) {
+                            state.openocd_reading = true;
+                        }
+                        drop(state);
+                        let result = reader.as_mut().unwrap().read_blocks(batch);
+                        if matches!(endpoint, MemorySource::OpenOcd(_)) {
+                            let mut state = self.state.lock().expect("acquisition lock");
+                            state.openocd_reading = false;
+                            self.changed.notify_all();
+                        }
+                        blocks.extend(result?);
+                    }
                     let finish = epoch.elapsed();
                     let elapsed = begin + (finish - begin) / 2;
                     let mut state = self.state.lock().expect("acquisition lock");
@@ -381,6 +436,98 @@ mod tests {
             scalar_type: ScalarType::Unsigned,
             little_endian: true,
         }
+    }
+
+    #[test]
+    fn samples_all_channels_across_multiple_read_batches() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut stream = BufReader::new(stream);
+            for expected in [64, 6] {
+                let mut request = Vec::new();
+                stream.read_until(0x1a, &mut request).unwrap();
+                let request = String::from_utf8(request).unwrap();
+                assert_eq!(request.matches("read_memory").count(), expected);
+                let response = vec!["42"; expected].join("|");
+                write!(stream.get_mut(), "{response}\x1a").unwrap();
+            }
+        });
+        let acquisition = Arc::new(Acquisition::default());
+        let targets: Vec<_> = (0..70)
+            .map(|i| (i, channel(0x20000000 + i as u64 * 8), false))
+            .collect();
+        acquisition.configure(targets.clone(), Duration::from_secs(10));
+        let revision = acquisition.state.lock().unwrap().revision;
+        acquisition.configure(targets, Duration::from_secs(10));
+        assert_eq!(acquisition.state.lock().unwrap().revision, revision);
+        acquisition.start(endpoint);
+        let sampler = acquisition.clone();
+        let worker = std::thread::spawn(move || sampler.run());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while acquisition.state.lock().unwrap().sweeps == 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        acquisition.shutdown();
+        worker.join().unwrap();
+        server.join().unwrap();
+        let state = acquisition.state.lock().unwrap();
+        assert_eq!(state.channels.len(), 70);
+        assert!(state
+            .channels
+            .iter()
+            .all(|c| c.samples.latest().unwrap().value == 42.0));
+    }
+
+    #[test]
+    fn openocd_reads_yield_to_debug_control_and_resume_afterwards() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut stream = BufReader::new(stream);
+            for _ in 0..2 {
+                let mut request = Vec::new();
+                stream.read_until(0x1a, &mut request).unwrap();
+                request_tx.send(()).unwrap();
+                reply_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                stream.get_mut().write_all(b"42\x1a").unwrap();
+            }
+        });
+        let acquisition = Arc::new(Acquisition::default());
+        acquisition.set_targets(vec![(0, channel(0x20000000))]);
+        acquisition.start(endpoint);
+        let sampler = acquisition.clone();
+        let worker = std::thread::spawn(move || sampler.run());
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (guard_tx, guard_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let controller = acquisition.clone();
+        let control = std::thread::spawn(move || {
+            let _guard = controller.pause_for_debug_control();
+            guard_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !acquisition.state.lock().unwrap().debug_control {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(guard_rx.try_recv().is_err());
+        reply_tx.send(()).unwrap();
+        guard_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(request_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        release_tx.send(()).unwrap();
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        acquisition.shutdown();
+        reply_tx.send(()).unwrap();
+        control.join().unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
     }
 
     #[test]

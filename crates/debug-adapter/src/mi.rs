@@ -7,7 +7,7 @@ use std::{
     path::Path,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc, Arc,
     },
     thread,
@@ -253,6 +253,7 @@ pub struct Client {
     input: ChildStdin,
     output: mpsc::Receiver<String>,
     overflow: Arc<AtomicBool>,
+    dropped_logs: Arc<AtomicUsize>,
     next_token: u64,
     pub state: SessionState,
     pub stop: Option<Value>,
@@ -265,17 +266,25 @@ fn reader(
     mut pipe: impl Read + Send + 'static,
     sender: mpsc::SyncSender<String>,
     overflow: Arc<AtomicBool>,
+    dropped_logs: Arc<AtomicUsize>,
     stderr: bool,
 ) {
     thread::spawn(move || {
         let mut buffer = [0u8; 8192];
         let mut line = Vec::new();
+        let mut dropping_line = false;
         loop {
             let n = match pipe.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
             for byte in &buffer[..n] {
+                if dropping_line {
+                    if *byte == b'\n' {
+                        dropping_line = false;
+                    }
+                    continue;
+                }
                 if *byte == b'\n' {
                     let text = String::from_utf8_lossy(&line);
                     let text = if stderr {
@@ -283,21 +292,33 @@ fn reader(
                     } else {
                         text.into_owned()
                     };
-                    match sender.try_send(text) {
-                        Ok(()) => {}
-                        Err(mpsc::TrySendError::Disconnected(_)) => return,
-                        Err(mpsc::TrySendError::Full(_)) => {
-                            overflow.store(true, Ordering::Relaxed);
-                            return;
+                    // Log streams are expendable under load; MI results and async
+                    // state changes must retain their order and apply backpressure.
+                    let log_record = stderr || matches!(line.first(), Some(b'~' | b'&' | b'@'));
+                    if log_record {
+                        match sender.try_send(text) {
+                            Ok(()) => {}
+                            Err(mpsc::TrySendError::Disconnected(_)) => return,
+                            Err(mpsc::TrySendError::Full(_)) => {
+                                dropped_logs.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
+                    } else if sender.send(text).is_err() {
+                        return;
                     }
                     line.clear();
                 } else {
                     line.push(*byte);
                 }
                 if line.len() > 64 * 1024 {
-                    overflow.store(true, Ordering::Relaxed);
-                    return;
+                    if stderr || matches!(line.first(), Some(b'~' | b'&' | b'@')) {
+                        dropped_logs.fetch_add(1, Ordering::Relaxed);
+                        line.clear();
+                        dropping_line = true;
+                    } else {
+                        overflow.store(true, Ordering::Relaxed);
+                        return;
+                    }
                 }
             }
         }
@@ -316,16 +337,19 @@ impl Client {
         let input = child.stdin.take().expect("piped stdin");
         let (sender, output) = mpsc::sync_channel(256);
         let overflow = Arc::new(AtomicBool::new(false));
+        let dropped_logs = Arc::new(AtomicUsize::new(0));
         reader(
             child.stdout.take().expect("piped stdout"),
             sender.clone(),
             overflow.clone(),
+            dropped_logs.clone(),
             false,
         );
         reader(
             child.stderr.take().expect("piped stderr"),
             sender,
             overflow.clone(),
+            dropped_logs.clone(),
             true,
         );
         Ok(Self {
@@ -333,6 +357,7 @@ impl Client {
             input,
             output,
             overflow,
+            dropped_logs,
             next_token: 1,
             state: SessionState::Attaching,
             stop: None,
@@ -378,7 +403,7 @@ impl Client {
             return Err(Error("GDB 会话已失效，请重新连接".into()));
         }
         if self.overflow.load(Ordering::Relaxed) {
-            return Err(Error("GDB output limit exceeded".into()));
+            return Err(Error("GDB 输出单行超过 64 KiB 限制".into()));
         }
         if let Some(status) = self.child.try_wait().map_err(error)? {
             return Err(Error(format!("GDB exited: {status}")));
@@ -387,10 +412,23 @@ impl Client {
     }
     pub fn poll(&mut self) -> Result<bool> {
         self.check()?;
-        while let Ok(line) = self.output.try_recv() {
+        // Do not let a continuous stream of logs monopolize the worker.
+        for _ in 0..512 {
+            let Ok(line) = self.output.try_recv() else {
+                break;
+            };
             if let Some(record) = parse(&line)? {
                 self.accept(&record);
             }
+        }
+        let dropped = self.dropped_logs.swap(0, Ordering::Relaxed);
+        if dropped != 0 {
+            self.logs
+                .push_back(format!("GDB 输出繁忙，已省略 {dropped} 条日志"));
+            if self.logs.len() > 200 {
+                self.logs.pop_front();
+            }
+            self.changed = true;
         }
         Ok(std::mem::take(&mut self.changed))
     }
@@ -517,6 +555,27 @@ mod process_tests {
         drop(client);
         #[cfg(target_os = "linux")]
         assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn burst_of_logs_keeps_stop_events_and_commands_working() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("fake-gdb");
+        fs::write(&executable, include_bytes!("../tests/fixtures/fake_gdb.py")).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = Client::spawn(&executable).unwrap();
+        client.state = SessionState::Running;
+        writeln!(client.input, "99-test-log-burst").unwrap();
+        client.input.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while client.state != SessionState::Halted {
+            client.poll().unwrap();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(client.logs.iter().any(|line| line.contains("已省略")));
+        client.command("-gdb-version").unwrap();
     }
 
     #[test]

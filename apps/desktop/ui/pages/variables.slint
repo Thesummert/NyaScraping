@@ -39,7 +39,7 @@ export component VariablesPage inherits VerticalLayout {
     private property <int> edit-revision: -1;
     private property <int> edit-entry: -1;
     private property <int> edit-node: -1;
-    private property <string> edit-name;
+    private property <string> edit-value;
     callback write(int, int, string);
     callback add(string);
     callback remove(int);
@@ -229,7 +229,35 @@ export component VariablesPage inherits VerticalLayout {
                         vertical-alignment: center;
                     }
                     Text { text: watch.type-name; color: Theme.accent; font-size: 12px; width: root.type-width; overflow: elide; vertical-alignment: center; }
-                    Text { text: watch.value; color: watch.error != "" ? #f08a80 : Theme.text; font-size: 12px; width: root.value-width; overflow: elide; vertical-alignment: center; }
+                    Rectangle {
+                        width: root.value-width;
+                        Text {
+                            visible: !(root.edit-revision == root.revision && root.edit-entry == watch.entry-index && root.edit-node == watch.node-index);
+                            text: watch.value; color: watch.error != "" ? #f08a80 : Theme.text; font-size: 12px; overflow: elide; vertical-alignment: center;
+                        }
+                        TouchArea {
+                            enabled: root.can-write && !watch.branch && !(root.edit-revision == root.revision && root.edit-entry == watch.entry-index && root.edit-node == watch.node-index);
+                            double-clicked => {
+                                root.edit-revision = root.revision;
+                                root.edit-entry = watch.entry-index;
+                                root.edit-node = watch.node-index;
+                                root.edit-value = "";
+                                value-editor.focus();
+                            }
+                        }
+                        value-editor := LineEdit {
+                            visible: root.edit-revision == root.revision && root.edit-entry == watch.entry-index && root.edit-node == watch.node-index;
+                            enabled: root.can-write;
+                            text <=> root.edit-value;
+                            placeholder-text: "新值";
+                            accepted => {
+                                if root.can-write && self.text != "" {
+                                    root.write(root.edit-entry, root.edit-node, self.text);
+                                    root.edit-entry = -1;
+                                }
+                            }
+                        }
+                    }
                     Rectangle {
                         width: 40px;
                         Image {
@@ -248,15 +276,21 @@ export component VariablesPage inherits VerticalLayout {
                     }
                     Button {
                         width: 24px;
-                        text: "✎";
+                        text: root.edit-revision == root.revision && root.edit-entry == watch.entry-index && root.edit-node == watch.node-index ? "✓" : "✎";
                         enabled: root.can-write && !watch.branch;
                         clicked => {
-                            root.edit-revision = root.revision;
-                            root.edit-entry = watch.entry-index;
-                            root.edit-node = watch.node-index;
-                            root.edit-name = watch.expression;
-                            new-value.text = "";
-                            new-value.focus();
+                            if root.edit-revision == root.revision && root.edit-entry == watch.entry-index && root.edit-node == watch.node-index {
+                                if root.edit-value != "" {
+                                    root.write(root.edit-entry, root.edit-node, root.edit-value);
+                                    root.edit-entry = -1;
+                                }
+                            } else {
+                                root.edit-revision = root.revision;
+                                root.edit-entry = watch.entry-index;
+                                root.edit-node = watch.node-index;
+                                root.edit-value = "";
+                                value-editor.focus();
+                            }
                         }
                     }
                     Rectangle {
@@ -278,25 +312,5 @@ export component VariablesPage inherits VerticalLayout {
             vertical-alignment: center;
         }
     }
-    if (root.edit-entry >= 0 && root.edit-revision == root.revision): Text { text: "修改：" + root.edit-name; color: Theme.accent; overflow: elide; }
-    HorizontalLayout {
-        spacing: 6px;
-        new-value := LineEdit {
-            placeholder-text: "新值，如 1.5 / 0x10";
-            enabled: root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision);
-            horizontal-stretch: 1;
-            accepted => {
-                if root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision) && self.text != "" {
-                    root.write(root.edit-entry, root.edit-node, self.text);
-                    root.edit-entry = -1;
-                }
-            }
-        }
-        Button {
-            text: "写入";
-            enabled: root.can-write && (root.edit-entry >= 0 && root.edit-revision == root.revision) && new-value.text != "";
-            clicked => { root.write(root.edit-entry, root.edit-node, new-value.text); root.edit-entry = -1; }
-        }
-    }
-    Text { text: "监视刷新与波形共用无暂停采集；局部变量需暂停求值，手动写入会短暂暂停"; wrap: word-wrap; color: Theme.muted; font-size: 11px; }
+    Text { text: "双击数值修改，按回车写入；局部变量需暂停求值，写入时会短暂暂停"; wrap: word-wrap; color: Theme.muted; font-size: 11px; }
 }

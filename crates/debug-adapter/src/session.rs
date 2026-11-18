@@ -7,6 +7,36 @@ use nya_domain::waveform::ReadBlock;
 use nya_domain::*;
 use std::time::{Duration, Instant};
 
+// Expressions created by the firmware browser may contain a source-file
+// qualifier that the installed GDB cannot resolve (for example, build paths
+// from another machine). Strip only that generated qualifier.
+fn without_file_qualifier(expression: &str) -> Option<String> {
+    let start = expression.find('\'')?;
+    let bytes = expression.as_bytes();
+    let mut end = start + 1;
+    while end < bytes.len() {
+        match bytes[end] {
+            b'\\' => end += 2,
+            b'\'' => break,
+            _ => end += 1,
+        }
+    }
+    if !expression.get(end..)?.starts_with("'::") {
+        return None;
+    }
+    Some(format!(
+        "{}{}",
+        &expression[..start],
+        &expression[end + 3..]
+    ))
+}
+
+fn gdb_address(value: &str) -> Option<u64> {
+    let hex = value.trim_start().strip_prefix("0x")?;
+    let length = hex.bytes().take_while(u8::is_ascii_hexdigit).count();
+    u64::from_str_radix(&hex[..length], 16).ok()
+}
+
 #[derive(Default)]
 pub(super) struct Session {
     pub client: Option<Client>,
@@ -213,10 +243,7 @@ impl Session {
     }
     fn evaluate(&mut self, watch: &WatchRequest) -> Result<WatchValue> {
         self.validate_scope(watch)?;
-        let result = self.halted()?.command_timeout(
-            &format!("-var-create - * {}", mi::quote(&watch.expression)),
-            Duration::from_millis(700),
-        )?;
+        let (result, _) = self.create_watch_variable(watch)?;
         let name = result.field("name");
         let value = WatchValue {
             expression: watch.expression.clone(),
@@ -231,6 +258,39 @@ impl Session {
             )?;
         }
         Ok(value)
+    }
+
+    fn create_watch_variable(&mut self, watch: &WatchRequest) -> Result<(Value, String)> {
+        let create = |session: &mut Self, expression: &str| {
+            session.halted()?.command_timeout(
+                &format!("-var-create - * {}", mi::quote(expression)),
+                Duration::from_millis(700),
+            )
+        };
+        match create(self, &watch.expression) {
+            Ok(variable) => Ok((variable, watch.expression.clone())),
+            Err(original) => {
+                let (Some(address), Some(expression)) =
+                    (watch.address, without_file_qualifier(&watch.expression))
+                else {
+                    return Err(Error(format!("{}：{original}", watch.expression)));
+                };
+                let result = self.halted()?.command_timeout(
+                    &format!(
+                        "-data-evaluate-expression {}",
+                        mi::quote(&format!("&({expression})"))
+                    ),
+                    Duration::from_millis(700),
+                );
+                if result.ok().and_then(|r| gdb_address(r.field("value"))) != Some(address) {
+                    return Err(Error(format!(
+                        "无法解析 {}；同名变量地址不匹配或不可用：{original}",
+                        watch.expression
+                    )));
+                }
+                create(self, &expression).map(|variable| (variable, expression))
+            }
+        }
     }
     fn values(
         &mut self,
@@ -263,9 +323,7 @@ impl Session {
 
     fn assign(&mut self, watch: &WatchRequest, value: &str) -> Result<String> {
         self.validate_scope(watch)?;
-        let variable = self
-            .halted()?
-            .command(&format!("-var-create - * {}", mi::quote(&watch.expression)))?;
+        let (variable, expression) = self.create_watch_variable(watch)?;
         let name = variable.field("name");
         if name.is_empty() {
             return Err(Error("GDB 未返回变量标识".into()));
@@ -284,7 +342,7 @@ impl Session {
             ))?;
             let readback = self.halted()?.command(&format!(
                 "-data-evaluate-expression {}",
-                mi::quote(&watch.expression)
+                mi::quote(&expression)
             ))?;
             Ok(readback.field("value").to_owned())
         })();
@@ -942,6 +1000,7 @@ mod tests {
                 id: "counter".into(),
                 expression: "counter".into(),
                 function: Some("compute".into()),
+                address: None,
             };
             adapter.execute_debug(DebugAction::Continue).unwrap();
             adapter
@@ -1015,6 +1074,7 @@ mod tests {
             id: "live".into(),
             expression: "counter".into(),
             function: None,
+            address: None,
         }];
         adapter
             .execute_debug(DebugAction::Connect {
@@ -1042,7 +1102,12 @@ mod tests {
             assert!(snapshot.values.is_empty());
         }
         adapter.execute_debug(DebugAction::Pause).unwrap();
-        adapter.poll_debug().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while adapter.session.client().unwrap().state != SessionState::Halted {
+            adapter.poll_debug().unwrap();
+            assert!(Instant::now() < deadline, "GDB did not report the stop");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert_eq!(adapter.debug_snapshot(&[]).state, SessionState::Halted);
     }
 
@@ -1144,6 +1209,7 @@ mod tests {
             id: "parameter".into(),
             expression: "counter".into(),
             function: None,
+            address: None,
         };
         assert!(adapter
             .execute_debug(DebugAction::WriteWatch {
@@ -1195,6 +1261,44 @@ mod tests {
         let snapshot = adapter.debug_snapshot(std::slice::from_ref(&watch));
         assert_eq!(snapshot.state, SessionState::Halted);
         assert_eq!(snapshot.values[0].value.display_value, "23");
+    }
+
+    #[test]
+    fn write_falls_back_only_when_the_unqualified_symbol_has_the_expected_address() {
+        let (_root, mut adapter, profile) = fixture();
+        adapter
+            .execute_debug(DebugAction::Connect {
+                profile,
+                external_server: true,
+                reset: false,
+            })
+            .unwrap();
+        let mut watch = WatchRequest {
+            id: "counter".into(),
+            expression: "'unavailable.c'::counter".into(),
+            function: None,
+            address: Some(0x20000004),
+        };
+        let write = |adapter: &mut DebugAdapter, watch: &WatchRequest, value: &str| {
+            adapter.execute_debug(DebugAction::WriteWatch {
+                watch: watch.clone(),
+                value: value.into(),
+            })
+        };
+        assert!(write(&mut adapter, &watch, "99").is_err());
+        watch.address = Some(0x20000000);
+        write(&mut adapter, &watch, "17").unwrap();
+        let plain = WatchRequest {
+            expression: "counter".into(),
+            address: None,
+            ..watch
+        };
+        let snapshot = adapter.debug_snapshot(&[plain]);
+        assert_eq!(snapshot.values[0].value.display_value, "17");
+        assert_eq!(
+            without_file_qualifier("('C:\\\\src\\'s.c'::sensor).value").as_deref(),
+            Some("(sensor).value")
+        );
     }
 
     #[test]
@@ -1382,6 +1486,7 @@ mod tests {
             id: "stable-id".into(),
             expression: "counter".into(),
             function: Some("compute".into()),
+            address: None,
         };
         let snapshot = adapter.debug_snapshot(std::slice::from_ref(&watch));
         assert_eq!(snapshot.state, SessionState::Halted);
@@ -1441,6 +1546,7 @@ mod tests {
             id: "missing".into(),
             expression: "missing".into(),
             function: None,
+            address: None,
         };
         assert!(adapter.debug_snapshot(&[missing]).values[0]
             .value

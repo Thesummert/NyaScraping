@@ -66,6 +66,13 @@ for line in sys.stdin:
         continue
     if command == '-test-timeout':
         continue
+    if command == '-test-log-burst':
+        send('~"' + 'x' * 70000 + '"')
+        for index in range(5000):
+            send('~"diagnostic %d\\n"' % index)
+        stopped()
+        send(token + '^done')
+        continue
     if command == '-test-exit':
         sys.exit(7)
     if command == '-test-fail-download':
@@ -185,10 +192,10 @@ for line in sys.stdin:
             send(token + '^done,memory=[{begin="' + hex(address) + '",offset="0",end="' + hex(address + size) + '",contents="' + data + '"}]')
     elif command.startswith('-data-evaluate-expression'):
         expression = command.split(' ', 1)[1].strip('"')
-        send(token + '^done,value="' + values.get(expression, '42') + '"')
+        send(token + '^done,value="' + ('0x20000000 <counter>' if expression == '&(counter)' else values.get(expression, '42')) + '"')
     elif command.startswith('-var-create'):
         current_expression = command.split(' ', 3)[3].strip('"')
-        if 'missing' in command:
+        if 'missing' in command or 'unavailable.c' in command:
             send(token + '^error,msg="No symbol missing in current context"')
         else:
             send('98765^done,value="unrelated result"')

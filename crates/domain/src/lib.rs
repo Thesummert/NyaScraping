@@ -186,6 +186,8 @@ pub struct WatchRequest {
     pub id: String,
     pub expression: String,
     pub function: Option<String>,
+    /// Fixed DWARF address, when known, for verifying alternate symbol resolution.
+    pub address: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

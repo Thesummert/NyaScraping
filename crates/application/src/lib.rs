@@ -713,6 +713,7 @@ mod tests {
             id: "watch-1".into(),
             expression: "counter".into(),
             function: None,
+            address: None,
         }]));
         assert!(app.sample_watches().is_none());
         app.tools.debug.state = nya_domain::SessionState::Halted;
@@ -857,6 +858,7 @@ mod tests {
             id: "revision:0:0".into(),
             expression: "counter".into(),
             function: None,
+            address: None,
         };
         match app.execute(Command::UpdateWatches(vec![request])) {
             Event::DebugUpdated {

@@ -479,6 +479,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .value,
         "42"
     );
+    // A halted GDB value must not alternate with the independently sampled
+    // waveform value, and a shorter value must not shrink the active column.
+    let wave_request = presenter
+        .watch_requests()
+        .into_iter()
+        .find(|request| request.id.ends_with(&format!(":{watch_index}:0")))
+        .unwrap();
+    presenter.apply(
+        &ui,
+        nya_application::Event::DebugUpdated {
+            snapshot: DebugSnapshot {
+                state: SessionState::Halted,
+                values: vec![EvaluatedWatch {
+                    id: wave_request.id,
+                    value: WatchValue {
+                        expression: wave_request.expression,
+                        type_name: "int".into(),
+                        display_value: "123456789".into(),
+                        error: None,
+                    },
+                }],
+                ..Default::default()
+            },
+            completes_command: false,
+        }
+        .into(),
+    );
+    let width = ui.get_watch_value_width();
+    acquisition.state.lock().unwrap().sequence += 1;
+    presenter.refresh_acquisition(&ui);
+    assert_eq!(
+        ui.get_watches()
+            .iter()
+            .find(|r| r.entry_index == watch_index)
+            .unwrap()
+            .value,
+        "123456789"
+    );
+    presenter.apply(
+        &ui,
+        nya_application::Event::DebugUpdated {
+            snapshot: DebugSnapshot {
+                state: SessionState::Running,
+                ..Default::default()
+            },
+            completes_command: false,
+        }
+        .into(),
+    );
+    assert_eq!(
+        ui.get_watches()
+            .iter()
+            .find(|r| r.entry_index == watch_index)
+            .unwrap()
+            .value,
+        "42"
+    );
+    assert!(ui.get_watch_value_width() >= width);
     // Monitoring joins the existing socket and preserves the waveform history/epoch.
     let (before, epoch) = {
         let state = acquisition.state.lock().unwrap();

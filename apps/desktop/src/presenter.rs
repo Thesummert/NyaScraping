@@ -1,7 +1,5 @@
 use crate::{
-    acquisition::{
-        sampling_interval_micros, Acquisition, MemorySource, CAPACITY, MAX_MEMORY_CHANNELS,
-    },
+    acquisition::{sampling_interval_micros, Acquisition, MemorySource, CAPACITY},
     firmware_browser::FirmwareBrowser,
     watch_list::WatchList,
     waveform_view::{self, COLORS, PLOT_WIDTH},
@@ -11,7 +9,7 @@ use crate::{
 use nya_application::Event;
 use nya_domain::{
     firmware::FirmwareImage, DebugSnapshot, DebugTarget, Document, EvaluatedWatch, SessionState,
-    TargetCatalog, ToolKind, ToolState, WatchRequest,
+    TargetCatalog, ToolKind, ToolState, WatchRequest, WatchValue,
 };
 use slint::{Model, ModelRc, VecModel};
 use std::{
@@ -38,6 +36,23 @@ fn update_ticks(
     }
 }
 
+fn watch_display_value<'a>(
+    halted: bool,
+    runtime: Option<&'a WatchValue>,
+    sampled: Option<&'a str>,
+) -> &'a str {
+    (if halted {
+        runtime
+            .filter(|value| value.error.is_none())
+            .map(|value| value.display_value.as_str())
+    } else {
+        None
+    })
+    .or(sampled)
+    .or_else(|| runtime.map(|value| value.display_value.as_str()))
+    .unwrap_or("—")
+}
+
 fn update_watch_widths(ui: &AppWindow) {
     // Match the file tree's conservative allowance for ASCII and wide glyphs.
     let text_width = |text: &str| {
@@ -54,6 +69,10 @@ fn update_watch_widths(ui: &AppWindow) {
         );
         type_name = type_name.max(text_width(&row.type_name).saturating_add(8));
         value = value.max(text_width(&row.value).saturating_add(8));
+    }
+    // A changing number of digits must not resize the entire list every frame.
+    if ui.get_acquisition_active() {
+        value = value.max(ui.get_watch_value_width());
     }
     ui.set_watch_name_width(name);
     ui.set_watch_type_width(type_name);
@@ -820,6 +839,9 @@ impl Presenter {
                 id: format!("{}:{}:{}", self.watch_revision, row.entry, row.node),
                 expression: row.expression,
                 function: row.function,
+                address: self.watches.entries[row.entry]
+                    .node_memory(row.node)
+                    .map(|m| m.address),
             })
     }
 
@@ -1101,7 +1123,7 @@ impl Presenter {
         let interval =
             sampling_interval_micros(ui.get_live_interval_index(), &ui.get_live_custom_hz())
                 .unwrap_or(500_000);
-        // Waveforms take priority; monitoring fills the remaining bounded read slots.
+        // Collect waveform and visible monitor channels in the same read plan.
         let mut targets = self
             .watches
             .entries
@@ -1115,23 +1137,17 @@ impl Presenter {
         self.chart_assignments
             .retain(|id, _| targets.iter().any(|(target, _, _)| target == id));
         if live {
-            targets.extend(
-                self.watches
-                    .rows()
-                    .into_iter()
-                    .filter_map(|row| {
-                        let entry = &self.watches.entries[row.entry];
-                        if entry.node_waveform(row.node) {
-                            return None;
-                        }
-                        Some((
-                            entry.channel_id(row.node)?,
-                            entry.node_memory(row.node)?.clone(),
-                            false,
-                        ))
-                    })
-                    .take(MAX_MEMORY_CHANNELS - targets.len()),
-            );
+            targets.extend(self.watches.rows().into_iter().filter_map(|row| {
+                let entry = &self.watches.entries[row.entry];
+                if entry.node_waveform(row.node) {
+                    return None;
+                }
+                Some((
+                    entry.channel_id(row.node)?,
+                    entry.node_memory(row.node)?.clone(),
+                    false,
+                ))
+            }));
         }
         let empty = targets.is_empty();
         if empty {
@@ -1306,8 +1322,15 @@ impl Presenter {
                         if let Some((_, _, value)) = values.iter().find(|(entry, node, _)| {
                             *entry as i32 == row.entry_index && *node as i32 == row.node_index
                         }) {
-                            if row.value.as_str() != value {
-                                row.value = value.as_str().into();
+                            let id = format!(
+                                "{}:{}:{}",
+                                self.watch_revision, row.entry_index, row.node_index
+                            );
+                            let runtime = self.values.get(&id).map(|v| &v.value);
+                            let displayed =
+                                watch_display_value(ui.get_debug_halted(), runtime, Some(value));
+                            if row.value.as_str() != displayed {
+                                row.value = displayed.into();
                                 model.set_row_data(index, row);
                             }
                         }
@@ -1478,11 +1501,13 @@ impl Presenter {
         self.watches
             .rows()
             .into_iter()
-            .filter(|row| !self.watches.entries[row.entry].node_waveform(row.node))
             .map(|row| WatchRequest {
                 id: format!("{}:{}:{}", self.watch_revision, row.entry, row.node),
                 expression: row.expression,
                 function: row.function,
+                address: self.watches.entries[row.entry]
+                    .node_memory(row.node)
+                    .map(|m| m.address),
             })
             .collect()
     }
@@ -1538,11 +1563,12 @@ impl Presenter {
                         .unwrap_or(&entry.type_name)
                         .into(),
                     scope: entry.scope.into(),
-                    value: waveform_value
-                        .as_deref()
-                        .or_else(|| runtime.map(|v| v.display_value.as_str()))
-                        .unwrap_or("—")
-                        .into(),
+                    value: watch_display_value(
+                        ui.get_debug_halted(),
+                        runtime,
+                        waveform_value.as_deref(),
+                    )
+                    .into(),
                     error: if ui.get_live_enabled() && !ui.get_debug_halted() && memory.is_none() {
                         if entry.branch {
                             "展开结构体以监视数值成员"
@@ -1550,14 +1576,6 @@ impl Presenter {
                             "无法确定固定数值地址；暂停后求值"
                         }
                         .into()
-                    } else if ui.get_live_enabled()
-                        && memory.is_some()
-                        && !acquisition
-                            .channels
-                            .iter()
-                            .any(|channel| Some(channel.id) == watch.channel_id(entry.node))
-                    {
-                        "无暂停采集最多 64 项，请减少监视变量".into()
                     } else {
                         runtime
                             .and_then(|v| v.error.as_deref())

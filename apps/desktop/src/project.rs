@@ -28,6 +28,8 @@ pub struct Project {
     pub refresh_rate_index: i32,
     pub live_interval_index: i32,
     pub live_custom_hz: String,
+    #[serde(default)]
+    pub watch_column_widths: [i32; 4],
     pub watches: Vec<SavedWatch>,
 }
 
@@ -56,6 +58,12 @@ impl Project {
             refresh_rate_index: ui.get_refresh_rate_index(),
             live_interval_index: ui.get_live_interval_index(),
             live_custom_hz: ui.get_live_custom_hz().to_string(),
+            watch_column_widths: [
+                ui.get_watch_name_override(),
+                ui.get_watch_type_override(),
+                ui.get_watch_value_override(),
+                ui.get_watch_waveform_override(),
+            ],
             watches,
         }
     }
@@ -111,6 +119,7 @@ mod tests {
             refresh_rate_index: 0,
             live_interval_index: 5,
             live_custom_hz: "10".into(),
+            watch_column_widths: [120, 180, 90, 50],
             watches: vec![SavedWatch {
                 expression: "counter".into(),
                 scope: Some("main.c:1".into()),
@@ -128,10 +137,16 @@ mod tests {
         legacy.as_object_mut().unwrap().remove("refresh_rate_index");
         legacy.as_object_mut().unwrap().remove("transport_index");
         legacy.as_object_mut().unwrap().remove("source_directory");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("watch_column_widths");
         let legacy: Project = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy.refresh_rate_index, 0);
         assert_eq!(legacy.transport_index, 0);
         assert!(legacy.source_directory.is_empty());
+        assert_eq!(legacy.watch_column_widths, [0; 4]);
+        assert_eq!(loaded.watch_column_widths, [120, 180, 90, 50]);
         assert!(loaded.watches[0].waveform);
         assert_eq!(loaded.watches[0].scope.as_deref(), Some("main.c:1"));
         let mut future = loaded;

@@ -53,7 +53,7 @@ fn watch_display_value<'a>(
     .unwrap_or("—")
 }
 
-fn update_watch_widths(ui: &AppWindow) {
+pub fn update_watch_widths(ui: &AppWindow) {
     // Match the file tree's conservative allowance for ASCII and wide glyphs.
     let text_width = |text: &str| {
         text.chars().fold(0i32, |width, ch| {
@@ -74,9 +74,18 @@ fn update_watch_widths(ui: &AppWindow) {
     if ui.get_acquisition_active() {
         value = value.max(ui.get_watch_value_width());
     }
-    ui.set_watch_name_width(name);
-    ui.set_watch_type_width(type_name);
-    ui.set_watch_value_width(value);
+    if ui.get_watch_name_override() == 0 {
+        ui.set_watch_name_width(name);
+    }
+    if ui.get_watch_type_override() == 0 {
+        ui.set_watch_type_width(type_name);
+    }
+    if ui.get_watch_value_override() == 0 {
+        ui.set_watch_value_width(value);
+    }
+    if ui.get_watch_waveform_override() == 0 {
+        ui.set_watch_waveform_width(40);
+    }
 }
 
 #[derive(Default)]

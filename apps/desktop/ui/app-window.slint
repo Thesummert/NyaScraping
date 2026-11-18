@@ -213,6 +213,13 @@ export component AppWindow inherits Window {
     in-out property <int> watch-name-width: 72;
     in-out property <int> watch-type-width: 76;
     in-out property <int> watch-value-width: 68;
+    in-out property <int> watch-waveform-width: 40;
+    in-out property <int> watch-name-override: 0;
+    in-out property <int> watch-type-override: 0;
+    in-out property <int> watch-value-override: 0;
+    in-out property <int> watch-waveform-override: 0;
+    callback resize-watch-column(int, int);
+    callback reset-watch-widths();
     in-out property <[WaveformRow]> waveform-channels;
     in-out property <[string]> waveform-charts: ["图表 1"];
     in-out property <int> waveform-selected-chart: 0;
@@ -602,6 +609,9 @@ export component AppWindow inherits Window {
                     name-width: root.watch-name-width * 1px;
                     type-width: root.watch-type-width * 1px;
                     value-width: root.watch-value-width * 1px;
+                    waveform-width: root.watch-waveform-width * 1px;
+                    resize-column(column, width) => { root.resize-watch-column(column, width); }
+                    reset-column-widths => { root.reset-watch-widths(); }
                     acquisition-active: root.acquisition-active;
                     memory-endpoint <=> root.acquisition-endpoint;
                     source-label: root.acquisition-source-label;
@@ -1186,6 +1196,9 @@ export component WatchesWindow inherits Window {
     in property <int> name-width;
     in property <int> type-width;
     in property <int> value-width;
+    in property <int> waveform-width;
+    callback resize-column(int, int);
+    callback reset-column-widths();
     in property <bool> acquisition-active;
     in-out property <string> endpoint;
     in property <string> source-label;
@@ -1217,6 +1230,9 @@ export component WatchesWindow inherits Window {
         name-width: root.name-width * 1px;
         type-width: root.type-width * 1px;
         value-width: root.value-width * 1px;
+        waveform-width: root.waveform-width * 1px;
+        resize-column(column, width) => { root.resize-column(column, width); }
+        reset-column-widths => { root.reset-column-widths(); }
         acquisition-active: root.acquisition-active;
         memory-endpoint <=> root.endpoint;
         source-label: root.source-label;

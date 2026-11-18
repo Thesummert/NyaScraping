@@ -221,6 +221,12 @@ fn apply_project(
         firmware,
         source,
     } = prepared;
+    reset_watch_column_widths(ui);
+    for (index, width) in project.watch_column_widths.iter().enumerate() {
+        if *width > 0 {
+            set_watch_column_width(ui, index as i32, *width);
+        }
+    }
     ui.set_backend_kind(project.backend_kind);
     ui.set_firmware_path(project.firmware.clone().into());
     ui.set_source_path(project.source.clone().into());
@@ -345,12 +351,45 @@ fn sync_firmware_window(ui: &AppWindow, window: &FirmwareTreeWindow) {
     }
 }
 
+fn set_watch_column_width(ui: &AppWindow, column: i32, width: i32) {
+    let width = width.clamp(if column == 3 { 40 } else { 48 }, 2000);
+    match column {
+        0 => {
+            ui.set_watch_name_override(width);
+            ui.set_watch_name_width(width);
+        }
+        1 => {
+            ui.set_watch_type_override(width);
+            ui.set_watch_type_width(width);
+        }
+        2 => {
+            ui.set_watch_value_override(width);
+            ui.set_watch_value_width(width);
+        }
+        3 => {
+            ui.set_watch_waveform_override(width);
+            ui.set_watch_waveform_width(width);
+        }
+        _ => {}
+    }
+}
+
+fn reset_watch_column_widths(ui: &AppWindow) {
+    ui.set_watch_name_override(0);
+    ui.set_watch_type_override(0);
+    ui.set_watch_value_override(0);
+    ui.set_watch_waveform_override(0);
+    ui.set_watch_value_width(68);
+    presenter::update_watch_widths(ui);
+}
+
 fn sync_watches_window(ui: &AppWindow, window: &WatchesWindow) {
     window.set_blocked(ui.get_interaction_busy());
     window.set_watches(ui.get_watches());
     window.set_name_width(ui.get_watch_name_width());
     window.set_type_width(ui.get_watch_type_width());
     window.set_value_width(ui.get_watch_value_width());
+    window.set_waveform_width(ui.get_watch_waveform_width());
     window.set_acquisition_active(ui.get_acquisition_active());
     if window.get_endpoint() != ui.get_acquisition_endpoint() {
         window.set_endpoint(ui.get_acquisition_endpoint());
@@ -1995,6 +2034,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .stop_acquisition(&ui);
         }
     });
+    let weak = ui.as_weak();
+    ui.on_resize_watch_column(move |column, width| {
+        if let Some(ui) = weak.upgrade() {
+            set_watch_column_width(&ui, column, width);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_reset_watch_widths(move || {
+        if let Some(ui) = weak.upgrade() {
+            reset_watch_column_widths(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let window = watches_window.as_weak();
+    watches_window.on_resize_column(move |column, width| {
+        if let (Some(ui), Some(window)) = (weak.upgrade(), window.upgrade()) {
+            ui.invoke_resize_watch_column(column, width);
+            sync_watches_window(&ui, &window);
+        }
+    });
+    let weak = ui.as_weak();
+    let window = watches_window.as_weak();
+    watches_window.on_reset_column_widths(move || {
+        if let (Some(ui), Some(window)) = (weak.upgrade(), window.upgrade()) {
+            ui.invoke_reset_watch_widths();
+            sync_watches_window(&ui, &window);
+        }
+    });
+
     // Forward panel actions to the same models and handlers used by the docked views.
     let weak_ui = ui.as_weak();
     let weak_window = firmware_window.as_weak();
@@ -2407,6 +2475,7 @@ mod project_loading_tests {
             firmware: firmware.to_string_lossy().into_owned(),
             source: dir.path().join("missing.c").to_string_lossy().into_owned(),
             source_directory: String::new(),
+            watch_column_widths: [0; 4],
             gdb: "gdb".into(),
             target: "".into(),
             interface: "".into(),

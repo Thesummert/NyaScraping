@@ -25,6 +25,9 @@ export component VariablesPage inherits VerticalLayout {
     in property <length> name-width: 72px;
     in property <length> type-width: 76px;
     in property <length> value-width: 68px;
+    in property <length> waveform-width: 40px;
+    callback resize-column(int, int);
+    callback reset-column-widths();
     in property <bool> can-write;
     in property <bool> acquisition-active;
     in-out property <string> memory-endpoint;
@@ -103,6 +106,7 @@ export component VariablesPage inherits VerticalLayout {
     spacing: 8px;
     HorizontalLayout {
         Text { text: "变量监视"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
+        Button { text: "自动列宽"; clicked => { root.reset-column-widths(); } }
         Button { text: root.detached ? "收回" : "浮动"; clicked => { root.toggle-detached(!root.detached); } }
     }
     HorizontalLayout {
@@ -159,12 +163,30 @@ export component VariablesPage inherits VerticalLayout {
             x: watch-view.content-x;
             width: watch-view.content-width;
             spacing: 6px;
-            Text { text: "名称"; color: Theme.muted; min-width: root.name-width; horizontal-stretch: 1; }
-            Text { text: "类型"; color: Theme.muted; width: root.type-width; }
-            Text { text: "值"; color: Theme.muted; width: root.value-width; }
-            Text { text: "波形"; color: Theme.muted; width: 40px; }
+            Text { text: "名称"; color: Theme.muted; width: root.name-width; overflow: elide; }
+            Text { text: "类型"; color: Theme.muted; width: root.type-width; overflow: elide; }
+            Text { text: "值"; color: Theme.muted; width: root.value-width; overflow: elide; }
+            Text { text: "波形"; color: Theme.muted; width: root.waveform-width; overflow: elide; }
             Rectangle { width: 24px; background: transparent; }
             Rectangle { width: 28px; background: transparent; }
+        }
+        for column in 4: Rectangle {
+            x: watch-view.content-x + (column == 0 ? root.name-width : column == 1 ? root.name-width + root.type-width + 6px : column == 2 ? root.name-width + root.type-width + root.value-width + 12px : root.name-width + root.type-width + root.value-width + root.waveform-width + 18px) - 3px;
+            width: 8px; height: parent.height;
+            background: transparent;
+            Rectangle { x: 3px; y: 3px; width: 1px; height: max(0px, parent.height - 6px); background: handle.has-hover || handle.pressed ? Theme.accent : Theme.border; }
+            handle := TouchArea {
+                property <length> start-x;
+                property <length> start-width;
+                mouse-cursor: ew-resize;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        self.start-x = self.absolute-position.x + self.mouse-x;
+                        self.start-width = column == 0 ? root.name-width : column == 1 ? root.type-width : column == 2 ? root.value-width : root.waveform-width;
+                    }
+                }
+                moved => { if self.pressed { root.resize-column(column, round((self.start-width + self.absolute-position.x + self.mouse-x - self.start-x) / 1px)); } }
+            }
         }
     }
     Rectangle { height: 1px; background: Theme.border; }
@@ -173,9 +195,10 @@ export component VariablesPage inherits VerticalLayout {
         background: transparent;
         clip: true;
         watch-view := ListView {
-            content-width: max(self.visible-width, root.name-width + root.type-width + root.value-width + 122px);
+            content-width: max(self.visible-width, root.name-width + root.type-width + root.value-width + root.waveform-width + 82px);
             horizontal-scrollbar-policy: as-needed;
             for watch[index] in root.watches: Rectangle {
+                property <length> indent: min(max(0px, root.name-width - 20px), watch.depth * 12px);
                 width: watch-view.content-width;
                 height: index > root.animation-start && index < root.animation-end && !root.animation-visible ? 1px : (watch.error == "" ? 32px : 50px);
                 animate height {
@@ -222,15 +245,14 @@ export component VariablesPage inherits VerticalLayout {
                 HorizontalLayout {
                     height: 32px;
                     spacing: 6px;
-                    padding-left: watch.depth * 12px;
+                    padding-left: parent.indent;
                     Text {
                         text: (watch.branch ? (watch.expanded ? "▾ " : "▸ ") : "  ") + watch.expression;
                         color: Theme.text;
                         font-family: "monospace";
                         font-size: 12px;
                         overflow: elide;
-                        min-width: max(0px, root.name-width - watch.depth * 12px);
-                        horizontal-stretch: 1;
+                        width: root.name-width - min(max(0px, root.name-width - 20px), watch.depth * 12px);
                         vertical-alignment: center;
                     }
                     Text { text: watch.type-name; color: Theme.accent; font-size: 12px; width: root.type-width; overflow: elide; vertical-alignment: center; }
@@ -264,7 +286,7 @@ export component VariablesPage inherits VerticalLayout {
                         }
                     }
                     Rectangle {
-                        width: 40px;
+                        width: root.waveform-width;
                         Image {
                             width: 18px;
                             height: 18px;

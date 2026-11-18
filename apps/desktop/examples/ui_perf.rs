@@ -91,6 +91,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         start.elapsed().as_secs_f64() * 100.
     );
     let mut presenter = presenter::Presenter::default();
+    presenter.add_expression(&ui, "a_long_variable_name_for_width_check");
+    let auto_width = ui.get_watch_name_width();
+    assert!(auto_width > 88);
+    ui.set_watch_name_override(88);
+    ui.set_watch_name_width(88);
+    presenter::update_watch_widths(&ui);
+    assert_eq!(
+        ui.get_watch_name_width(),
+        88,
+        "refresh must preserve a manual width"
+    );
+    ui.set_watch_name_override(0);
+    presenter::update_watch_widths(&ui);
+    assert_eq!(
+        ui.get_watch_name_width(),
+        auto_width,
+        "reset must restore automatic width"
+    );
+    presenter.remove_watch(&ui, 0);
+    println!("Watch column automatic and manual widths: passed");
+
     let make_document = |path: &str, text: &str| nya_domain::Document {
         path: path.into(),
         text: text.into(),
@@ -718,6 +739,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nya_application::Event::FirmwareOpened(Box::new(image)).into(),
     );
     presenter.remove_watch(&ui, 0); // remove the retained manual expression
+    while !ui
+        .get_firmware_tree()
+        .iter()
+        .any(|row| row.label == "main.c")
+    {
+        let directory = ui
+            .get_firmware_tree()
+            .iter()
+            .position(|row| row.branch && !row.expanded && row.source_path.is_empty())
+            .expect("fixture directory");
+        presenter.select_firmware(&ui, directory as i32);
+    }
     let file = ui
         .get_firmware_tree()
         .iter()

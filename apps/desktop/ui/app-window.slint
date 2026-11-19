@@ -948,7 +948,7 @@ export component AppWindow inherits Window {
         x: 0; y: 0; width: root.width; height: root.height;
         property <float> reveal: root.firmware-update-open ? 1 : 0;
         animate reveal { duration: 240ms; easing: ease-out; }
-        visible: root.firmware-update-open || self.reveal > 0;
+        visible: !root.firmware-parsing && (root.firmware-update-open || self.reveal > 0);
         background: #000a;
         TouchArea { }
         Rectangle {

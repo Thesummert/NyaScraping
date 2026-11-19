@@ -1,4 +1,5 @@
-use crate::AppWindow;
+use crate::{submit, AppWindow};
+use nya_application::Command;
 use slint::ComponentHandle;
 use std::{
     collections::hash_map::DefaultHasher,
@@ -8,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::SyncSender,
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -96,7 +98,8 @@ impl Detector {
 #[derive(Default)]
 struct Shared {
     path: PathBuf,
-    pending: Option<PathBuf>,
+    sample: Option<Fingerprint>,
+    pending: Option<Fingerprint>,
 }
 
 pub struct FirmwareWatch {
@@ -116,21 +119,51 @@ impl Drop for FirmwareWatch {
     }
 }
 
-pub fn setup(ui: &AppWindow) -> FirmwareWatch {
+fn check_for_update(ui: &AppWindow, shared: &Mutex<Shared>, sender: &SyncSender<Command>) {
+    let path = PathBuf::from(ui.get_firmware_path().trim());
+    let mut state = shared.lock().expect("firmware watcher lock");
+    if state.path != path {
+        *state = Shared {
+            path: path.clone(),
+            ..Shared::default()
+        };
+        ui.set_firmware_update_open(false);
+    }
+    // A later build can replace or truncate the file while the UI is busy.
+    if state.sample != state.pending
+        || ui.get_busy()
+        || ui.get_file_dialog_open()
+        || ui.get_firmware_parsing()
+        || ui.get_project_dialog_open()
+        || ui.get_settings_open()
+    {
+        return;
+    }
+    let Some(revision) = state.pending.take() else {
+        return;
+    };
+    drop(state);
+    if submit(ui, sender, Command::ReloadFirmware(path.clone())) {
+        ui.set_firmware_update_path(path.to_string_lossy().as_ref().into());
+        ui.set_firmware_update_open(true);
+    } else {
+        let mut state = shared.lock().expect("firmware watcher lock");
+        state.pending.get_or_insert(revision);
+    }
+}
+
+pub fn setup(ui: &AppWindow, sender: SyncSender<Command>) -> FirmwareWatch {
     let weak = ui.as_weak();
     ui.on_respond_firmware_update(move |download| {
         let Some(ui) = weak.upgrade() else {
             return;
         };
-        if !ui.get_firmware_update_open() {
+        if !ui.get_firmware_update_open() || ui.get_busy() || ui.get_firmware_parsing() {
             return;
         }
         let path = ui.get_firmware_update_path();
         ui.set_firmware_update_open(false);
-        if download
-            && !ui.get_busy()
-            && !ui.get_file_dialog_open()
-            && ui.get_firmware_path().trim() == path.as_str()
+        if download && !ui.get_file_dialog_open() && ui.get_firmware_path().trim() == path.as_str()
         {
             ui.invoke_debug_action(8);
         }
@@ -144,10 +177,14 @@ pub fn setup(ui: &AppWindow) -> FirmwareWatch {
         while !stopping.load(Ordering::Relaxed) {
             let path = state.lock().expect("firmware watcher lock").path.clone();
             let sample = fingerprint(&path);
-            if detector.observe(&path, sample) {
+            let changed = detector.observe(&path, sample);
+            {
                 let mut state = state.lock().expect("firmware watcher lock");
                 if state.path == path {
-                    state.pending = Some(path);
+                    state.sample = sample;
+                    if changed {
+                        state.pending = sample;
+                    }
                 }
             }
             thread::park_timeout(Duration::from_millis(500));
@@ -159,31 +196,9 @@ pub fn setup(ui: &AppWindow) -> FirmwareWatch {
         slint::TimerMode::Repeated,
         Duration::from_millis(200),
         move || {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            let path = PathBuf::from(ui.get_firmware_path().trim());
-            let mut state = shared.lock().expect("firmware watcher lock");
-            if state.path != path {
-                state.path = path;
-                state.pending = None;
-                ui.set_firmware_update_open(false);
+            if let Some(ui) = weak.upgrade() {
+                check_for_update(&ui, &shared, &sender);
             }
-            if ui.get_busy()
-                || ui.get_file_dialog_open()
-                || ui.get_firmware_parsing()
-                || ui.get_project_dialog_open()
-                || ui.get_settings_open()
-                || ui.get_firmware_update_open()
-            {
-                return;
-            }
-            let Some(path) = state.pending.take() else {
-                return;
-            };
-            drop(state);
-            ui.set_firmware_update_path(path.to_string_lossy().as_ref().into());
-            ui.set_firmware_update_open(true);
         },
     );
     FirmwareWatch {
@@ -196,6 +211,13 @@ pub fn setup(ui: &AppWindow) -> FirmwareWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nya_application::Event;
+    use nya_domain::firmware::FirmwareBackend;
+    use slint::platform::{
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+        Platform, PlatformError, WindowAdapter,
+    };
+    use std::{rc::Rc, sync::mpsc};
 
     fn sample(hash: u64) -> Option<Fingerprint> {
         Some(Fingerprint { size: 4, hash })
@@ -243,5 +265,72 @@ mod tests {
         assert_ne!(Some(new), fingerprint(&path));
         std::fs::write(&path, b"").unwrap();
         assert_eq!(fingerprint(&path), None);
+    }
+
+    #[test]
+    fn pending_update_refreshes_symbols_and_watches_without_download_confirmation() {
+        struct TestPlatform(Rc<MinimalSoftwareWindow>);
+        impl Platform for TestPlatform {
+            fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(TestPlatform(window))).unwrap();
+        let ui = AppWindow::new().unwrap();
+        let (backend, _progress) = crate::firmware_loading::setup(&ui);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let _watcher = setup(&ui, sender.clone());
+        ui.on_debug_action(|_| panic!("refreshing symbols must not download the firmware"));
+        ui.set_project_dialog_open(false);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("firmware.axf");
+        let original =
+            include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf4.axf");
+        std::fs::write(&path, original).unwrap();
+        ui.set_firmware_path(path.to_str().unwrap().into());
+        let mut presenter = crate::presenter::Presenter::default();
+        let image = backend.load(&path).unwrap();
+        presenter.apply(&ui, Event::FirmwareOpened(Box::new(image)).into());
+        presenter.add_expression(&ui, "global_counter");
+        assert!(presenter.saved_watches()[0].scope.is_some());
+        let original_report = ui.get_firmware_report();
+
+        let rebuilt =
+            include_bytes!("../../../crates/firmware-backend/tests/fixtures/arm-dwarf5.axf");
+        std::fs::write(&path, rebuilt).unwrap();
+        let revision = fingerprint(&path).unwrap();
+        let state = Mutex::new(Shared {
+            path: path.clone(),
+            sample: Some(revision),
+            pending: Some(revision),
+        });
+        ui.set_busy(true);
+        check_for_update(&ui, &state, &sender);
+        assert!(receiver.try_recv().is_err());
+        ui.set_busy(false);
+        state.lock().unwrap().sample = None;
+        check_for_update(&ui, &state, &sender);
+        assert!(receiver.try_recv().is_err());
+        state.lock().unwrap().sample = Some(revision);
+        check_for_update(&ui, &state, &sender);
+        let Ok(Command::ReloadFirmware(reload_path)) = receiver.try_recv() else {
+            panic!("a stable firmware update must queue a symbol reload");
+        };
+        assert_eq!(reload_path, path);
+        assert!(ui.get_firmware_parsing());
+        let image = backend.load(&reload_path).unwrap();
+        presenter.apply(&ui, Event::FirmwareReloaded(Box::new(image)).into());
+        crate::firmware_loading::finish(&ui);
+        assert_ne!(ui.get_firmware_report(), original_report);
+        assert!(ui.get_status().starts_with("符号文件已自动刷新"));
+        assert_eq!(presenter.saved_watches()[0].expression, "global_counter");
+        assert!(ui.get_firmware_update_open());
+        ui.invoke_respond_firmware_update(false);
+        assert!(!ui.get_firmware_update_open());
+        check_for_update(&ui, &state, &sender);
+        assert!(receiver.try_recv().is_err());
     }
 }

@@ -185,6 +185,7 @@ pub struct FirmwareView {
     report: String,
     details: String,
     status: String,
+    reloaded: bool,
     pub(crate) browser: FirmwareBrowser,
     executable_lines: HashMap<std::path::PathBuf, Vec<u32>>,
 }
@@ -226,7 +227,7 @@ impl From<Event> for PreparedEvent {
             Event::DebugUpdated { snapshot, completes_command } => Self::Debug(snapshot, completes_command),
             Event::SourceOpened(document) => Self::Source(document),
             Event::Failed(error) => Self::Failed(error),
-            Event::FirmwareOpened(image) => Self::Firmware(Box::new(FirmwareView {
+            Event::FirmwareOpened(ref image) | Event::FirmwareReloaded(ref image) => Self::Firmware(Box::new(FirmwareView {
                 title: image.path.display().to_string(),
                 metadata: format!(
                     "{} · {} · {} 位 · {} · {} · 入口 0x{:X} · {} bytes",
@@ -234,7 +235,7 @@ impl From<Event> for PreparedEvent {
                     if image.little_endian { "小端" } else { "大端" },
                     image.kind, image.entry, image.file_size,
                 ),
-                report: firmware_report(&image),
+                report: firmware_report(image),
                 details: format!(
                     "{} 个源文件，{} 个函数条目，{} 个变量/参数。\n\n点击目录或文件旁的箭头展开；双击文件打开源码，双击变量添加监视。函数默认隐藏，可通过开关显示。\n\n{}",
                     image.debug.files.len(), image.debug.functions.len(), image.debug.variables.len(), image.debug.warnings.join("\n"),
@@ -244,6 +245,7 @@ impl From<Event> for PreparedEvent {
                     image.debug.files.len(), image.debug.functions.len(), image.debug.variables.len(),
                     if image.debug.warnings.is_empty() { "" } else { "（存在调试信息提示，见详情）" },
                 ),
+                reloaded: matches!(event, Event::FirmwareReloaded(_)),
                 browser: FirmwareBrowser::new(&image.debug, image.little_endian, image.kind == "Executable"),
                 executable_lines: executable_lines(&image.debug),
             })),
@@ -827,9 +829,12 @@ impl Presenter {
                 ui.set_status("源码已通过 Rust 文本后端读取".into());
             }
             PreparedEvent::Firmware(view) => {
+                let saved = (view.reloaded && ui.get_firmware_title() == view.title.as_str())
+                    .then(|| self.watches.saved());
                 ui.set_live_enabled(false);
                 self.acquisition.stop();
                 self.acquisition.set_targets(Vec::new());
+                self.chart_assignments.clear();
                 ui.set_firmware_title(view.title.into());
                 ui.set_firmware_meta(view.metadata.into());
                 ui.set_firmware_report(view.report.into());
@@ -840,12 +845,23 @@ impl Presenter {
                 self.browser = Some(browser);
                 self.executable_lines = view.executable_lines;
                 self.set_source_directory(ui, ui.get_source_directory().as_str());
-                self.watches.reset_firmware();
-                self.sync_waveforms(ui);
+                let missing = if let Some(saved) = saved {
+                    self.watches.restore(&saved, self.browser.as_ref())
+                } else {
+                    self.watches.reset_firmware();
+                    0
+                };
                 self.invalidate_watches(ui);
                 self.refresh_tree(ui);
                 ui.set_firmware_selected_node(-1);
-                ui.set_status(view.status.into());
+                let mut status = view.status;
+                if view.reloaded {
+                    status = format!("符号文件已自动刷新 · {status}");
+                }
+                if missing > 0 {
+                    status.push_str(&format!(" · {missing} 个变量或波形通道未能恢复"));
+                }
+                ui.set_status(status.into());
             }
             PreparedEvent::Failed(error) => {
                 let message = format!("操作失败：{error}");

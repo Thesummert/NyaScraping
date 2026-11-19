@@ -60,6 +60,7 @@ pub enum Command {
     },
     OpenSource(PathBuf),
     OpenFirmware(PathBuf),
+    ReloadFirmware(PathBuf),
     ReadLiveMemory(MemoryReadRequest),
 }
 
@@ -88,6 +89,7 @@ pub enum Event {
     },
     SourceOpened(Document),
     FirmwareOpened(Box<FirmwareImage>),
+    FirmwareReloaded(Box<FirmwareImage>),
     Failed(String),
 }
 
@@ -361,6 +363,11 @@ impl<T: ToolRegistry + DebugSession + WirelessRegistry, E: TextBackend, F: Firmw
                 .firmware
                 .load(&path)
                 .map(|image| Event::FirmwareOpened(Box::new(image))),
+            Command::ReloadFirmware(path) => self
+                .firmware
+                .load(&path)
+                .map(|image| Event::FirmwareReloaded(Box::new(image)))
+                .map_err(|error| nya_domain::Error(format!("自动刷新符号文件失败：{error}"))),
         };
         result.unwrap_or_else(|error| Event::Failed(error.to_string()))
     }

@@ -30,9 +30,9 @@ use std::sync::{
 
 slint::include_modules!();
 
-fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
+fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) -> bool {
     if ui.get_busy() || ui.get_file_dialog_open() {
-        return;
+        return false;
     }
     let message = match &command {
         Command::StartWirelessAcquisition { .. } => Some("正在连接手机数据采集…".into()),
@@ -63,12 +63,13 @@ fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
         }
         _ => None,
     };
-    let parsing_firmware = if let Command::OpenFirmware(path) = &command {
-        ui.invoke_begin_firmware_parse(path.to_string_lossy().as_ref().into());
-        true
-    } else {
-        false
-    };
+    let parsing_firmware =
+        if let Command::OpenFirmware(path) | Command::ReloadFirmware(path) = &command {
+            ui.invoke_begin_firmware_parse(path.to_string_lossy().as_ref().into());
+            true
+        } else {
+            false
+        };
     match sender.try_send(command) {
         Ok(()) => {
             ui.set_busy(true);
@@ -78,6 +79,7 @@ fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
             } else {
                 ui.set_status("正在处理…".into());
             }
+            true
         }
         Err(error) => {
             if parsing_firmware {
@@ -86,6 +88,7 @@ fn submit(ui: &AppWindow, sender: &SyncSender<Command>, command: Command) {
             let message = format!("无法提交任务：{error}");
             ui.invoke_record_system_error(message.as_str().into());
             ui.set_status(message.into());
+            false
         }
     }
 }
@@ -1207,7 +1210,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 | Command::PairWireless { .. }
                                 | Command::ForgetWireless(_)
                         );
-                        finished_firmware = matches!(&command, Command::OpenFirmware(_));
+                        finished_firmware = matches!(
+                            &command,
+                            Command::OpenFirmware(_) | Command::ReloadFirmware(_)
+                        );
                         let _control = matches!(&command, Command::Debug(_))
                             .then(|| worker_acquisition.pause_for_debug_control());
                         // Stop can arrive while recv_timeout is already waiting.
@@ -2170,7 +2176,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
         })();
         match prepared {
-            Ok(command) => submit(&ui, &wireless_sender, command),
+            Ok(command) => {
+                submit(&ui, &wireless_sender, command);
+            }
             Err(error) => {
                 ui.set_live_enabled(false);
                 ui.set_acquisition_status(error.as_str().into());
@@ -2568,7 +2576,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     ui.invoke_refresh_tools();
-    let firmware_watch = firmware_watch::setup(&ui);
+    let firmware_watch = firmware_watch::setup(&ui, sender.clone());
     let result = ui.run();
     drop(firmware_watch);
     if wireless_timers.0.running() {
